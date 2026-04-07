@@ -1,0 +1,24 @@
+{
+  "id": "sabha",
+  "kind": "channel",
+  "channels": ["sabha"],
+  "name": "Sabha",
+  "description": "Connect OpenClaw to a Sabha chat server",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "sabha": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "baseUrl": { "type": "string", "description": "Sabha server URL (e.g., https://chat.example.com)" },
+          "botKey": { "type": "string", "description": "Bot key from registration (e.g., 42-AbCdEfGhIjKl)" },
+          "webhookPort": { "type": "number", "default": 8787 },
+          "dmPolicy": { "type": "string", "enum": ["open", "allowlist"], "default": "open" },
+          "allowFrom": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["baseUrl", "botKey"]
+      }
+    }
+  }
+}

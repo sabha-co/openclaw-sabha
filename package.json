@@ -1,0 +1,27 @@
+{
+  "name": "@sabha/openclaw-sabha",
+  "version": "0.1.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "sabha",
+      "label": "Sabha",
+      "blurb": "Connect OpenClaw to a Sabha chat server.",
+      "markdownCapable": true
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "openclaw": "^2026.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  }
+}

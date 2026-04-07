@@ -6,6 +6,7 @@ import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
+import { fetchSkillPrompt } from "./skill-prompt.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
 
@@ -79,6 +80,14 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         capabilities: [],
         schema: [],
       }),
+    },
+    agentPrompt: {
+      messageToolHints: (params: { cfg: OpenClawConfig }) => {
+        const account = resolveAccount(params.cfg);
+        return [
+          `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
+        ];
+      },
     },
   },
 

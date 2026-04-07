@@ -69,6 +69,31 @@ Create a bot at `/account/bots` in your Sabha instance. Set the webhook URL to y
 
 In DMs, the bot responds to every message. In rooms, only when @mentioned.
 
+Attachments in webhook payloads are downloaded immediately (signed URLs expire after 1 hour).
+
+## Agent Tools
+
+The plugin registers tools that let the agent manage Sabha workspaces:
+
+| Tool | Description |
+|------|-------------|
+| `sabha_list_rooms` | List rooms the bot is in |
+| `sabha_list_joinable_rooms` | Discover open rooms to join |
+| `sabha_create_room` | Create an open or closed room |
+| `sabha_update_room` | Rename a room the bot created |
+| `sabha_archive_room` | Archive a room the bot created |
+| `sabha_join_room` | Join an open room |
+| `sabha_leave_room` | Leave a room |
+| `sabha_list_members` | List room members |
+| `sabha_add_member` | Add a user to a bot-created room |
+| `sabha_remove_member` | Remove a user from a bot-created room |
+| `sabha_search` | Search messages across all rooms |
+| `sabha_create_dm` | Start a DM with a user |
+
+## API Context
+
+On startup, the plugin fetches Sabha's `/skill` endpoint (an LLM-readable API reference) and injects it into the agent's prompt context. This gives the agent full knowledge of what actions are available.
+
 ## Development
 
 ```sh

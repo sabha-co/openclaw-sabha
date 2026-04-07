@@ -6,6 +6,8 @@ import { sabhaPlugin, resolveAccount } from "./src/channel.js";
 import { parseWebhookPayload } from "./src/webhook.js";
 import { processInboundMessage } from "./src/inbound.js";
 import { SabhaClient } from "./src/client.js";
+import { createSabhaTools } from "./src/tools.js";
+import { fetchSkillPrompt } from "./src/skill-prompt.js";
 
 let pluginRuntime: PluginRuntime | undefined;
 
@@ -20,6 +22,25 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
   },
 
   registerFull(api) {
+    const getConfig = () => api.runtime.config.loadConfig();
+
+    // Register room/member management agent tools
+    const tools = createSabhaTools(getConfig);
+    for (const tool of tools) {
+      api.registerTool(tool as any);
+    }
+
+    // Fetch /skill on startup and inject into agent prompt
+    const account = resolveAccount(getConfig());
+    if (account.baseUrl) {
+      fetchSkillPrompt(account.baseUrl).then((text) => {
+        if (text) {
+          api.logger.info?.("[sabha] Loaded /skill prompt for agent context");
+        }
+      });
+    }
+
+    // Inbound webhook handler
     api.registerHttpRoute({
       path: "/sabha/webhook",
       auth: "plugin",
@@ -35,17 +56,19 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
           const payload = parseWebhookPayload(body);
 
           if (payload.event === "message_created" && pluginRuntime) {
-            const cfg = api.runtime.config.loadConfig();
-            const account = resolveAccount(cfg);
-            const client = new SabhaClient(account.baseUrl, account.botKey);
+            const cfg = getConfig();
+            const currentAccount = resolveAccount(cfg);
+            const client = new SabhaClient(
+              currentAccount.baseUrl,
+              currentAccount.botKey,
+            );
 
             await processInboundMessage(payload, {
               runtime: pluginRuntime,
               cfg,
-              account,
+              account: currentAccount,
               logger: api.logger,
               deliver: async (replyPayload) => {
-                // Deliver OpenClaw's reply back to Sabha
                 const roomId = Number(
                   replyPayload.to ?? payload.room.id,
                 );

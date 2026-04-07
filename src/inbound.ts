@@ -54,14 +54,37 @@ export async function processInboundMessage(
     agentId: route.agentId,
   });
 
+  // Download attachment immediately (signed URLs expire after 1 hour)
+  let attachmentPath: string | undefined;
+  if (payload.message.has_attachment && payload.message.attachment) {
+    try {
+      const { url, filename, content_type } = payload.message.attachment;
+      const fetched = await runtime.channel.media.fetchRemoteMedia({ url });
+      const saved = await runtime.channel.media.saveMediaBuffer(
+        fetched.buffer,
+        content_type,
+        "inbound",
+        undefined,
+        filename,
+      );
+      attachmentPath = saved.id;
+    } catch (err) {
+      logger?.error?.(`[sabha] Failed to download attachment: ${err}`);
+    }
+  }
+
   // Build the inbound context
+  const bodyWithAttachment = attachmentPath
+    ? `${payload.message.body.plain}\n\n[Attachment: ${payload.message.attachment?.filename} — saved to ${attachmentPath}]`
+    : payload.message.body.plain;
+
   const envelopeOpts = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const envelope = runtime.channel.reply.formatAgentEnvelope({
     channel: CHANNEL_ID,
     from: payload.user.name,
     timestamp: new Date(payload.message.created_at).getTime(),
     envelope: envelopeOpts,
-    body: payload.message.body.plain,
+    body: bodyWithAttachment,
   });
 
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({

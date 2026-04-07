@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { extractBotId } from "./client.js";
 import { parseWebhookPayload, wasBotMentioned, resolveChatType } from "./webhook.js";
 import { resolveSessionFromPayload, resolveSessionConversation } from "./session.js";
+import { parseJoinUrl } from "./setup-wizard.js";
 
 describe("extractBotId", () => {
   it("extracts numeric ID from bot key", () => {
@@ -129,5 +130,43 @@ describe("resolveSessionConversation", () => {
     expect(result.id).toBe("5");
     expect(result.threadId).toBe("99");
     expect(result.baseConversationId).toBe("5");
+  });
+});
+
+describe("parseJoinUrl", () => {
+  it("parses single-tenant join URL", () => {
+    const result = parseJoinUrl("https://chat.example.com/join/mNrP-Nm5q-HCzw");
+    expect(result).toEqual({
+      baseUrl: "https://chat.example.com",
+      joinCode: "mNrP-Nm5q-HCzw",
+    });
+  });
+
+  it("parses multi-tenant join URL with workspace ID", () => {
+    const result = parseJoinUrl("https://chat.example.com/1000006/join/mNrP-Nm5q-HCzw");
+    expect(result).toEqual({
+      baseUrl: "https://chat.example.com/1000006",
+      joinCode: "mNrP-Nm5q-HCzw",
+    });
+  });
+
+  it("parses localhost URL", () => {
+    const result = parseJoinUrl("http://localhost:3000/1000006/join/mNrP-Nm5q-HCzw");
+    expect(result).toEqual({
+      baseUrl: "http://localhost:3000/1000006",
+      joinCode: "mNrP-Nm5q-HCzw",
+    });
+  });
+
+  it("returns null for non-join URL", () => {
+    expect(parseJoinUrl("https://chat.example.com/rooms/5")).toBeNull();
+  });
+
+  it("returns null for invalid URL", () => {
+    expect(parseJoinUrl("not-a-url")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(parseJoinUrl("")).toBeNull();
   });
 });

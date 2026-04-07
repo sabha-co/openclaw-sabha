@@ -7,6 +7,7 @@ import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
 import { getCachedSkillText } from "./skill-prompt.js";
+import { sabhaSetupWizard } from "./setup-wizard.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
 
@@ -36,6 +37,7 @@ function getClient(account: SabhaAccount): SabhaClient {
 export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
   base: {
     id: "sabha",
+    setupWizard: sabhaSetupWizard,
     meta: {
       id: "sabha",
       label: "Sabha",

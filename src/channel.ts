@@ -6,7 +6,7 @@ import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
-import { fetchSkillPrompt } from "./skill-prompt.js";
+import { getCachedSkillText } from "./skill-prompt.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
 
@@ -14,7 +14,7 @@ export function resolveAccount(
   cfg: OpenClawConfig,
   accountId?: string | null,
 ): SabhaAccount {
-  const section = (cfg.channels as Record<string, any>)?.sabha as
+  const section = (cfg.channels as Record<string, unknown>)?.sabha as
     | SabhaConfig
     | undefined;
 
@@ -84,9 +84,16 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
     agentPrompt: {
       messageToolHints: (params: { cfg: OpenClawConfig }) => {
         const account = resolveAccount(params.cfg);
-        return [
+        const hints = [
           `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
         ];
+        const skillText = getCachedSkillText();
+        if (skillText) {
+          hints.push(
+            `Here is the full Sabha API reference:\n\n${skillText}`,
+          );
+        }
+        return hints;
       },
     },
   },
@@ -107,12 +114,12 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
   outbound: {
     attachedResults: {
       channel: "sabha",
-      async sendText(ctx: any) {
+      async sendText(ctx) {
         const account = resolveAccount(ctx.cfg);
         const client = getClient(account);
         const roomId = Number(ctx.to);
 
-        if (ctx.threadId && ctx.replyToId) {
+        if (ctx.threadId != null && ctx.replyToId != null) {
           const result = await client.replyInThread(
             roomId,
             Number(ctx.replyToId),
@@ -122,9 +129,9 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         }
 
         const messageId = await client.sendMessage(roomId, ctx.text);
-        return { messageId: String(messageId) };
+        return { messageId: messageId != null ? String(messageId) : "" };
       },
-      async sendMedia(ctx: any) {
+      async sendMedia(ctx) {
         const account = resolveAccount(ctx.cfg);
         const client = getClient(account);
         const roomId = Number(ctx.to);
@@ -134,7 +141,7 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
           const blob = await res.blob();
           const filename = ctx.mediaUrl.split("/").pop() ?? "attachment";
           const messageId = await client.sendAttachment(roomId, blob, filename);
-          return { messageId: String(messageId) };
+          return { messageId: messageId != null ? String(messageId) : "" };
         }
 
         return { messageId: "" };

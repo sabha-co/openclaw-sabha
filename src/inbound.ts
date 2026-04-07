@@ -1,4 +1,5 @@
-import type { SabhaWebhookPayload, SabhaAccount } from "./types.js";
+import type { SabhaWebhookPayload, SabhaAccount, DeliveryPayload } from "./types.js";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { wasBotMentioned, resolveChatType } from "./webhook.js";
 import { resolveSessionFromPayload } from "./session.js";
 
@@ -10,10 +11,10 @@ const CHANNEL_ID = "sabha";
 
 type InboundDeps = {
   runtime: PluginRuntime;
-  cfg: any;
+  cfg: OpenClawConfig;
   account: SabhaAccount;
-  deliver: (payload: any) => Promise<void>;
-  logger?: { info?: (...args: any[]) => void; error?: (...args: any[]) => void };
+  deliver: (payload: DeliveryPayload) => Promise<void>;
+  logger?: { info?: (message: string) => void; error?: (message: string) => void };
 };
 
 /**
@@ -75,7 +76,7 @@ export async function processInboundMessage(
 
   // Build the inbound context
   const bodyWithAttachment = attachmentPath
-    ? `${payload.message.body.plain}\n\n[Attachment: ${payload.message.attachment?.filename} — saved to ${attachmentPath}]`
+    ? `${payload.message.body.plain}\n\n[Attachment: ${payload.message.attachment!.filename} — saved to ${attachmentPath}]`
     : payload.message.body.plain;
 
   const envelopeOpts = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);

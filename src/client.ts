@@ -21,25 +21,21 @@ export class SabhaClient {
 
   // --- Messaging ---
 
-  async sendMessage(roomId: number, text: string): Promise<number> {
+  async sendMessage(roomId: number, text: string): Promise<number | null> {
     const res = await this.fetch(`/rooms/${roomId}/${this.botKey}/messages`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: text,
     });
 
-    // Returns 201 with Location header
-    const location = res.headers.get("location");
-    if (!location) return 0;
-    const match = location.match(/\/messages\/(\d+)/);
-    return match ? Number(match[1]) : 0;
+    return this.extractMessageId(res);
   }
 
   async sendAttachment(
     roomId: number,
     file: Blob,
     filename: string,
-  ): Promise<number> {
+  ): Promise<number | null> {
     const form = new FormData();
     form.append("attachment", file, filename);
 
@@ -48,10 +44,14 @@ export class SabhaClient {
       body: form,
     });
 
+    return this.extractMessageId(res);
+  }
+
+  private extractMessageId(res: Response): number | null {
     const location = res.headers.get("location");
-    if (!location) return 0;
+    if (!location) return null;
     const match = location.match(/\/messages\/(\d+)/);
-    return match ? Number(match[1]) : 0;
+    return match ? Number(match[1]) : null;
   }
 
   async editMessage(
@@ -263,7 +263,7 @@ export class SabhaClient {
     const url = `${this.baseUrl}${path}`;
     const res = await globalThis.fetch(url, init);
 
-    if (!res.ok && res.status !== 201 && res.status !== 204) {
+    if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new SabhaApiError(res.status, body, url);
     }

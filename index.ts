@@ -27,10 +27,10 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     // Register room/member management agent tools
     const tools = createSabhaTools(getConfig);
     for (const tool of tools) {
-      api.registerTool(tool as any);
+      api.registerTool(tool);
     }
 
-    // Fetch /skill on startup and inject into agent prompt
+    // Fetch /skill on startup and cache for agent prompt hints
     const account = resolveAccount(getConfig());
     if (account.baseUrl) {
       fetchSkillPrompt(account.baseUrl).then((text) => {
@@ -45,12 +45,20 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
       path: "/sabha/webhook",
       auth: "plugin",
       handler: async (req, res) => {
+        const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
+
         try {
           const chunks: Buffer[] = [];
+          let totalBytes = 0;
           for await (const chunk of req) {
-            chunks.push(
-              typeof chunk === "string" ? Buffer.from(chunk) : chunk,
-            );
+            const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+            totalBytes += buf.length;
+            if (totalBytes > MAX_BODY_BYTES) {
+              res.statusCode = 413;
+              res.end("Payload Too Large");
+              return true;
+            }
+            chunks.push(buf);
           }
           const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
           const payload = parseWebhookPayload(body);
@@ -89,13 +97,13 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
 
           res.statusCode = 200;
           res.end();
+          return true;
         } catch (err) {
           api.logger.error?.(`[sabha] Webhook error: ${err}`);
           res.statusCode = 400;
           res.end("Bad Request");
+          return true;
         }
-
-        return true;
       },
     });
   },

@@ -1,4 +1,4 @@
-import type { SabhaWebhookPayload } from "./types.js";
+import type { SabhaWebhookPayload, SabhaRoomType } from "./types.js";
 
 /**
  * Parse and validate an incoming Sabha webhook payload.
@@ -33,7 +33,7 @@ export function parseWebhookPayload(body: unknown): SabhaWebhookPayload {
  * Determine the OpenClaw chat type from a Sabha room type.
  */
 export function resolveChatType(
-  roomType: string,
+  roomType: SabhaRoomType,
 ): "direct" | "group" {
   return roomType === "Direct" ? "direct" : "group";
 }

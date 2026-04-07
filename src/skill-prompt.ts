@@ -25,12 +25,6 @@ export async function fetchSkillPrompt(baseUrl: string): Promise<string> {
   }
 }
 
-export function getSkillPromptHints(baseUrl: string): () => Promise<string[]> {
-  return async () => {
-    const text = await fetchSkillPrompt(baseUrl);
-    if (!text) return [];
-    return [
-      `You are connected to a Sabha chat server. Here is the full API reference:\n\n${text}`,
-    ];
-  };
+export function getCachedSkillText(): string | null {
+  return cachedSkillText;
 }

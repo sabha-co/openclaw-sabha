@@ -1,9 +1,10 @@
 // Sabha Bot API types
 
+
 export type SabhaRoom = {
   id: number;
   name: string;
-  type: "Open" | "Closed" | "Direct" | "Thread";
+  type: SabhaRoomType;
   messages_url: string;
 };
 
@@ -69,10 +70,12 @@ export type SabhaWebhookUser = {
   url: string;
 };
 
+export type SabhaRoomType = "Open" | "Closed" | "Direct" | "Thread";
+
 export type SabhaWebhookRoom = {
   id: number;
   name: string;
-  type: string;
+  type: SabhaRoomType;
   members: number;
   has_bot: boolean;
   messages_url: string;
@@ -115,6 +118,16 @@ export type SabhaAccount = {
   botKey: string;
   botId: number;
   webhookPort: number;
-  dmPolicy: string;
+  dmPolicy: "open" | "allowlist";
   allowFrom: string[];
+};
+
+// --- Delivery payload (from reply pipeline to deliver callback) ---
+
+export type DeliveryPayload = {
+  to?: string;
+  text?: string;
+  body?: string;
+  threadId?: string;
+  replyToId?: string;
 };

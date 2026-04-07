@@ -1,14 +1,16 @@
 import {
   createChatChannelPlugin,
-  createChannelPluginBase,
+  type OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
+import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
-import { resolveSessionConversation } from "./session.js";
 
-function resolveAccount(
-  cfg: any,
+const accountHelpers = createAccountListHelpers("sabha");
+
+export function resolveAccount(
+  cfg: OpenClawConfig,
   accountId?: string | null,
 ): SabhaAccount {
   const section = (cfg.channels as Record<string, any>)?.sabha as
@@ -31,31 +33,53 @@ function getClient(account: SabhaAccount): SabhaClient {
 }
 
 export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
-  base: createChannelPluginBase({
+  base: {
     id: "sabha",
-    setup: {
+    meta: {
+      id: "sabha",
+      label: "Sabha",
+      selectionLabel: "Sabha",
+      docsPath: "/plugins/sabha",
+      blurb: "Connect OpenClaw to a Sabha chat server.",
+    },
+    capabilities: {
+      chatTypes: ["direct", "group", "channel", "thread"],
+      reactions: true,
+      edit: true,
+      unsend: true,
+      reply: true,
+      threads: true,
+      media: true,
+      groupManagement: true,
+      blockStreaming: true,
+    },
+    config: {
       resolveAccount,
-      inspectAccount(cfg: any, accountId?: string | null) {
+      listAccountIds: accountHelpers.listAccountIds,
+      inspectAccount(cfg: OpenClawConfig, accountId?: string | null) {
         const account = resolveAccount(cfg, accountId);
         return {
           enabled: Boolean(account.baseUrl && account.botKey),
           configured: Boolean(account.baseUrl && account.botKey),
-          tokenStatus: account.botKey ? "available" : "missing",
+          tokenStatus: account.botKey ? ("available" as const) : ("missing" as const),
         };
       },
     },
-  }),
-
-  capabilities: {
-    chatTypes: ["direct", "group", "channel", "thread"],
-    reactions: true,
-    edit: true,
-    unsend: true,
-    reply: true,
-    threads: true,
-    media: true,
-    groupManagement: true,
-    blockStreaming: true,
+    actions: {
+      describeMessageTool: () => ({
+        actions: [
+          "send",
+          "edit",
+          "unsend",
+          "react",
+          "reply",
+          "thread-reply",
+          "search",
+        ],
+        capabilities: [],
+        schema: [],
+      }),
+    },
   },
 
   security: {
@@ -71,17 +95,9 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
     topLevelReplyToMode: "thread",
   },
 
-  messaging: {
-    resolveSessionConversation(params: { rawId: string; threadId?: string }) {
-      return resolveSessionConversation(params);
-    },
-  },
-
   outbound: {
-    deliveryMode: "direct",
-    textChunkLimit: 10000,
-
     attachedResults: {
+      channel: "sabha",
       async sendText(ctx: any) {
         const account = resolveAccount(ctx.cfg);
         const client = getClient(account);
@@ -99,9 +115,6 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         const messageId = await client.sendMessage(roomId, ctx.text);
         return { messageId: String(messageId) };
       },
-    },
-
-    base: {
       async sendMedia(ctx: any) {
         const account = resolveAccount(ctx.cfg);
         const client = getClient(account);
@@ -110,27 +123,17 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         if (ctx.mediaUrl) {
           const res = await globalThis.fetch(ctx.mediaUrl);
           const blob = await res.blob();
-          const filename =
-            ctx.mediaUrl.split("/").pop() ?? "attachment";
-          await client.sendAttachment(roomId, blob, filename);
+          const filename = ctx.mediaUrl.split("/").pop() ?? "attachment";
+          const messageId = await client.sendAttachment(roomId, blob, filename);
+          return { messageId: String(messageId) };
         }
+
+        return { messageId: "" };
       },
     },
-  },
-
-  actions: {
-    describeMessageTool: () => ({
-      actions: [
-        "send",
-        "edit",
-        "unsend",
-        "react",
-        "reply",
-        "thread-reply",
-        "search",
-      ],
-      capabilities: [],
-      schema: [],
-    }),
+    base: {
+      deliveryMode: "direct",
+      textChunkLimit: 10000,
+    },
   },
 });

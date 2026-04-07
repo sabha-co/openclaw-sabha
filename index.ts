@@ -1,14 +1,23 @@
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
-import { sabhaPlugin } from "./src/channel.js";
-import { parseWebhookPayload, wasBotMentioned, resolveChatType } from "./src/webhook.js";
-import { resolveSessionFromPayload } from "./src/session.js";
-import { extractBotId } from "./src/client.js";
+import {
+  defineChannelPluginEntry,
+  type PluginRuntime,
+} from "openclaw/plugin-sdk/channel-core";
+import { sabhaPlugin, resolveAccount } from "./src/channel.js";
+import { parseWebhookPayload } from "./src/webhook.js";
+import { processInboundMessage } from "./src/inbound.js";
+import { SabhaClient } from "./src/client.js";
 
-export default defineChannelPluginEntry({
+let pluginRuntime: PluginRuntime | undefined;
+
+const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEntry({
   id: "sabha",
   name: "Sabha",
   description: "Connect OpenClaw to a Sabha chat server",
   plugin: sabhaPlugin,
+
+  setRuntime(runtime: PluginRuntime) {
+    pluginRuntime = runtime;
+  },
 
   registerFull(api) {
     api.registerHttpRoute({
@@ -18,40 +27,47 @@ export default defineChannelPluginEntry({
         try {
           const chunks: Buffer[] = [];
           for await (const chunk of req) {
-            chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+            chunks.push(
+              typeof chunk === "string" ? Buffer.from(chunk) : chunk,
+            );
           }
           const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
           const payload = parseWebhookPayload(body);
 
-          // Only process message_created events for now
-          if (payload.event === "message_created") {
-            const account = sabhaPlugin.config.resolveAccount(
-              (api as any).config,
-            );
-            const botId = extractBotId(account.botKey);
+          if (payload.event === "message_created" && pluginRuntime) {
+            const cfg = api.runtime.config.loadConfig();
+            const account = resolveAccount(cfg);
+            const client = new SabhaClient(account.baseUrl, account.botKey);
 
-            // Skip messages from the bot itself
-            if (payload.user.id !== botId) {
-              const chatType = resolveChatType(payload.room.type);
-              const session = resolveSessionFromPayload(payload);
-              const isDm = chatType === "direct";
-              const mentioned = wasBotMentioned(payload, botId);
-
-              // In DMs, always respond. In groups, only when mentioned.
-              if (isDm || mentioned) {
-                // Dispatch to OpenClaw core via channelRuntime
-                // (wired up when channelRuntime is available in context)
-                api.logger?.info?.(
-                  `[sabha] Inbound: ${payload.event} from ${payload.user.name} in ${payload.room.name} (${chatType}, mentioned=${mentioned})`,
+            await processInboundMessage(payload, {
+              runtime: pluginRuntime,
+              cfg,
+              account,
+              logger: api.logger,
+              deliver: async (replyPayload) => {
+                // Deliver OpenClaw's reply back to Sabha
+                const roomId = Number(
+                  replyPayload.to ?? payload.room.id,
                 );
-              }
-            }
+                const text = replyPayload.text ?? replyPayload.body ?? "";
+
+                if (replyPayload.threadId && replyPayload.replyToId) {
+                  await client.replyInThread(
+                    roomId,
+                    Number(replyPayload.replyToId),
+                    text,
+                  );
+                } else {
+                  await client.sendMessage(roomId, text);
+                }
+              },
+            });
           }
 
           res.statusCode = 200;
           res.end();
         } catch (err) {
-          api.logger?.error?.(`[sabha] Webhook error: ${err}`);
+          api.logger.error?.(`[sabha] Webhook error: ${err}`);
           res.statusCode = 400;
           res.end("Bad Request");
         }
@@ -61,3 +77,5 @@ export default defineChannelPluginEntry({
     });
   },
 });
+
+export default entry;

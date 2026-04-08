@@ -36,7 +36,7 @@ export async function selfRegisterBot(
   baseUrl: string,
   joinCode: string,
   params: { name: string; webhook_url?: string },
-): Promise<{ bot_key: string; name: string }> {
+): Promise<{ bot_key: string; name: string; websocket_url?: string }> {
   const res = await globalThis.fetch(`${baseUrl}/join/${joinCode}`, {
     method: "POST",
     headers: {
@@ -51,7 +51,7 @@ export async function selfRegisterBot(
     throw new Error(body.error ?? `Registration failed: ${res.status}`);
   }
 
-  return (await res.json()) as { bot_key: string; name: string };
+  return (await res.json()) as { bot_key: string; name: string; websocket_url?: string };
 }
 
 function getSabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {
@@ -174,6 +174,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       cfg = setSabhaConfig(cfg, {
         baseUrl: parsed.baseUrl,
         botKey: result.bot_key,
+        websocketUrl: result.websocket_url,
       });
     }
 
@@ -183,8 +184,8 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   completionNote: {
     title: "Sabha Connected",
     lines: [
-      "Your bot is registered and ready to receive messages.",
-      "Make sure your Sabha server can reach this OpenClaw instance's webhook endpoint.",
+      "Your bot is registered and connected via WebSocket.",
+      "Messages will be received in real-time without webhook configuration.",
     ],
   },
 

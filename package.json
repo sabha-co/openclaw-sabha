@@ -1,6 +1,6 @@
 {
   "name": "@sabha-co/openclaw-sabha",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -14,7 +14,9 @@
     "openclaw.plugin.json"
   ],
   "openclaw": {
-    "extensions": ["./index.ts"],
+    "extensions": [
+      "./index.ts"
+    ],
     "setupEntry": "./setup-entry.ts",
     "channel": {
       "id": "sabha",
@@ -29,9 +31,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "openclaw": "^2026.4.0"
+    "openclaw": "^2026.4.0",
+    "ws": "^8.0.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
   }

@@ -25,6 +25,8 @@ export function resolveAccount(
     botKey: section?.botKey ?? "",
     botId: extractBotId(section?.botKey ?? ""),
     webhookPort: section?.webhookPort ?? 8787,
+    connectionMode: section?.connectionMode ?? "websocket",
+    websocketUrl: section?.websocketUrl ?? "",
     dmPolicy: section?.dmPolicy ?? "open",
     allowFrom: section?.allowFrom ?? [],
   };

@@ -108,6 +108,8 @@ export type SabhaConfig = {
   baseUrl: string;
   botKey: string;
   webhookPort?: number;
+  connectionMode?: "websocket" | "webhook";
+  websocketUrl?: string;
   dmPolicy?: "open" | "allowlist";
   allowFrom?: string[];
 };
@@ -118,6 +120,8 @@ export type SabhaAccount = {
   botKey: string;
   botId: number;
   webhookPort: number;
+  connectionMode: "websocket" | "webhook";
+  websocketUrl: string;
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
 };
@@ -130,4 +134,13 @@ export type DeliveryPayload = {
   body?: string;
   threadId?: string;
   replyToId?: string;
+};
+
+// --- WebSocket connection status ---
+
+export type ConnectionStatus = {
+  connected: boolean;
+  lastConnectedAt?: number;
+  lastError?: string | null;
+  lastDisconnect?: { at: number; status?: number; error?: string };
 };

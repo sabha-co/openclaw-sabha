@@ -64,8 +64,8 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
           return;
         }
 
-        // Launch the long-lived monitor in the background so start() returns
-        // immediately and doesn't block gateway startup.
+        // Clean up any previous instance (e.g., if start() is called twice)
+        monitorAbort?.abort();
         monitorAbort = new AbortController();
         monitorSabha({
           baseUrl: wsAccount.baseUrl,

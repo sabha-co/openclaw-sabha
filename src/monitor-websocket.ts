@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import type { SabhaWebhookPayload } from "./types.js";
 import type { ConnectionStatus } from "./types.js";
 
 // -- ActionCable protocol types --
@@ -18,7 +17,7 @@ const BOT_EVENTS_IDENTIFIER = JSON.stringify({ channel: "BotEventsChannel" });
 
 export type WebSocketLike = {
   on(event: "open", listener: () => void): void;
-  on(event: "message", listener: (data: WebSocket.RawData) => void | Promise<void>): void;
+  on(event: "message", listener: (data: WebSocket.RawData) => void): void;
   on(event: "close", listener: (code: number, reason: Buffer) => void): void;
   on(event: "error", listener: (err: unknown) => void): void;
   send(data: string): void;
@@ -36,7 +35,7 @@ export const defaultWebSocketFactory: SabhaWebSocketFactory = (url) =>
 export type ConnectOnceOpts = {
   wsUrl: string;
   abortSignal?: AbortSignal;
-  onMessage: (payload: SabhaWebhookPayload) => Promise<void>;
+  onMessage: (payload: unknown) => Promise<void>;
   statusSink?: (patch: Partial<ConnectionStatus>) => void;
   logger?: { info?: (msg: string) => void; error?: (msg: string) => void };
   webSocketFactory?: SabhaWebSocketFactory;
@@ -142,7 +141,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
           // Data message — ActionCable wraps the payload in { identifier, message }
           if ("identifier" in frame && "message" in frame && frame.message) {
             try {
-              await opts.onMessage(frame.message as SabhaWebhookPayload);
+              await opts.onMessage(frame.message);
             } catch (err) {
               opts.logger?.error?.(`[sabha] Message handler error: ${String(err)}`);
             }

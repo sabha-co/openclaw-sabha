@@ -1,5 +1,5 @@
 import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { SabhaAccount, SabhaWebhookPayload, DeliveryPayload } from "./types.js";
+import type { SabhaWebhookPayload, DeliveryPayload } from "./types.js";
 import { resolveAccount } from "./channel.js";
 import { SabhaClient } from "./client.js";
 import { processInboundMessage } from "./inbound.js";
@@ -53,14 +53,13 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   const wsUrl = buildWebSocketUrl(baseUrl, botKey, account.websocketUrl);
   logger?.info?.(`[sabha] Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`);
 
-  const deliver = buildDeliver(client, account);
+  const deliver = buildDeliver(client);
 
   const connectOnce = createSabhaConnectOnce({
     wsUrl,
     abortSignal,
     logger,
     onMessage: async (raw) => {
-      // Validate the payload structure
       let payload: SabhaWebhookPayload;
       try {
         payload = parseWebhookPayload(raw);
@@ -70,13 +69,10 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       }
 
       if (payload.event === "message_created") {
-        const cfg = opts.config;
-        const currentAccount = resolveAccount(cfg);
-
         await processInboundMessage(payload, {
           runtime,
-          cfg,
-          account: currentAccount,
+          cfg: config,
+          account,
           deliver,
           logger,
         });
@@ -103,10 +99,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   });
 }
 
-function buildDeliver(
-  client: SabhaClient,
-  _account: SabhaAccount,
-): (payload: DeliveryPayload) => Promise<void> {
+function buildDeliver(client: SabhaClient): (payload: DeliveryPayload) => Promise<void> {
   return async (replyPayload) => {
     const roomId = Number(replyPayload.to);
     const text = replyPayload.text ?? replyPayload.body ?? "";

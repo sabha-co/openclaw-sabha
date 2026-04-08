@@ -43,6 +43,7 @@ export async function runWithReconnect(
     try {
       await connectFn();
       retryDelay = initialDelayMs;
+      attempt = 0;
     } catch (err) {
       if (opts.abortSignal?.aborted) return;
       outcome = "rejected";

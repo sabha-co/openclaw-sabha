@@ -96,14 +96,19 @@ describe("runWithReconnect", () => {
     let calls = 0;
 
     await runWithReconnect(
-      async () => { calls++; },
+      async () => {
+        calls++;
+        throw new Error("fail");
+      },
       {
         initialDelayMs: 1,
+        onError: () => {},
         shouldReconnect: ({ attempt }) => attempt < 2,
       },
     );
 
-    expect(calls).toBe(3); // 0, 1, 2 — stops when attempt=2 returns false
+    // Errors increment attempt: 0, 1, 2 — stops when attempt=2 returns false
+    expect(calls).toBe(3);
   });
 
   it("stops immediately on abort", async () => {

@@ -3,6 +3,8 @@ import {
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
 import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
+import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
+import { z } from "openclaw/plugin-sdk/zod";
 
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
@@ -10,6 +12,54 @@ import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
+
+const SabhaConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  baseUrl: z.string().optional(),
+  botKey: z.string().optional(),
+  connectionMode: z.enum(["websocket", "webhook"]).optional(),
+  websocketUrl: z.string().optional(),
+  webhookPort: z.number().optional(),
+  dmPolicy: z.enum(["open", "allowlist"]).optional(),
+  allowFrom: z.array(z.string()).optional(),
+});
+
+const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
+  uiHints: {
+    enabled: { label: "Enabled" },
+    baseUrl: {
+      label: "Server URL",
+      placeholder: "https://sabha.co/1000006",
+      help: "Sabha server URL (include workspace ID for multi-tenant)",
+    },
+    botKey: {
+      label: "Bot key",
+      placeholder: "42-AbCdEfGhIjKl",
+      sensitive: true,
+      help: "Bot key from registration via join code",
+    },
+    connectionMode: {
+      label: "Connection mode",
+      help: "WebSocket (recommended) or webhook",
+    },
+    websocketUrl: {
+      label: "WebSocket URL",
+      advanced: true,
+      help: "Auto-detected from registration",
+    },
+    webhookPort: {
+      label: "Webhook port",
+      advanced: true,
+      help: "Webhook mode only",
+    },
+    dmPolicy: { label: "DM policy" },
+    allowFrom: {
+      label: "Allow list",
+      advanced: true,
+      help: "User IDs for allowlist mode",
+    },
+  },
+});
 
 export function resolveAccount(
   cfg: OpenClawConfig,
@@ -47,6 +97,7 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
       docsPath: "/plugins/sabha",
       blurb: "Connect OpenClaw to a Sabha chat server.",
     },
+    configSchema: sabhaConfigSchema,
     capabilities: {
       chatTypes: ["direct", "group", "channel", "thread"],
       reactions: true,

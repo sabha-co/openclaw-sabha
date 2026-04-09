@@ -191,6 +191,9 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
             runtime: ctx.channelRuntime!,
             abortSignal: ctx.abortSignal,
             logger: ctx.log,
+            statusSink: (patch) => {
+              ctx.setStatus({ ...ctx.getStatus(), ...patch });
+            },
           });
         } else {
           ctx.log?.info?.(

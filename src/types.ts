@@ -139,8 +139,9 @@ export type DeliveryPayload = {
 // --- WebSocket connection status ---
 
 export type ConnectionStatus = {
-  connected: boolean;
+  connected?: boolean;
   lastConnectedAt?: number;
   lastError?: string | null;
+  lastInboundAt?: number;
   lastDisconnect?: { at: number; status?: number; error?: string };
 };

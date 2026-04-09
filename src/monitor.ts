@@ -1,7 +1,7 @@
 import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 type ChannelRuntime = PluginRuntime["channel"];
-import type { SabhaWebhookPayload } from "./types.js";
+import type { SabhaWebhookPayload, ConnectionStatus } from "./types.js";
 import { resolveAccount } from "./channel.js";
 import { SabhaClient } from "./client.js";
 import { processInboundMessage } from "./inbound.js";
@@ -12,6 +12,10 @@ import {
   SubscriptionRejectedError,
 } from "./monitor-websocket.js";
 import { runWithReconnect } from "./reconnect.js";
+import { createDedupCache } from "./dedup.js";
+
+const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
+const DEDUP_MAX_SIZE = 2000;
 
 export type MonitorSabhaOpts = {
   baseUrl: string;
@@ -20,6 +24,7 @@ export type MonitorSabhaOpts = {
   runtime: PluginRuntime | ChannelRuntime;
   abortSignal?: AbortSignal;
   logger?: { info?: (msg: string) => void; error?: (msg: string) => void };
+  statusSink?: (patch: Partial<ConnectionStatus>) => void;
 };
 
 /**
@@ -55,17 +60,20 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
  * Reconnects automatically with exponential backoff.
  */
 export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
-  const { baseUrl, botKey, config, runtime, abortSignal, logger } = opts;
+  const { baseUrl, botKey, config, runtime, abortSignal, logger, statusSink } = opts;
   const account = resolveAccount(config);
   const client = new SabhaClient(baseUrl, botKey);
 
   const wsUrl = buildWebSocketUrl(baseUrl, botKey, account.websocketUrl);
   logger?.info?.(`[sabha] Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`);
 
+  const dedup = createDedupCache({ ttlMs: DEDUP_TTL_MS, maxSize: DEDUP_MAX_SIZE });
+
   const connectOnce = createSabhaConnectOnce({
     wsUrl,
     abortSignal,
     logger,
+    statusSink,
     onMessage: async (raw) => {
       let payload: SabhaWebhookPayload;
       try {
@@ -76,22 +84,37 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       }
 
       if (payload.event === "message_created") {
-        await processInboundMessage(payload, {
-          runtime,
-          cfg: config,
-          account,
-          deliver: async (replyPayload) => {
-            const roomId = Number(replyPayload.to ?? payload.room.id);
-            const text = replyPayload.text ?? replyPayload.body ?? "";
+        // Dedup: skip messages already processed (e.g. after reconnect)
+        const dedupKey = `msg:${payload.message.id}`;
+        if (dedup.has(dedupKey)) {
+          logger?.info?.(`[sabha] Skipping duplicate message ${payload.message.id}`);
+          return;
+        }
 
-            if (replyPayload.threadId && replyPayload.replyToId) {
-              await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
-            } else {
-              await client.sendMessage(roomId, text);
-            }
-          },
-          logger,
-        });
+        statusSink?.({ lastInboundAt: Date.now() });
+        try {
+          await processInboundMessage(payload, {
+            runtime,
+            cfg: config,
+            account,
+            deliver: async (replyPayload) => {
+              const roomId = Number(replyPayload.to ?? payload.room.id);
+              const text = replyPayload.text ?? replyPayload.body ?? "";
+
+              if (replyPayload.threadId && replyPayload.replyToId) {
+                await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
+              } else {
+                await client.sendMessage(roomId, text);
+              }
+            },
+            logger,
+          });
+          // Mark as seen only after successful processing
+          dedup.mark(dedupKey);
+        } catch (err) {
+          // Don't mark as seen — allow retry on next delivery
+          logger?.error?.(`[sabha] Failed to process message ${payload.message.id}: ${err}`);
+        }
       }
     },
   });

@@ -30,11 +30,18 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
   if (websocketUrl) return websocketUrl;
 
   // baseUrl may include a workspace prefix, e.g. http://localhost:3000/1000006
-  // We need to strip the path, convert scheme, and append /cable
+  // Extract workspace ID from path for multi-tenant SaaS mode
   const url = new URL(baseUrl);
   const wsScheme = url.protocol === "https:" ? "wss:" : "ws:";
   const wsBase = `${wsScheme}//${url.host}/cable`;
   const params = new URLSearchParams({ bot_key: botKey });
+
+  // Multi-tenant: workspace ID is a 7+ digit path prefix (e.g. /1000006)
+  const widMatch = url.pathname.match(/^\/(\d{7,})/);
+  if (widMatch) {
+    params.set("wid", widMatch[1]);
+  }
+
   return `${wsBase}?${params.toString()}`;
 }
 

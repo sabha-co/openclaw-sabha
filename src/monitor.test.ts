@@ -12,9 +12,14 @@ describe("buildWebSocketUrl", () => {
     expect(url).toBe("wss://chat.example.com/cable?bot_key=42-abc");
   });
 
-  it("strips workspace path prefix", () => {
+  it("includes workspace ID as wid for multi-tenant URLs", () => {
     const url = buildWebSocketUrl("http://localhost:3000/1000006", "42-abc");
-    expect(url).toBe("ws://localhost:3000/cable?bot_key=42-abc");
+    expect(url).toBe("ws://localhost:3000/cable?bot_key=42-abc&wid=1000006");
+  });
+
+  it("includes wid for production multi-tenant URLs", () => {
+    const url = buildWebSocketUrl("https://sabha.co/1000006", "42-abc");
+    expect(url).toBe("wss://sabha.co/cable?bot_key=42-abc&wid=1000006");
   });
 
   it("uses websocketUrl when provided", () => {

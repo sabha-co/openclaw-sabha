@@ -8,8 +8,6 @@ import { processInboundMessage } from "./src/inbound.js";
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
 import { fetchSkillPrompt } from "./src/skill-prompt.js";
-import { monitorSabha } from "./src/monitor.js";
-
 let pluginRuntime: PluginRuntime | undefined;
 
 const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEntry({
@@ -40,50 +38,6 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
         }
       });
     }
-
-    // WebSocket monitor service (default mode)
-    let monitorAbort: AbortController | undefined;
-    api.registerService({
-      id: "sabha-ws",
-      start: async () => {
-        const cfg = getConfig();
-        const wsAccount = resolveAccount(cfg);
-
-        if (wsAccount.connectionMode !== "websocket") {
-          api.logger.info?.("[sabha] WebSocket disabled, using webhook mode");
-          return;
-        }
-
-        if (!wsAccount.baseUrl || !wsAccount.botKey) {
-          api.logger.info?.("[sabha] Not configured, skipping WebSocket monitor");
-          return;
-        }
-
-        if (!pluginRuntime) {
-          api.logger.error?.("[sabha] Plugin runtime not available");
-          return;
-        }
-
-        // Clean up any previous instance (e.g., if start() is called twice)
-        monitorAbort?.abort();
-        monitorAbort = new AbortController();
-
-        // Await the monitor — it stays alive as a reconnect loop.
-        // OpenClaw considers the service "running" while start() is pending.
-        await monitorSabha({
-          baseUrl: wsAccount.baseUrl,
-          botKey: wsAccount.botKey,
-          config: cfg,
-          runtime: pluginRuntime,
-          logger: api.logger,
-          abortSignal: monitorAbort.signal,
-        });
-      },
-      stop: async () => {
-        monitorAbort?.abort();
-        monitorAbort = undefined;
-      },
-    });
 
     // Inbound webhook handler (fallback for connectionMode: "webhook")
     api.registerHttpRoute({

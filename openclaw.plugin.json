@@ -6,6 +6,87 @@
   "description": "Connect OpenClaw to a Sabha chat server",
   "configSchema": {
     "type": "object",
+    "additionalProperties": true,
     "properties": {}
+  },
+  "channelConfigs": {
+    "sabha": {
+      "label": "Sabha",
+      "description": "Connect to a Sabha chat server via WebSocket or webhook.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable or disable the Sabha channel."
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "Sabha server URL including workspace ID for multi-tenant (e.g. https://sabha.co/1000006)."
+          },
+          "botKey": {
+            "type": "string",
+            "description": "Bot key from registration via join code (e.g. 42-AbCdEfGhIjKl)."
+          },
+          "connectionMode": {
+            "type": "string",
+            "enum": ["websocket", "webhook"],
+            "default": "websocket",
+            "description": "How to receive events. WebSocket (recommended) connects outbound; webhook requires inbound reachability."
+          },
+          "websocketUrl": {
+            "type": "string",
+            "description": "WebSocket URL (auto-detected from registration). Override only if needed."
+          },
+          "webhookPort": {
+            "type": "number",
+            "default": 8787,
+            "description": "Webhook listener port (webhook mode only)."
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "allowlist"],
+            "default": "open",
+            "description": "Who can send direct messages to the bot."
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "User IDs allowed to DM (allowlist mode only)."
+          }
+        }
+      },
+      "uiHints": {
+        "baseUrl": {
+          "label": "Server URL",
+          "placeholder": "https://sabha.co/1000006"
+        },
+        "botKey": {
+          "label": "Bot key",
+          "placeholder": "42-AbCdEfGhIjKl",
+          "sensitive": true
+        },
+        "connectionMode": {
+          "label": "Connection mode"
+        },
+        "websocketUrl": {
+          "label": "WebSocket URL",
+          "advanced": true
+        },
+        "webhookPort": {
+          "label": "Webhook port",
+          "advanced": true
+        },
+        "dmPolicy": {
+          "label": "DM policy"
+        },
+        "allowFrom": {
+          "label": "Allow list",
+          "advanced": true
+        }
+      }
+    }
   }
 }

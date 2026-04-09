@@ -4,12 +4,17 @@ import {
 } from "openclaw/plugin-sdk/channel-core";
 import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
+import {
+  createDefaultChannelRuntimeState,
+  buildBaseChannelStatusSummary,
+} from "openclaw/plugin-sdk/channel-status";
 import { z } from "openclaw/plugin-sdk/zod";
 
 import type { SabhaAccount, SabhaConfig } from "./types.js";
 import { SabhaClient, extractBotId } from "./client.js";
 import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
+import { monitorSabha } from "./monitor.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
 
@@ -149,6 +154,53 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
           );
         }
         return hints;
+      },
+    },
+    status: {
+      defaultRuntime: createDefaultChannelRuntimeState("default"),
+      buildChannelSummary: ({ snapshot }) =>
+        buildBaseChannelStatusSummary(snapshot),
+      buildAccountSnapshot: ({ account, runtime }) => ({
+        accountId: account.accountId ?? "default",
+        enabled: Boolean(account.baseUrl && account.botKey),
+        configured: Boolean(account.baseUrl && account.botKey),
+        running: runtime?.running ?? false,
+        connected: runtime?.connected,
+        lastStartAt: runtime?.lastStartAt ?? null,
+        lastStopAt: runtime?.lastStopAt ?? null,
+        lastError: runtime?.lastError ?? null,
+        lastInboundAt: runtime?.lastInboundAt ?? null,
+      }),
+    },
+    gateway: {
+      startAccount: async (ctx) => {
+        const account = ctx.account;
+
+        const shouldMonitor =
+          account.connectionMode === "websocket" &&
+          account.baseUrl &&
+          account.botKey &&
+          ctx.channelRuntime;
+
+        if (shouldMonitor) {
+          ctx.log?.info?.("[sabha] Starting WebSocket monitor");
+          await monitorSabha({
+            baseUrl: account.baseUrl,
+            botKey: account.botKey,
+            config: ctx.cfg,
+            runtime: ctx.channelRuntime!,
+            abortSignal: ctx.abortSignal,
+            logger: ctx.log,
+          });
+        } else {
+          ctx.log?.info?.(
+            `[sabha] ${account.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
+          );
+          // Stay alive until gateway aborts so the account isn't restarted
+          await new Promise<void>((resolve) => {
+            ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
       },
     },
   },

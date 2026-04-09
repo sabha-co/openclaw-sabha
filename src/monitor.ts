@@ -1,4 +1,6 @@
 import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+
+type ChannelRuntime = PluginRuntime["channel"];
 import type { SabhaWebhookPayload } from "./types.js";
 import { resolveAccount } from "./channel.js";
 import { SabhaClient } from "./client.js";
@@ -15,7 +17,7 @@ export type MonitorSabhaOpts = {
   baseUrl: string;
   botKey: string;
   config: OpenClawConfig;
-  runtime: PluginRuntime;
+  runtime: PluginRuntime | ChannelRuntime;
   abortSignal?: AbortSignal;
   logger?: { info?: (msg: string) => void; error?: (msg: string) => void };
 };

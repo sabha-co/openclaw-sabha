@@ -6,10 +6,12 @@ import { resolveSessionFromPayload } from "./session.js";
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
 
+type ChannelRuntime = PluginRuntime["channel"];
+
 const CHANNEL_ID = "sabha";
 
 type InboundDeps = {
-  runtime: PluginRuntime;
+  runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;
   account: SabhaAccount;
   deliver: (payload: DeliveryPayload) => Promise<void>;
@@ -23,7 +25,12 @@ export async function processInboundMessage(
   payload: SabhaWebhookPayload,
   deps: InboundDeps,
 ): Promise<void> {
-  const { runtime, cfg, account, deliver, logger } = deps;
+  const { runtime: runtimeOrChannel, cfg, account, deliver, logger } = deps;
+
+  // Normalize: accept either PluginRuntime or ChannelRuntime directly
+  const channel: ChannelRuntime = "channel" in runtimeOrChannel
+    ? (runtimeOrChannel as PluginRuntime).channel
+    : runtimeOrChannel as ChannelRuntime;
 
   // Skip messages from the bot itself
   if (payload.user.id === account.botId) return;
@@ -39,7 +46,7 @@ export async function processInboundMessage(
   const accountId = account.accountId ?? "";
 
   // Resolve agent route
-  const route = runtime.channel.routing.resolveAgentRoute({
+  const route = channel.routing.resolveAgentRoute({
     cfg,
     channel: CHANNEL_ID,
     accountId,
@@ -50,7 +57,7 @@ export async function processInboundMessage(
   });
 
   // Resolve store path
-  const storePath = runtime.channel.session.resolveStorePath(undefined, {
+  const storePath = channel.session.resolveStorePath(undefined, {
     agentId: route.agentId,
   });
 
@@ -59,8 +66,8 @@ export async function processInboundMessage(
   if (payload.message.has_attachment && payload.message.attachment) {
     try {
       const { url, filename, content_type } = payload.message.attachment;
-      const fetched = await runtime.channel.media.fetchRemoteMedia({ url });
-      const saved = await runtime.channel.media.saveMediaBuffer(
+      const fetched = await channel.media.fetchRemoteMedia({ url });
+      const saved = await channel.media.saveMediaBuffer(
         fetched.buffer,
         content_type,
         "inbound",
@@ -82,8 +89,8 @@ export async function processInboundMessage(
     : rawBody;
 
   // Build the formatted envelope (with sender/timestamp context)
-  const envelopeOpts = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
-  const envelope = runtime.channel.reply.formatAgentEnvelope({
+  const envelopeOpts = channel.reply.resolveEnvelopeFormatOptions(cfg);
+  const envelope = channel.reply.formatAgentEnvelope({
     channel: CHANNEL_ID,
     from: payload.user.name,
     timestamp: new Date(payload.message.created_at).getTime(),
@@ -92,7 +99,7 @@ export async function processInboundMessage(
   });
 
   // Build the inbound context with PascalCase field names (MsgContext)
-  const ctxPayload = runtime.channel.reply.finalizeInboundContext({
+  const ctxPayload = channel.reply.finalizeInboundContext({
     Body: envelope,
     BodyForAgent: envelope,
     RawBody: rawBody,
@@ -131,7 +138,7 @@ export async function processInboundMessage(
     route,
     storePath,
     ctxPayload,
-    core: { channel: runtime.channel },
+    core: { channel },
     deliver,
     onRecordError: (err) => {
       logger?.error?.(`[sabha] Session record error: ${err}`);

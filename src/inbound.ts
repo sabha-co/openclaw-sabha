@@ -5,7 +5,6 @@ import { resolveSessionFromPayload } from "./session.js";
 
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
-// Mention decision is handled inline — Sabha payloads include mentionees array
 
 const CHANNEL_ID = "sabha";
 
@@ -74,11 +73,15 @@ export async function processInboundMessage(
     }
   }
 
-  // Build the inbound context
-  const bodyWithAttachment = attachmentPath
-    ? `${payload.message.body.plain}\n\n[Attachment: ${payload.message.attachment!.filename} — saved to ${attachmentPath}]`
-    : payload.message.body.plain;
+  // Build raw message body (clean text for the LLM)
+  const rawBody = payload.message.body.plain;
 
+  // Build body with attachment context if present
+  const bodyWithAttachment = attachmentPath
+    ? `${rawBody}\n\n[Attachment: ${payload.message.attachment!.filename} — saved to ${attachmentPath}]`
+    : rawBody;
+
+  // Build the formatted envelope (with sender/timestamp context)
   const envelopeOpts = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const envelope = runtime.channel.reply.formatAgentEnvelope({
     channel: CHANNEL_ID,
@@ -88,12 +91,32 @@ export async function processInboundMessage(
     body: bodyWithAttachment,
   });
 
+  // Build the inbound context with PascalCase field names (MsgContext)
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-    body: envelope,
-    channel: CHANNEL_ID,
-    chatType,
-    from: payload.user.name,
-    accountId,
+    Body: envelope,
+    BodyForAgent: envelope,
+    RawBody: rawBody,
+    BodyForCommands: rawBody,
+    CommandBody: rawBody,
+    From: payload.user.name,
+    SenderId: String(payload.user.id),
+    SenderName: payload.user.name,
+    To: String(payload.room.id),
+    SessionKey: route.sessionKey,
+    AccountId: accountId,
+    ChatType: chatType,
+    ConversationLabel: payload.room.name,
+    Timestamp: new Date(payload.message.created_at).getTime(),
+    MessageSid: String(payload.message.id),
+    ...(session.threadId ? {
+      ReplyToId: session.threadId,
+      ParentSessionKey: session.baseConversationId
+        ? route.sessionKey
+        : undefined,
+    } : {}),
+    ...(attachmentPath ? {
+      MediaPath: attachmentPath,
+    } : {}),
   });
 
   logger?.info?.(

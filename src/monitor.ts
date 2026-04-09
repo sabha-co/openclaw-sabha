@@ -1,5 +1,5 @@
 import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { SabhaWebhookPayload, DeliveryPayload } from "./types.js";
+import type { SabhaWebhookPayload } from "./types.js";
 import { resolveAccount } from "./channel.js";
 import { SabhaClient } from "./client.js";
 import { processInboundMessage } from "./inbound.js";
@@ -60,8 +60,6 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   const wsUrl = buildWebSocketUrl(baseUrl, botKey, account.websocketUrl);
   logger?.info?.(`[sabha] Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`);
 
-  const deliver = buildDeliver(client);
-
   const connectOnce = createSabhaConnectOnce({
     wsUrl,
     abortSignal,
@@ -80,7 +78,16 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
           runtime,
           cfg: config,
           account,
-          deliver,
+          deliver: async (replyPayload) => {
+            const roomId = Number(replyPayload.to ?? payload.room.id);
+            const text = replyPayload.text ?? replyPayload.body ?? "";
+
+            if (replyPayload.threadId && replyPayload.replyToId) {
+              await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
+            } else {
+              await client.sendMessage(roomId, text);
+            }
+          },
           logger,
         });
       }
@@ -106,15 +113,3 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   });
 }
 
-function buildDeliver(client: SabhaClient): (payload: DeliveryPayload) => Promise<void> {
-  return async (replyPayload) => {
-    const roomId = Number(replyPayload.to);
-    const text = replyPayload.text ?? replyPayload.body ?? "";
-
-    if (replyPayload.threadId && replyPayload.replyToId) {
-      await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
-    } else {
-      await client.sendMessage(roomId, text);
-    }
-  };
-}

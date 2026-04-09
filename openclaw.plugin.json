@@ -6,67 +6,6 @@
   "description": "Connect OpenClaw to a Sabha chat server",
   "configSchema": {
     "type": "object",
-    "properties": {
-      "enabled": { "type": "boolean" },
-      "baseUrl": { "type": "string" },
-      "botKey": { "type": "string" },
-      "connectionMode": {
-        "type": "string",
-        "enum": ["websocket", "webhook"],
-        "default": "websocket"
-      },
-      "websocketUrl": { "type": "string" },
-      "webhookPort": { "type": "number", "default": 8787 },
-      "dmPolicy": {
-        "type": "string",
-        "enum": ["open", "allowlist"],
-        "default": "open"
-      },
-      "allowFrom": {
-        "type": "array",
-        "items": { "type": "string" }
-      }
-    },
-  },
-  "uiHints": {
-    "enabled": {
-      "label": "Enabled",
-      "help": "Enable or disable the Sabha channel"
-    },
-    "baseUrl": {
-      "label": "Server URL",
-      "placeholder": "https://sabha.co/1000006",
-      "help": "Your Sabha server URL (include workspace ID for multi-tenant)"
-    },
-    "botKey": {
-      "label": "Bot key",
-      "placeholder": "42-AbCdEfGhIjKl",
-      "sensitive": true,
-      "help": "Bot key from registration via join code"
-    },
-    "connectionMode": {
-      "label": "Connection mode",
-      "help": "WebSocket (recommended) or webhook for receiving events"
-    },
-    "websocketUrl": {
-      "label": "WebSocket URL",
-      "placeholder": "wss://sabha.co/cable?bot_key=...",
-      "help": "Auto-detected from registration. Override only if needed.",
-      "advanced": true
-    },
-    "webhookPort": {
-      "label": "Webhook port",
-      "help": "Port for webhook listener (webhook mode only)",
-      "advanced": true
-    },
-    "dmPolicy": {
-      "label": "DM policy",
-      "help": "Who can send direct messages to the bot"
-    },
-    "allowFrom": {
-      "label": "Allow list",
-      "help": "User IDs allowed to DM (allowlist mode only)",
-      "advanced": true
-    }
+    "properties": {}
   }
 }

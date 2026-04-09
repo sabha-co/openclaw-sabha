@@ -67,15 +67,16 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
         // Clean up any previous instance (e.g., if start() is called twice)
         monitorAbort?.abort();
         monitorAbort = new AbortController();
-        monitorSabha({
+
+        // Await the monitor — it stays alive as a reconnect loop.
+        // OpenClaw considers the service "running" while start() is pending.
+        await monitorSabha({
           baseUrl: wsAccount.baseUrl,
           botKey: wsAccount.botKey,
           config: cfg,
           runtime: pluginRuntime,
           logger: api.logger,
           abortSignal: monitorAbort.signal,
-        }).catch((err) => {
-          api.logger.error?.(`[sabha] WebSocket monitor exited: ${err}`);
         });
       },
       stop: async () => {

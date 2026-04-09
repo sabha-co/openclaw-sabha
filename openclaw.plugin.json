@@ -6,7 +6,6 @@
   "description": "Connect OpenClaw to a Sabha chat server",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
       "enabled": { "type": "boolean" },
       "baseUrl": { "type": "string" },
@@ -28,7 +27,6 @@
         "items": { "type": "string" }
       }
     },
-    "required": ["baseUrl", "botKey"]
   },
   "uiHints": {
     "enabled": {

@@ -17,19 +17,8 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 
 ## Install
 
-### Option A: via ClawHub (recommended)
-
 ```bash
 openclaw plugins install @sabha-co/openclaw-sabha
-```
-
-### Option B: from source (for development)
-
-```bash
-git clone https://github.com/sabha-co/openclaw-sabha.git
-cd openclaw-sabha
-npm install
-openclaw plugins install -l .
 ```
 
 ## Post-install: allowlist the plugin
@@ -152,8 +141,18 @@ openclaw gateway restart
 
 ## Development
 
+Install from source for local development or debugging:
+
 ```bash
+git clone https://github.com/sabha-co/openclaw-sabha.git
+cd openclaw-sabha
 npm install
+openclaw plugins install -l .
+```
+
+Run tests:
+
+```bash
 npm test
 ```
 

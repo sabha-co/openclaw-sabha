@@ -10,7 +10,7 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 - WebSocket mode (default) — connects outbound to Sabha, no tunnels needed
 - Webhook mode (fallback) — for deployments that prefer inbound push
 - Supports DMs, group chat, threads, reactions, attachments, search
-- 12 agent tools for room/member management
+- 12 agent tools for room and member management
 - Sabha Self-host support
 - Message dedup across WebSocket reconnects
 - Auto-registration via join URL
@@ -23,13 +23,13 @@ openclaw plugins install @sabha-co/openclaw-sabha
 
 ## Setup
 
-Provide a join URL from your Sabha admin:
+Register a bot from a Sabha join URL:
 
 ```
 openclaw sabha setup https://chat.example.com/1000006/join/mNrP-Nm5q-HCzw
 ```
 
-The plugin self-registers a bot, saves the bot key, and connects via WebSocket.
+The plugin self-registers a bot, saves the bot key to your config, and connects via WebSocket on the next restart.
 
 ### Manual configuration
 
@@ -46,9 +46,9 @@ The plugin self-registers a bot, saves the bot key, and connects via WebSocket.
 
 ## Connection Modes
 
-**WebSocket (default)** — connects outbound to Sabha via ActionCable/AnyCable. No reverse proxy or tunnel needed.
+*WebSocket (default)* — connects outbound to Sabha via ActionCable or AnyCable. No reverse proxy or tunnel needed.
 
-**Webhook (fallback)** — Sabha pushes events to the plugin's HTTP endpoint. Requires OpenClaw to be network-reachable.
+*Webhook (fallback)* — Sabha pushes events to the plugin's HTTP endpoint. Requires OpenClaw to be network-reachable.
 
 ```json5
 {
@@ -63,11 +63,11 @@ The plugin self-registers a bot, saves the bot key, and connects via WebSocket.
 
 ## How it works
 
-1. User @mentions the bot in Sabha (or DMs it)
+1. A user @mentions the bot in Sabha (or DMs it)
 2. Sabha delivers the event via WebSocket (or webhook)
-3. Plugin dispatches to OpenClaw's agent
-4. Agent processes with an LLM
-5. Plugin replies via Sabha's REST API
+3. The plugin dispatches to OpenClaw's agent
+4. The agent processes the message with an LLM
+5. The plugin replies via Sabha's REST API
 
 In DMs, the bot responds to every message. In rooms, only when @mentioned.
 

@@ -29,6 +29,27 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
       api.registerTool(tool);
     }
 
+    // CLI: `openclaw sabha setup <joinUrl>` — self-register via join URL
+    api.registerCli(
+      async ({ program }) => {
+        const { registerSabhaCli } = await import("./src/cli.js");
+        registerSabhaCli({
+          program,
+          getConfig,
+          writeConfigFile: (cfg) => api.runtime.config.writeConfigFile(cfg),
+        });
+      },
+      {
+        descriptors: [
+          {
+            name: "sabha",
+            description: "Sabha channel commands",
+            hasSubcommands: true,
+          },
+        ],
+      },
+    );
+
     // Fetch /skill on startup and cache for agent prompt hints
     const account = resolveAccount(getConfig());
     if (account.baseUrl) {

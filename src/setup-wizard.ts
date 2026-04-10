@@ -32,26 +32,53 @@ export function parseJoinUrl(raw: string): {
  * Self-register a bot via Sabha's join code endpoint.
  * POST /join/{code} with JSON body → { bot_key, name, ... }
  */
+const REGISTRATION_TIMEOUT_MS = 15_000;
+
 export async function selfRegisterBot(
   baseUrl: string,
   joinCode: string,
   params: { name: string; webhook_url?: string },
 ): Promise<{ bot_key: string; name: string; websocket_url?: string }> {
-  const res = await globalThis.fetch(`${baseUrl}/join/${joinCode}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(params),
-  });
+  const url = `${baseUrl}/join/${joinCode}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REGISTRATION_TIMEOUT_MS);
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(body.error ?? `Registration failed: ${res.status}`);
+  let res: Response;
+  try {
+    res = await globalThis.fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err : new Error(String(err));
+    if (cause.name === "AbortError") {
+      throw new Error(`Sabha registration timed out after ${REGISTRATION_TIMEOUT_MS / 1000}s (${url})`);
+    }
+    throw new Error(`Could not reach Sabha at ${url}: ${cause.message}`);
+  } finally {
+    clearTimeout(timer);
   }
 
-  return (await res.json()) as { bot_key: string; name: string; websocket_url?: string };
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string };
+    if (res.status === 404) {
+      throw new Error(
+        `Sabha join URL not found (404). Check the join code or verify the server URL: ${url}`,
+      );
+    }
+    throw new Error(body.error ?? `Registration failed: ${res.status} ${res.statusText}`);
+  }
+
+  try {
+    return (await res.json()) as { bot_key: string; name: string; websocket_url?: string };
+  } catch (err) {
+    throw new Error(`Sabha returned an invalid response body: ${err}`);
+  }
 }
 
 function getSabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {

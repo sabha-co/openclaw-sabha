@@ -150,6 +150,22 @@ describe("parseJoinUrl", () => {
     });
   });
 
+  it("parses sabha.co SaaS URL with workspace ID", () => {
+    const result = parseJoinUrl("https://sabha.co/1000101/join/Ccnp-m7vD-L3aj");
+    expect(result).toEqual({
+      baseUrl: "https://sabha.co/1000101",
+      joinCode: "Ccnp-m7vD-L3aj",
+    });
+  });
+
+  it("parses demo.sabha.co single-tenant URL", () => {
+    const result = parseJoinUrl("https://demo.sabha.co/join/K5QP-Ytaa-X5xW");
+    expect(result).toEqual({
+      baseUrl: "https://demo.sabha.co",
+      joinCode: "K5QP-Ytaa-X5xW",
+    });
+  });
+
   it("parses localhost URL", () => {
     const result = parseJoinUrl("http://localhost:3000/1000006/join/mNrP-Nm5q-HCzw");
     expect(result).toEqual({

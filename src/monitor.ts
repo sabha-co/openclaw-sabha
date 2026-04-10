@@ -2,7 +2,7 @@ import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-
 
 type ChannelRuntime = PluginRuntime["channel"];
 import type { SabhaWebhookPayload, ConnectionStatus } from "./types.js";
-import { resolveAccount } from "./channel.js";
+import type { ResolvedBotAccount } from "./bot-accounts.js";
 import { SabhaClient } from "./client.js";
 import { processInboundMessage, shouldHandleInbound } from "./inbound.js";
 import { parseWebhookPayload } from "./webhook.js";
@@ -20,8 +20,12 @@ const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
 
 export type MonitorSabhaOpts = {
-  baseUrl: string;
-  botKey: string;
+  /**
+   * The bot account this monitor runs as. Provides baseUrl, botKey,
+   * botId, typingEnabled, and the resolved account id used in log
+   * prefixes and session routing.
+   */
+  botAccount: ResolvedBotAccount;
   config: OpenClawConfig;
   runtime: PluginRuntime | ChannelRuntime;
   abortSignal?: AbortSignal;
@@ -62,12 +66,18 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
  * Reconnects automatically with exponential backoff.
  */
 export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
-  const { baseUrl, botKey, config, runtime, abortSignal, logger, statusSink } = opts;
-  const account = resolveAccount(config);
-  const client = new SabhaClient(baseUrl, botKey, { abortSignal });
+  const { botAccount: account, config, runtime, abortSignal, logger, statusSink } = opts;
+  const logPrefix = `[sabha:${account.accountId}]`;
+  const client = new SabhaClient(account.baseUrl, account.botKey, { abortSignal });
 
-  const wsUrl = buildWebSocketUrl(baseUrl, botKey, account.websocketUrl);
-  logger?.info?.(`[sabha] Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`);
+  const wsUrl = buildWebSocketUrl(
+    account.baseUrl,
+    account.botKey,
+    account.websocketUrl,
+  );
+  logger?.info?.(
+    `${logPrefix} Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`,
+  );
 
   const dedup = createDedupCache({ ttlMs: DEDUP_TTL_MS, maxSize: DEDUP_MAX_SIZE });
 
@@ -117,7 +127,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       try {
         payload = parseWebhookPayload(raw);
       } catch (err) {
-        logger?.error?.(`[sabha] Invalid WebSocket payload: ${err}`);
+        logger?.error?.(`${logPrefix} Invalid WebSocket payload: ${err}`);
         return;
       }
 
@@ -130,7 +140,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
       const dedupKey = `msg:${payload.message.id}`;
       if (dedup.has(dedupKey) || inFlight.has(dedupKey)) {
-        logger?.info?.(`[sabha] Skipping duplicate message ${payload.message.id}`);
+        logger?.info?.(`${logPrefix} Skipping duplicate message ${payload.message.id}`);
         return;
       }
 
@@ -168,7 +178,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
           // of this message_created event gets a fresh attempt instead of
           // being silently dropped as a duplicate.
           dedup.unmark(dedupKey);
-          logger?.error?.(`[sabha] Failed to process message ${payload.message.id}: ${err}`);
+          logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
         } finally {
           typing?.stop(payload.room.id);
           inFlight.delete(dedupKey);
@@ -190,10 +200,10 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         return true;
       },
       onError: (err) => {
-        logger?.error?.(`[sabha] WebSocket connection failed: ${String(err)}`);
+        logger?.error?.(`${logPrefix} WebSocket connection failed: ${String(err)}`);
       },
       onReconnect: (delayMs) => {
-        logger?.info?.(`[sabha] Reconnecting in ${Math.round(delayMs / 1000)}s`);
+        logger?.info?.(`${logPrefix} Reconnecting in ${Math.round(delayMs / 1000)}s`);
       },
     });
   } finally {
@@ -204,7 +214,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
     // the same abortSignal, so an aborted shutdown cancels the pending
     // HTTP calls and each work promise unwinds quickly.
     if (inFlight.size > 0) {
-      logger?.info?.(`[sabha] Draining ${inFlight.size} in-flight message(s)`);
+      logger?.info?.(`${logPrefix} Draining ${inFlight.size} in-flight message(s)`);
       await Promise.allSettled(inFlight.values());
     }
   }

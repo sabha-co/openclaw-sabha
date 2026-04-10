@@ -2,7 +2,6 @@ import {
   createChatChannelPlugin,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
-import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
 import {
   createDefaultChannelRuntimeState,
@@ -10,16 +9,20 @@ import {
 } from "openclaw/plugin-sdk/channel-status";
 import { z } from "openclaw/plugin-sdk/zod";
 
-import type { SabhaAccount, SabhaConfig } from "./types.js";
-import { SabhaClient, extractBotId } from "./client.js";
+import type { ResolvedBotAccount } from "./bot-accounts.js";
+import {
+  listBotAccountIds,
+  resolveBotAccount,
+  resolveBotAccountForSdk,
+  resolveDefaultBotAccountId,
+} from "./bot-accounts.js";
+import { SabhaClient } from "./client.js";
 import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import { monitorSabha } from "./monitor.js";
 import { fetchGuardedAttachment } from "./ssrf-guard.js";
 
-const accountHelpers = createAccountListHelpers("sabha");
-
-const SabhaConfigSchema = z.object({
+const SabhaBotAccountSchema = z.object({
   enabled: z.boolean().optional(),
   baseUrl: z.string().optional(),
   botKey: z.string().optional(),
@@ -31,6 +34,11 @@ const SabhaConfigSchema = z.object({
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
   allowPrivateAttachmentHosts: z.boolean().optional(),
+});
+
+const SabhaConfigSchema = SabhaBotAccountSchema.extend({
+  botAccounts: z.record(z.string(), SabhaBotAccountSchema.partial()).optional(),
+  defaultBotAccount: z.string().optional(),
 });
 
 const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
@@ -86,35 +94,24 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
   },
 });
 
+/**
+ * Back-compat shim: earlier code imported `resolveAccount` from this module.
+ * New code should import `resolveBotAccount` directly from `./bot-accounts.js`
+ * so the "bot account" naming stays consistent with the SDK boundary
+ * translation.
+ */
 export function resolveAccount(
   cfg: OpenClawConfig,
   accountId?: string | null,
-): SabhaAccount {
-  const section = (cfg.channels as Record<string, unknown>)?.sabha as
-    | SabhaConfig
-    | undefined;
-
-  return {
-    accountId: accountId ?? null,
-    baseUrl: section?.baseUrl ?? "",
-    botKey: section?.botKey ?? "",
-    botId: extractBotId(section?.botKey ?? ""),
-    botName: section?.botName?.trim() || "OpenClaw",
-    webhookPort: section?.webhookPort ?? 8787,
-    connectionMode: section?.connectionMode ?? "websocket",
-    websocketUrl: section?.websocketUrl ?? "",
-    typingEnabled: section?.typingEnabled !== false,
-    dmPolicy: section?.dmPolicy ?? "open",
-    allowFrom: section?.allowFrom ?? [],
-    allowPrivateAttachmentHosts: section?.allowPrivateAttachmentHosts === true,
-  };
+): ResolvedBotAccount {
+  return resolveBotAccount({ cfg, botAccountId: accountId });
 }
 
-function getClient(account: SabhaAccount): SabhaClient {
+function getClient(account: ResolvedBotAccount): SabhaClient {
   return new SabhaClient(account.baseUrl, account.botKey);
 }
 
-export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
+export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
   base: {
     id: "sabha",
     setupWizard: sabhaSetupWizard,
@@ -138,14 +135,17 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
       blockStreaming: true,
     },
     config: {
-      resolveAccount,
-      listAccountIds: accountHelpers.listAccountIds,
+      resolveAccount: resolveBotAccountForSdk,
+      listAccountIds: listBotAccountIds,
+      defaultAccountId: resolveDefaultBotAccountId,
       inspectAccount(cfg: OpenClawConfig, accountId?: string | null) {
-        const account = resolveAccount(cfg, accountId);
+        const account = resolveBotAccount({ cfg, botAccountId: accountId });
         return {
           enabled: Boolean(account.baseUrl && account.botKey),
           configured: Boolean(account.baseUrl && account.botKey),
-          tokenStatus: account.botKey ? ("available" as const) : ("missing" as const),
+          tokenStatus: account.botKey
+            ? ("available" as const)
+            : ("missing" as const),
         };
       },
     },
@@ -166,7 +166,7 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
     },
     agentPrompt: {
       messageToolHints: (params: { cfg: OpenClawConfig }) => {
-        const account = resolveAccount(params.cfg);
+        const account = resolveBotAccount({ cfg: params.cfg });
         const hints = [
           `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
         ];
@@ -184,7 +184,7 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
       buildChannelSummary: ({ snapshot }) =>
         buildBaseChannelStatusSummary(snapshot),
       buildAccountSnapshot: ({ account, runtime }) => ({
-        accountId: account.accountId ?? "default",
+        accountId: account.accountId,
         enabled: Boolean(account.baseUrl && account.botKey),
         configured: Boolean(account.baseUrl && account.botKey),
         running: runtime?.running ?? false,
@@ -197,19 +197,19 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
     },
     gateway: {
       startAccount: async (ctx) => {
-        const account = ctx.account;
+        const botAccount = ctx.account;
+        const logPrefix = `[sabha:${botAccount.accountId}]`;
 
         const shouldMonitor =
-          account.connectionMode === "websocket" &&
-          account.baseUrl &&
-          account.botKey &&
+          botAccount.connectionMode === "websocket" &&
+          botAccount.baseUrl &&
+          botAccount.botKey &&
           ctx.channelRuntime;
 
         if (shouldMonitor) {
-          ctx.log?.info?.("[sabha] Starting WebSocket monitor");
+          ctx.log?.info?.(`${logPrefix} Starting WebSocket monitor`);
           await monitorSabha({
-            baseUrl: account.baseUrl,
-            botKey: account.botKey,
+            botAccount,
             config: ctx.cfg,
             runtime: ctx.channelRuntime!,
             abortSignal: ctx.abortSignal,
@@ -220,7 +220,7 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
           });
         } else {
           ctx.log?.info?.(
-            `[sabha] ${account.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
+            `${logPrefix} ${botAccount.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
           );
           // Stay alive until gateway aborts so the account isn't restarted
           await new Promise<void>((resolve) => {
@@ -234,8 +234,8 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
   security: {
     dm: {
       channelKey: "sabha",
-      resolvePolicy: (account: SabhaAccount) => account.dmPolicy,
-      resolveAllowFrom: (account: SabhaAccount) => account.allowFrom,
+      resolvePolicy: (account: ResolvedBotAccount) => account.dmPolicy,
+      resolveAllowFrom: (account: ResolvedBotAccount) => account.allowFrom,
       defaultPolicy: "open",
     },
   },
@@ -248,7 +248,10 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
     attachedResults: {
       channel: "sabha",
       async sendText(ctx) {
-        const account = resolveAccount(ctx.cfg);
+        const account = resolveBotAccount({
+          cfg: ctx.cfg,
+          botAccountId: ctx.accountId,
+        });
         const client = getClient(account);
         const roomId = Number(ctx.to);
 
@@ -265,7 +268,10 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         return { messageId: messageId != null ? String(messageId) : "" };
       },
       async sendMedia(ctx) {
-        const account = resolveAccount(ctx.cfg);
+        const account = resolveBotAccount({
+          cfg: ctx.cfg,
+          botAccountId: ctx.accountId,
+        });
         const client = getClient(account);
         const roomId = Number(ctx.to);
 

@@ -2,7 +2,8 @@ import {
   defineChannelPluginEntry,
   type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
-import { sabhaPlugin, resolveAccount } from "./src/channel.js";
+import { sabhaPlugin } from "./src/channel.js";
+import { resolveBotAccount } from "./src/bot-accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
 import { processInboundMessage } from "./src/inbound.js";
 import { SabhaClient } from "./src/client.js";
@@ -49,14 +50,18 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
   registerFull(api) {
     const getConfig = () => api.runtime.config.loadConfig();
 
-    // Register room/member management agent tools
-    const tools = createSabhaTools(getConfig);
-    for (const tool of tools) {
-      api.registerTool(tool);
+    // Register room/member management agent tools. Each entry is a
+    // factory `(ctx) => tool` so the SDK can inject fresh agent context
+    // (including `ctx.agentAccountId`) per invocation.
+    const toolFactories = createSabhaTools(getConfig);
+    for (const factory of toolFactories) {
+      api.registerTool(factory);
     }
 
-    // Fetch /skill on startup and cache for agent prompt hints
-    const account = resolveAccount(getConfig());
+    // Fetch /skill on startup and cache for agent prompt hints. Uses the
+    // default bot account's baseUrl — multi-bot /skill caches are a v1.1
+    // concern since /skill describes the server, not the bot.
+    const account = resolveBotAccount({ cfg: getConfig() });
     if (account.baseUrl) {
       fetchSkillPrompt(account.baseUrl).then((text) => {
         if (text) {
@@ -90,7 +95,11 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
 
           if (payload.event === "message_created" && pluginRuntime) {
             const cfg = getConfig();
-            const currentAccount = resolveAccount(cfg);
+            // Webhook mode binds to one HTTP route per plugin, so we
+            // route every inbound event through the default bot account.
+            // Multi-bot webhook routing would need a path prefix scheme
+            // (e.g. /sabha/webhook/:botAccountId) — deferred to v1.1.
+            const currentAccount = resolveBotAccount({ cfg });
             const client = new SabhaClient(
               currentAccount.baseUrl,
               currentAccount.botKey,

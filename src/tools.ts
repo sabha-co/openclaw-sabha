@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { SabhaClient } from "./client.js";
-import { resolveAccount } from "./channel.js";
+import { resolveBotAccount } from "./bot-accounts.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -24,65 +24,121 @@ function toolError(err: unknown): ToolResult {
 }
 
 /**
- * Agent tools for Sabha room and member management.
- * Registered via api.registerTool() in registerFull.
+ * Every Sabha agent tool accepts an optional `accountId` override that is
+ * read at execute time but NOT advertised in the tool's JSON schema. The
+ * LLM therefore never sees a bot-account picker; routing flows implicitly
+ * through `ctx.agentAccountId` (supplied by the SDK per invocation) with a
+ * final fallback to `resolveDefaultBotAccountId`. This mirrors the Feishu
+ * plugin's pattern — which was verified as the canonical multi-account
+ * tool registration shape by the v1 scout work.
+ */
+type AccountAwareParams = { accountId?: string };
+
+/**
+ * Resolve the SabhaClient to route a tool invocation through.
+ *
+ * Precedence (high → low):
+ *   1. `params.accountId` — explicit override (hidden from LLM schema but
+ *      readable at execute time). Used by internal routing and tests.
+ *   2. `ctx.agentAccountId` — supplied by the OpenClaw SDK based on the
+ *      agent's current session / routing context.
+ *   3. `resolveDefaultBotAccountId(cfg)` — fallback when neither is set
+ *      (applied inside `resolveBotAccount` when `botAccountId` is nullish).
+ */
+function getClientForTool(
+  cfg: OpenClawConfig,
+  params: AccountAwareParams | undefined,
+  agentAccountId: string | undefined,
+): SabhaClient {
+  const account = resolveBotAccount({
+    cfg,
+    botAccountId: params?.accountId ?? agentAccountId,
+  });
+  return new SabhaClient(account.baseUrl, account.botKey);
+}
+
+type ToolCtx = { agentAccountId?: string };
+
+type ToolExecute<TParams> = (args: {
+  cfg: OpenClawConfig;
+  params: TParams;
+  agentAccountId: string | undefined;
+}) => Promise<unknown>;
+
+type ToolDefinition<TParams extends AccountAwareParams> = {
+  name: string;
+  label: string;
+  description: string;
+  parameters: unknown;
+  execute: ToolExecute<TParams>;
+};
+
+/**
+ * Sabha agent tool factory. Returns per-invocation factories that the
+ * host registers via `api.registerTool((ctx) => ...)`, so each call picks
+ * up a fresh `ctx.agentAccountId` from the SDK.
  */
 export function createSabhaTools(getConfig: () => OpenClawConfig) {
-  function getClient() {
-    const cfg = getConfig();
-    const account = resolveAccount(cfg);
-    return new SabhaClient(account.baseUrl, account.botKey);
-  }
+  const build = <TParams extends AccountAwareParams>(
+    def: ToolDefinition<TParams>,
+  ) => {
+    return (ctx: ToolCtx) => ({
+      name: def.name,
+      label: def.label,
+      description: def.description,
+      parameters: def.parameters,
+      async execute(_id: string, rawParams: unknown): Promise<ToolResult> {
+        try {
+          const cfg = getConfig();
+          const params = (rawParams ?? {}) as TParams;
+          const data = await def.execute({
+            cfg,
+            params,
+            agentAccountId: ctx.agentAccountId,
+          });
+          return toolResult(data);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+  };
 
   return [
-    {
+    build<AccountAwareParams>({
       name: "sabha_list_rooms",
       label: "List Sabha rooms",
       description: "List all rooms the bot is a member of in Sabha",
       parameters: Type.Object({}),
-      async execute(_id: string, _params: Record<string, never>): Promise<ToolResult> {
-        try {
-          const rooms = await getClient().listRooms();
-          return toolResult(rooms);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).listRooms(),
+    }),
+    build<AccountAwareParams>({
       name: "sabha_list_joinable_rooms",
       label: "List joinable Sabha rooms",
       description: "List open rooms the bot can join in Sabha",
       parameters: Type.Object({}),
-      async execute(_id: string, _params: Record<string, never>): Promise<ToolResult> {
-        try {
-          const rooms = await getClient().listJoinableRooms();
-          return toolResult(rooms);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).listJoinableRooms(),
+    }),
+    build<AccountAwareParams & { name: string; type: "open" | "closed" }>({
       name: "sabha_create_room",
       label: "Create Sabha room",
-      description: "Create a new room in Sabha. The bot becomes the creator and can manage the room.",
+      description:
+        "Create a new room in Sabha. The bot becomes the creator and can manage the room.",
       parameters: Type.Object({
         name: Type.String({ description: "Room name" }),
         type: Type.Union([Type.Literal("open"), Type.Literal("closed")], {
           description: "Room type: 'open' (anyone can join) or 'closed' (invite only)",
         }),
       }),
-      async execute(_id: string, params: { name: string; type: "open" | "closed" }): Promise<ToolResult> {
-        try {
-          const room = await getClient().createRoom(params.name, params.type);
-          return toolResult(room);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).createRoom(
+          params.name,
+          params.type,
+        ),
+    }),
+    build<AccountAwareParams & { room_id: number; name: string }>({
       name: "sabha_update_room",
       label: "Update Sabha room",
       description: "Rename a room the bot created in Sabha",
@@ -90,80 +146,65 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
         room_id: Type.Number({ description: "Room ID" }),
         name: Type.String({ description: "New room name" }),
       }),
-      async execute(_id: string, params: { room_id: number; name: string }): Promise<ToolResult> {
-        try {
-          const room = await getClient().updateRoom(params.room_id, params.name);
-          return toolResult(room);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).updateRoom(
+          params.room_id,
+          params.name,
+        ),
+    }),
+    build<AccountAwareParams & { room_id: number }>({
       name: "sabha_archive_room",
       label: "Archive Sabha room",
       description: "Archive (soft-delete) a room the bot created in Sabha",
       parameters: Type.Object({
         room_id: Type.Number({ description: "Room ID to archive" }),
       }),
-      async execute(_id: string, params: { room_id: number }): Promise<ToolResult> {
-        try {
-          await getClient().archiveRoom(params.room_id);
-          return toolResult("Room archived");
-        } catch (err) {
-          return toolError(err);
-        }
+      execute: async ({ cfg, params, agentAccountId }) => {
+        await getClientForTool(cfg, params, agentAccountId).archiveRoom(
+          params.room_id,
+        );
+        return "Room archived";
       },
-    },
-    {
+    }),
+    build<AccountAwareParams & { room_id: number }>({
       name: "sabha_join_room",
       label: "Join Sabha room",
       description: "Join an open room in Sabha",
       parameters: Type.Object({
         room_id: Type.Number({ description: "Room ID to join" }),
       }),
-      async execute(_id: string, params: { room_id: number }): Promise<ToolResult> {
-        try {
-          const room = await getClient().joinRoom(params.room_id);
-          return toolResult(room);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).joinRoom(
+          params.room_id,
+        ),
+    }),
+    build<AccountAwareParams & { room_id: number }>({
       name: "sabha_leave_room",
       label: "Leave Sabha room",
       description: "Leave a room in Sabha",
       parameters: Type.Object({
         room_id: Type.Number({ description: "Room ID to leave" }),
       }),
-      async execute(_id: string, params: { room_id: number }): Promise<ToolResult> {
-        try {
-          await getClient().leaveRoom(params.room_id);
-          return toolResult("Left room");
-        } catch (err) {
-          return toolError(err);
-        }
+      execute: async ({ cfg, params, agentAccountId }) => {
+        await getClientForTool(cfg, params, agentAccountId).leaveRoom(
+          params.room_id,
+        );
+        return "Left room";
       },
-    },
-    {
+    }),
+    build<AccountAwareParams & { room_id: number }>({
       name: "sabha_list_members",
       label: "List Sabha room members",
       description: "List members of a room in Sabha",
       parameters: Type.Object({
         room_id: Type.Number({ description: "Room ID" }),
       }),
-      async execute(_id: string, params: { room_id: number }): Promise<ToolResult> {
-        try {
-          const members = await getClient().listMembers(params.room_id);
-          return toolResult(members);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).listMembers(
+          params.room_id,
+        ),
+    }),
+    build<AccountAwareParams & { room_id: number; user_id: number }>({
       name: "sabha_add_member",
       label: "Add Sabha room member",
       description: "Add a user to a room the bot created in Sabha",
@@ -171,16 +212,13 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
         room_id: Type.Number({ description: "Room ID" }),
         user_id: Type.Number({ description: "User ID to add" }),
       }),
-      async execute(_id: string, params: { room_id: number; user_id: number }): Promise<ToolResult> {
-        try {
-          const member = await getClient().addMember(params.room_id, params.user_id);
-          return toolResult(member);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).addMember(
+          params.room_id,
+          params.user_id,
+        ),
+    }),
+    build<AccountAwareParams & { room_id: number; user_id: number }>({
       name: "sabha_remove_member",
       label: "Remove Sabha room member",
       description: "Remove a user from a room the bot created in Sabha",
@@ -188,46 +226,37 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
         room_id: Type.Number({ description: "Room ID" }),
         user_id: Type.Number({ description: "User ID to remove" }),
       }),
-      async execute(_id: string, params: { room_id: number; user_id: number }): Promise<ToolResult> {
-        try {
-          await getClient().removeMember(params.room_id, params.user_id);
-          return toolResult("Member removed");
-        } catch (err) {
-          return toolError(err);
-        }
+      execute: async ({ cfg, params, agentAccountId }) => {
+        await getClientForTool(cfg, params, agentAccountId).removeMember(
+          params.room_id,
+          params.user_id,
+        );
+        return "Member removed";
       },
-    },
-    {
+    }),
+    build<AccountAwareParams & { query: string }>({
       name: "sabha_search",
       label: "Search Sabha messages",
       description: "Search messages across all rooms the bot is in",
       parameters: Type.Object({
         query: Type.String({ description: "Search query" }),
       }),
-      async execute(_id: string, params: { query: string }): Promise<ToolResult> {
-        try {
-          const results = await getClient().search(params.query);
-          return toolResult(results);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
-    {
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).search(
+          params.query,
+        ),
+    }),
+    build<AccountAwareParams & { user_id: number }>({
       name: "sabha_create_dm",
       label: "Create Sabha DM",
       description: "Create a direct message conversation with a user in Sabha",
       parameters: Type.Object({
         user_id: Type.Number({ description: "User ID to DM" }),
       }),
-      async execute(_id: string, params: { user_id: number }): Promise<ToolResult> {
-        try {
-          const dm = await getClient().createDm([params.user_id]);
-          return toolResult(dm);
-        } catch (err) {
-          return toolError(err);
-        }
-      },
-    },
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).createDm([
+          params.user_id,
+        ]),
+    }),
   ];
 }

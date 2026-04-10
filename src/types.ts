@@ -105,8 +105,11 @@ export type SabhaWebhookPayload = {
 
 export type SabhaConfig = {
   enabled?: boolean;
-  baseUrl: string;
-  botKey: string;
+  // Base fields double as the "default" bot account's config in the legacy
+  // single-bot shape. When `botAccounts` is populated, these still act as
+  // the base that per-bot overrides layer onto.
+  baseUrl?: string;
+  botKey?: string;
   botName?: string;
   webhookPort?: number;
   connectionMode?: "websocket" | "webhook";
@@ -118,22 +121,19 @@ export type SabhaConfig = {
   // media fetches. Only set this in corporate / split-horizon DNS setups
   // that legitimately need to fetch from RFC1918 addresses.
   allowPrivateAttachmentHosts?: boolean;
+  // Multi-bot-account support. Each entry is a per-bot override layered
+  // over the base fields above. Omitting this block keeps the legacy
+  // single-bot-config behavior.
+  botAccounts?: Record<string, Partial<Omit<SabhaConfig, "botAccounts" | "defaultBotAccount">>>;
+  defaultBotAccount?: string;
 };
 
-export type SabhaAccount = {
-  accountId: string | null;
-  baseUrl: string;
-  botKey: string;
-  botId: number;
-  botName: string;
-  webhookPort: number;
-  connectionMode: "websocket" | "webhook";
-  websocketUrl: string;
-  typingEnabled: boolean;
-  dmPolicy: "open" | "allowlist";
-  allowFrom: string[];
-  allowPrivateAttachmentHosts: boolean;
-};
+// `ResolvedBotAccount` is the canonical runtime shape exported from
+// `./bot-accounts.js`. Re-exported here under the legacy `SabhaAccount`
+// name so existing call sites continue to work. Prefer `ResolvedBotAccount`
+// in new code.
+export type { ResolvedBotAccount } from "./bot-accounts.js";
+export type { ResolvedBotAccount as SabhaAccount } from "./bot-accounts.js";
 
 // --- Delivery payload (from reply pipeline to deliver callback) ---
 

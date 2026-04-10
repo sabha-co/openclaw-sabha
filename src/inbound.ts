@@ -10,6 +10,25 @@ type ChannelRuntime = PluginRuntime["channel"];
 
 const CHANNEL_ID = "sabha";
 
+/**
+ * Pre-flight check: should the bot act on this inbound message at all?
+ *
+ * Mirrors the gating logic at the top of `processInboundMessage` so
+ * callers (like the WebSocket monitor) can decide whether to start a
+ * typing indicator without duplicating the rules.
+ */
+export function shouldHandleInbound(
+  payload: SabhaWebhookPayload,
+  botId: number,
+): boolean {
+  // Skip messages from the bot itself
+  if (payload.user.id === botId) return false;
+  // In groups, only respond when mentioned (DMs always handled)
+  const isDm = resolveChatType(payload.room.type) === "direct";
+  if (!isDm && !wasBotMentioned(payload, botId)) return false;
+  return true;
+}
+
 type InboundDeps = {
   runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;

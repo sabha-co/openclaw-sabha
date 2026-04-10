@@ -107,9 +107,11 @@ export type SabhaConfig = {
   enabled?: boolean;
   baseUrl: string;
   botKey: string;
+  botName?: string;
   webhookPort?: number;
   connectionMode?: "websocket" | "webhook";
   websocketUrl?: string;
+  typingEnabled?: boolean;
   dmPolicy?: "open" | "allowlist";
   allowFrom?: string[];
 };
@@ -119,9 +121,11 @@ export type SabhaAccount = {
   baseUrl: string;
   botKey: string;
   botId: number;
+  botName: string;
   webhookPort: number;
   connectionMode: "websocket" | "webhook";
   websocketUrl: string;
+  typingEnabled: boolean;
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
 };

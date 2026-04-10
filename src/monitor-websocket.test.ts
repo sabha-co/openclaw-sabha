@@ -218,8 +218,9 @@ describe("createSabhaConnectOnce", () => {
     await done;
   });
 
-  it("rejects on subscription rejection (fatal error)", async () => {
+  it("rejects on BotEventsChannel subscription rejection (fatal error)", async () => {
     const { ws, emit } = createMockWebSocket();
+    const botEventsIdentifier = JSON.stringify({ channel: "BotEventsChannel" });
 
     const connectOnce = createSabhaConnectOnce({
       wsUrl: "ws://localhost/cable",
@@ -230,11 +231,133 @@ describe("createSabhaConnectOnce", () => {
     const done = connectOnce();
     emit("open");
     emit("message", JSON.stringify({ type: "welcome" }));
-    emit("message", JSON.stringify({ type: "reject_subscription", identifier: "{}" }));
+    emit("message", JSON.stringify({
+      type: "reject_subscription",
+      identifier: botEventsIdentifier,
+    }));
 
     expect(ws.close).toHaveBeenCalled();
 
     emit("close", 1000, Buffer.from(""));
     await expect(done).rejects.toThrow(SubscriptionRejectedError);
+  });
+
+  it("ignores reject_subscription for auxiliary channels (non-fatal)", async () => {
+    const { ws, emit } = createMockWebSocket();
+    const errors: string[] = [];
+    const rejected: string[] = [];
+
+    const connectOnce = createSabhaConnectOnce({
+      wsUrl: "ws://localhost/cable",
+      onMessage: noopMessage(),
+      webSocketFactory: () => ws,
+      logger: {
+        info: () => {},
+        error: (msg) => errors.push(msg),
+      },
+      onAuxSubscriptionRejected: (id) => rejected.push(id),
+    });
+
+    const done = connectOnce();
+    emit("open");
+    emit("message", JSON.stringify({ type: "welcome" }));
+    const typingIdentifier = JSON.stringify({
+      channel: "TypingNotificationsChannel",
+      room_id: 5,
+    });
+    // Auxiliary channel rejection — should log but not close
+    emit("message", JSON.stringify({
+      type: "reject_subscription",
+      identifier: typingIdentifier,
+    }));
+
+    // Connection stays open
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(errors.some((e) => e.includes("Auxiliary subscription rejected"))).toBe(true);
+    expect(rejected).toEqual([typingIdentifier]);
+
+    emit("close", 1000, Buffer.from(""));
+    await done;
+  });
+
+  it("does not forward data messages from auxiliary channels to onMessage", async () => {
+    const { ws, emit } = createMockWebSocket();
+    const messages: unknown[] = [];
+    const botEventsIdentifier = JSON.stringify({ channel: "BotEventsChannel" });
+    const typingIdentifier = JSON.stringify({
+      channel: "TypingNotificationsChannel",
+      room_id: 5,
+    });
+
+    const connectOnce = createSabhaConnectOnce({
+      wsUrl: "ws://localhost/cable",
+      onMessage: async (payload) => {
+        messages.push(payload);
+      },
+      webSocketFactory: () => ws,
+    });
+
+    const done = connectOnce();
+    emit("open");
+    emit("message", JSON.stringify({ type: "welcome" }));
+
+    // Another user's typing whisper lands on our socket after we subscribed —
+    // it must NOT reach the webhook parser.
+    emit("message", JSON.stringify({
+      identifier: typingIdentifier,
+      message: { action: "start", user: { id: 99, name: "Alice" } },
+    }));
+    expect(messages).toHaveLength(0);
+
+    // A real BotEventsChannel payload DOES reach onMessage.
+    const botEventsPayload = { event: "message_created", user: {}, room: {}, message: {} };
+    emit("message", JSON.stringify({
+      identifier: botEventsIdentifier,
+      message: botEventsPayload,
+    }));
+    expect(messages).toEqual([botEventsPayload]);
+
+    emit("close", 1000, Buffer.from(""));
+    await done;
+  });
+
+  it("only calls onBotEventsSubscribed for BotEventsChannel confirmation", async () => {
+    const { ws, emit } = createMockWebSocket();
+    const botEventsIdentifier = JSON.stringify({ channel: "BotEventsChannel" });
+    const typingIdentifier = JSON.stringify({ channel: "TypingNotificationsChannel", room_id: 5 });
+
+    const botEventsConfirms: number[] = [];
+    const auxConfirms: string[] = [];
+
+    const connectOnce = createSabhaConnectOnce({
+      wsUrl: "ws://localhost/cable",
+      onMessage: noopMessage(),
+      webSocketFactory: () => ws,
+      onBotEventsSubscribed: () => botEventsConfirms.push(1),
+      onAuxSubscriptionConfirmed: (id) => auxConfirms.push(id),
+    });
+
+    const done = connectOnce();
+    emit("open");
+    emit("message", JSON.stringify({ type: "welcome" }));
+
+    // BotEventsChannel confirmation
+    emit("message", JSON.stringify({
+      type: "confirm_subscription",
+      identifier: botEventsIdentifier,
+    }));
+    expect(botEventsConfirms).toHaveLength(1);
+    expect(auxConfirms).toHaveLength(0);
+
+    // Auxiliary (typing) channel confirmation
+    emit("message", JSON.stringify({
+      type: "confirm_subscription",
+      identifier: typingIdentifier,
+    }));
+    expect(botEventsConfirms).toHaveLength(1); // unchanged
+    expect(auxConfirms).toEqual([typingIdentifier]);
+
+    emit("close", 1000, Buffer.from(""));
+    await done;
   });
 });

@@ -15,6 +15,7 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 - Message dedup across WebSocket reconnects
 - Auto-registration via join URL
 - Auto-joins all open rooms on setup
+- Typing indicator while the bot is generating a reply (via AnyCable whisper)
 
 ## Install
 

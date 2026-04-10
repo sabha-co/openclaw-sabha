@@ -22,9 +22,11 @@ const SabhaConfigSchema = z.object({
   enabled: z.boolean().optional(),
   baseUrl: z.string().optional(),
   botKey: z.string().optional(),
+  botName: z.string().optional(),
   connectionMode: z.enum(["websocket", "webhook"]).optional(),
   websocketUrl: z.string().optional(),
   webhookPort: z.number().optional(),
+  typingEnabled: z.boolean().optional(),
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
 });
@@ -43,9 +45,20 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       sensitive: true,
       help: "Bot key from registration via join code",
     },
+    botName: {
+      label: "Bot display name",
+      placeholder: "OpenClaw",
+      advanced: true,
+      help: "Shown to users in typing indicators",
+    },
     connectionMode: {
       label: "Connection mode",
       help: "WebSocket (recommended) or webhook",
+    },
+    typingEnabled: {
+      label: "Typing indicators",
+      advanced: true,
+      help: "Show 'Bot is typing...' while processing (WebSocket mode only)",
     },
     websocketUrl: {
       label: "WebSocket URL",
@@ -79,9 +92,11 @@ export function resolveAccount(
     baseUrl: section?.baseUrl ?? "",
     botKey: section?.botKey ?? "",
     botId: extractBotId(section?.botKey ?? ""),
+    botName: section?.botName?.trim() || "OpenClaw",
     webhookPort: section?.webhookPort ?? 8787,
     connectionMode: section?.connectionMode ?? "websocket",
     websocketUrl: section?.websocketUrl ?? "",
+    typingEnabled: section?.typingEnabled !== false,
     dmPolicy: section?.dmPolicy ?? "open",
     allowFrom: section?.allowFrom ?? [],
   };

@@ -4,15 +4,17 @@ type ChannelRuntime = PluginRuntime["channel"];
 import type { SabhaWebhookPayload, ConnectionStatus } from "./types.js";
 import { resolveAccount } from "./channel.js";
 import { SabhaClient } from "./client.js";
-import { processInboundMessage } from "./inbound.js";
+import { processInboundMessage, shouldHandleInbound } from "./inbound.js";
 import { parseWebhookPayload } from "./webhook.js";
 import {
   createSabhaConnectOnce,
+  createConnectionRef,
   DisconnectNoReconnectError,
   SubscriptionRejectedError,
 } from "./monitor-websocket.js";
 import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
+import { TypingManager } from "./typing.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
@@ -69,11 +71,36 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
   const dedup = createDedupCache({ ttlMs: DEDUP_TTL_MS, maxSize: DEDUP_MAX_SIZE });
 
+  // Shared reference that points to the current ws.send — updated by
+  // createSabhaConnectOnce whenever a new connection opens/closes.
+  const connectionRef = createConnectionRef();
+
+  const typing = account.typingEnabled
+    ? new TypingManager({
+        connectionRef,
+        botId: account.botId,
+        botName: account.botName,
+        logger,
+      })
+    : null;
+
   const connectOnce = createSabhaConnectOnce({
     wsUrl,
     abortSignal,
     logger,
     statusSink,
+    connectionRef,
+    onBotEventsSubscribed: () => {
+      // Server forgot any prior typing subscriptions on reconnect —
+      // reset local state so the next start() re-subscribes.
+      typing?.reset();
+    },
+    onAuxSubscriptionConfirmed: (identifier) => {
+      typing?.onSubscriptionConfirmed(identifier);
+    },
+    onAuxSubscriptionRejected: (identifier) => {
+      typing?.onSubscriptionRejected(identifier);
+    },
     onMessage: async (raw) => {
       let payload: SabhaWebhookPayload;
       try {
@@ -84,6 +111,11 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       }
 
       if (payload.event === "message_created") {
+        // Pre-flight gating — skip self/non-mention before any side effects
+        // (dedup mark, status update, typing indicator). This ensures the
+        // bot doesn't flicker a typing indicator for messages it will ignore.
+        if (!shouldHandleInbound(payload, account.botId)) return;
+
         // Dedup: skip messages already processed (e.g. after reconnect)
         const dedupKey = `msg:${payload.message.id}`;
         if (dedup.has(dedupKey)) {
@@ -92,6 +124,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         }
 
         statusSink?.({ lastInboundAt: Date.now() });
+        typing?.start(payload.room.id);
         try {
           await processInboundMessage(payload, {
             runtime,
@@ -114,27 +147,34 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         } catch (err) {
           // Don't mark as seen — allow retry on next delivery
           logger?.error?.(`[sabha] Failed to process message ${payload.message.id}: ${err}`);
+        } finally {
+          typing?.stop(payload.room.id);
         }
       }
     },
   });
 
-  await runWithReconnect(connectOnce, {
-    abortSignal,
-    jitterRatio: 0.2,
-    shouldReconnect: ({ error }) => {
-      // Server explicitly told us not to reconnect (auth failure, etc.)
-      if (error instanceof DisconnectNoReconnectError) return false;
-      // Subscription rejected — bot_key is invalid/unauthorized
-      if (error instanceof SubscriptionRejectedError) return false;
-      return true;
-    },
-    onError: (err) => {
-      logger?.error?.(`[sabha] WebSocket connection failed: ${String(err)}`);
-    },
-    onReconnect: (delayMs) => {
-      logger?.info?.(`[sabha] Reconnecting in ${Math.round(delayMs / 1000)}s`);
-    },
-  });
+  try {
+    await runWithReconnect(connectOnce, {
+      abortSignal,
+      jitterRatio: 0.2,
+      shouldReconnect: ({ error }) => {
+        // Server explicitly told us not to reconnect (auth failure, etc.)
+        if (error instanceof DisconnectNoReconnectError) return false;
+        // Subscription rejected — bot_key is invalid/unauthorized
+        if (error instanceof SubscriptionRejectedError) return false;
+        return true;
+      },
+      onError: (err) => {
+        logger?.error?.(`[sabha] WebSocket connection failed: ${String(err)}`);
+      },
+      onReconnect: (delayMs) => {
+        logger?.info?.(`[sabha] Reconnecting in ${Math.round(delayMs / 1000)}s`);
+      },
+    });
+  } finally {
+    // Cancel any outstanding refresh timers so the monitor can be GC'd.
+    typing?.reset();
+  }
 }
 

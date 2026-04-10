@@ -32,6 +32,19 @@ export const defaultWebSocketFactory: SabhaWebSocketFactory = (url) =>
 
 // -- Connect once --
 
+/**
+ * Mutable reference to the current WebSocket's send function, updated
+ * whenever a new connection opens/closes. Lets callers (like TypingManager)
+ * send frames on the live connection without holding a direct ws reference.
+ */
+export type ConnectionRef = {
+  sendFrame: ((frame: string) => void) | null;
+};
+
+export function createConnectionRef(): ConnectionRef {
+  return { sendFrame: null };
+}
+
 export type ConnectOnceOpts = {
   wsUrl: string;
   abortSignal?: AbortSignal;
@@ -39,6 +52,27 @@ export type ConnectOnceOpts = {
   statusSink?: (patch: Partial<ConnectionStatus>) => void;
   logger?: { info?: (msg: string) => void; error?: (msg: string) => void };
   webSocketFactory?: SabhaWebSocketFactory;
+  connectionRef?: ConnectionRef;
+  /**
+   * Called when BotEventsChannel subscription is confirmed. Fires exactly
+   * once per connection. Use this to reset any subscription state that
+   * auxiliary channels (e.g. TypingNotificationsChannel) tracked locally.
+   */
+  onBotEventsSubscribed?: () => void;
+  /**
+   * Called for confirm_subscription frames on channels *other* than
+   * BotEventsChannel. The identifier is the raw JSON string the server
+   * echoes back. Used to flush queued whispers once the server has
+   * acknowledged the subscribe.
+   */
+  onAuxSubscriptionConfirmed?: (identifier: string) => void;
+  /**
+   * Called for reject_subscription frames on channels *other* than
+   * BotEventsChannel. Lets auxiliary channel managers (TypingManager)
+   * clean up state when Sabha rejects a subscribe — e.g. if the bot is
+   * no longer a member of the room, or due to a cross-tenant lookup.
+   */
+  onAuxSubscriptionRejected?: (identifier: string) => void;
 };
 
 export class DisconnectNoReconnectError extends Error {
@@ -86,6 +120,9 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
 
         ws.on("open", () => {
           opts.logger?.info?.("[sabha] WebSocket connected, waiting for welcome");
+          if (opts.connectionRef) {
+            opts.connectionRef.sendFrame = (frame) => ws.send(frame);
+          }
         });
 
         ws.on("message", async (data) => {
@@ -104,19 +141,31 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
                 break;
 
               case "confirm_subscription":
-                opts.logger?.info?.("[sabha] Subscribed to BotEventsChannel");
-                opts.statusSink?.({
-                  connected: true,
-                  lastConnectedAt: Date.now(),
-                  lastError: null,
-                });
+                if (frame.identifier === BOT_EVENTS_IDENTIFIER) {
+                  opts.logger?.info?.("[sabha] Subscribed to BotEventsChannel");
+                  opts.statusSink?.({
+                    connected: true,
+                    lastConnectedAt: Date.now(),
+                    lastError: null,
+                  });
+                  opts.onBotEventsSubscribed?.();
+                } else {
+                  opts.onAuxSubscriptionConfirmed?.(frame.identifier);
+                }
                 break;
 
               case "reject_subscription":
-                opts.logger?.error?.("[sabha] Subscription rejected — check bot_key");
-                opts.statusSink?.({ lastError: "Subscription rejected" });
-                rejectOnce(new SubscriptionRejectedError());
-                ws.close();
+                if (frame.identifier === BOT_EVENTS_IDENTIFIER) {
+                  opts.logger?.error?.("[sabha] BotEventsChannel subscription rejected — check bot_key");
+                  opts.statusSink?.({ lastError: "Subscription rejected" });
+                  rejectOnce(new SubscriptionRejectedError());
+                  ws.close();
+                } else {
+                  // Auxiliary channel rejected — non-fatal. Log and notify
+                  // the manager so it can clean up (cancel timers, forget state).
+                  opts.logger?.error?.(`[sabha] Auxiliary subscription rejected: ${frame.identifier}`);
+                  opts.onAuxSubscriptionRejected?.(frame.identifier);
+                }
                 break;
 
               case "ping":
@@ -138,8 +187,16 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
             return;
           }
 
-          // Data message — ActionCable wraps the payload in { identifier, message }
+          // Data message — ActionCable wraps the payload in { identifier, message }.
+          // Only forward BotEventsChannel payloads to onMessage; messages on
+          // auxiliary channels (e.g. other users' typing whispers on
+          // TypingNotificationsChannel) must not reach the webhook parser.
           if ("identifier" in frame && "message" in frame && frame.message) {
+            if (frame.identifier !== BOT_EVENTS_IDENTIFIER) {
+              // Silently ignore whispers/broadcasts from auxiliary channels —
+              // the bot doesn't care who else is typing.
+              return;
+            }
             try {
               await opts.onMessage(frame.message);
             } catch (err) {
@@ -149,6 +206,9 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
         });
 
         ws.on("close", (code, reason) => {
+          if (opts.connectionRef) {
+            opts.connectionRef.sendFrame = null;
+          }
           const msg = reasonToString(reason);
           opts.statusSink?.({
             connected: false,

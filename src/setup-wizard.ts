@@ -1,6 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ChannelSetupWizard } from "openclaw/plugin-sdk/channel-setup";
-import type { SabhaConfig } from "./types.js";
+import type { SabhaConfig, SabhaRoom } from "./types.js";
+import { SabhaClient } from "./client.js";
+
+// The prompter is provided by OpenClaw — infer the type from the wizard's finalize param
+type FinalizeParams = Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0];
+type WizardPrompter = FinalizeParams["prompter"];
 
 /**
  * Parse a Sabha join URL into base URL and join code.
@@ -103,6 +108,62 @@ export async function selfRegisterBot(
   }
 }
 
+/**
+ * Auto-join all open rooms in the Sabha workspace.
+ *
+ * After self-registration (or manual bot key entry), the bot is only a member
+ * of rooms granted by the join code. Joining all public/open rooms makes the
+ * bot discoverable to users right away. Closed rooms still require explicit
+ * invites.
+ */
+async function autoJoinOpenRooms(
+  baseUrl: string,
+  botKey: string,
+  prompter: WizardPrompter,
+): Promise<void> {
+  const client = new SabhaClient(baseUrl, botKey);
+
+  let joinable: SabhaRoom[];
+  try {
+    joinable = await client.listJoinableRooms();
+  } catch (err) {
+    await prompter.note(
+      `Could not list joinable rooms: ${formatError(err)}\nYou can invite the bot manually later.`,
+      "Auto-join skipped",
+    );
+    return;
+  }
+
+  if (joinable.length === 0) {
+    return;
+  }
+
+  const progress = prompter.progress(`Joining ${joinable.length} open room${joinable.length === 1 ? "" : "s"}`);
+  let joined = 0;
+  const failures: string[] = [];
+
+  for (const room of joinable) {
+    try {
+      await client.joinRoom(room.id);
+      joined++;
+      progress.update(`Joined ${joined}/${joinable.length}: #${room.name}`);
+    } catch (err) {
+      failures.push(`#${room.name}: ${formatError(err)}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    progress.stop(`Joined ${joined}/${joinable.length} rooms (${failures.length} failed)`);
+    await prompter.note(failures.join("\n"), "Some rooms could not be joined");
+  } else {
+    progress.stop(`Joined ${joined} open room${joined === 1 ? "" : "s"}`);
+  }
+}
+
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function getSabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {
   return (cfg.channels as Record<string, unknown>)?.sabha as SabhaConfig | undefined;
 }
@@ -201,11 +262,16 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         });
         progress.stop(`Bot "${result.name}" registered`);
 
+        // Auto-join all open rooms so the bot is immediately discoverable
+        await autoJoinOpenRooms(parsed.baseUrl, result.bot_key, prompter);
+
         return {
           cfg: setSabhaConfig(cfg, {
             baseUrl: parsed.baseUrl,
             botKey: result.bot_key,
+            botName: result.name,
             websocketUrl: result.websocket_url,
+            dmPolicy: section?.dmPolicy ?? "open",
           }),
         };
       } catch (err) {
@@ -273,10 +339,25 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       },
     });
 
+    const botNameInput = await prompter.text({
+      message: "Bot display name",
+      placeholder: "OpenClaw",
+      initialValue: section?.botName ?? "OpenClaw",
+      validate: (value) => (value.trim() ? undefined : "Required"),
+    });
+
+    const resolvedBaseUrl = baseUrl.replace(/\/+$/, "");
+    const resolvedBotKey = botKey.trim();
+
+    // Auto-join all open rooms so the bot is immediately discoverable
+    await autoJoinOpenRooms(resolvedBaseUrl, resolvedBotKey, prompter);
+
     return {
       cfg: setSabhaConfig(cfg, {
-        baseUrl: baseUrl.replace(/\/+$/, ""),
-        botKey: botKey.trim(),
+        baseUrl: resolvedBaseUrl,
+        botKey: resolvedBotKey,
+        botName: botNameInput.trim(),
+        dmPolicy: section?.dmPolicy ?? "open",
       }),
     };
   },

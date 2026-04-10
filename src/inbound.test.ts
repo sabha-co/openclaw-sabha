@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { processInboundMessage } from "./inbound.js";
+import { processInboundMessage, shouldHandleInbound } from "./inbound.js";
 import type { SabhaWebhookPayload, SabhaAccount } from "./types.js";
 import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 
@@ -208,5 +208,33 @@ describe("processInboundMessage", () => {
     const call = mockDispatch.mock.calls[0][0] as { channel: string; core: { channel: unknown } };
     expect(call.channel).toBe("sabha");
     expect(call.core.channel).toBeDefined();
+  });
+});
+
+describe("shouldHandleInbound", () => {
+  it("returns false for the bot's own messages", () => {
+    const payload = makePayload({
+      user: { id: 42, name: "MyBot", role: "bot", url: "" },
+    });
+    expect(shouldHandleInbound(payload, 42)).toBe(false);
+  });
+
+  it("returns false for group messages without a bot mention", () => {
+    const payload = makePayload({
+      message: { ...makePayload().message, mentionees: [] },
+    });
+    expect(shouldHandleInbound(payload, 42)).toBe(false);
+  });
+
+  it("returns true for group messages that mention the bot", () => {
+    expect(shouldHandleInbound(makePayload(), 42)).toBe(true);
+  });
+
+  it("returns true for DMs regardless of mention", () => {
+    const payload = makePayload({
+      room: { ...makePayload().room, type: "Direct" },
+      message: { ...makePayload().message, mentionees: [] },
+    });
+    expect(shouldHandleInbound(payload, 42)).toBe(true);
   });
 });

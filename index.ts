@@ -20,16 +20,11 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     pluginRuntime = runtime;
   },
 
-  registerFull(api) {
+  // CLI-only registration path: runs on `openclaw sabha …` without loading the
+  // full plugin (gateway, services, webhook route, etc.)
+  registerCliMetadata(api) {
     const getConfig = () => api.runtime.config.loadConfig();
 
-    // Register room/member management agent tools
-    const tools = createSabhaTools(getConfig);
-    for (const tool of tools) {
-      api.registerTool(tool);
-    }
-
-    // CLI: `openclaw sabha setup <joinUrl>` — self-register via join URL
     api.registerCli(
       async ({ program }) => {
         const { registerSabhaCli } = await import("./src/cli.js");
@@ -49,6 +44,16 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
         ],
       },
     );
+  },
+
+  registerFull(api) {
+    const getConfig = () => api.runtime.config.loadConfig();
+
+    // Register room/member management agent tools
+    const tools = createSabhaTools(getConfig);
+    for (const tool of tools) {
+      api.registerTool(tool);
+    }
 
     // Fetch /skill on startup and cache for agent prompt hints
     const account = resolveAccount(getConfig());

@@ -7,6 +7,7 @@ import {
   createDefaultChannelRuntimeState,
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
 
 import type { ResolvedBotAccount } from "./bot-accounts.js";
@@ -111,6 +112,19 @@ function getClient(account: ResolvedBotAccount): SabhaClient {
   return new SabhaClient(account.baseUrl, account.botKey);
 }
 
+/**
+ * Park a `gateway.startAccount` invocation until the framework aborts the
+ * account. Used for accounts we deliberately don't service (disabled,
+ * non-default webhook-mode, unconfigured) so the SDK doesn't keep
+ * restarting them.
+ */
+function waitForAbort(abortSignal: AbortSignal): Promise<void> {
+  if (abortSignal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    abortSignal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
 export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
   base: {
     id: "sabha",
@@ -199,6 +213,35 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       startAccount: async (ctx) => {
         const botAccount = ctx.account;
         const logPrefix = `[sabha:${botAccount.accountId}]`;
+        const isDefaultAccount = botAccount.accountId === DEFAULT_ACCOUNT_ID;
+
+        // Skip disabled accounts entirely — the SDK still calls
+        // startAccount for every listed account, not just enabled ones,
+        // so we defend here to avoid opening a WebSocket as a disabled
+        // bot identity.
+        if (!botAccount.enabled) {
+          ctx.log?.info?.(
+            `${logPrefix} Disabled in config — waiting for shutdown`,
+          );
+          await waitForAbort(ctx.abortSignal);
+          return;
+        }
+
+        // Webhook mode uses a single plugin-level HTTP route, which
+        // cannot disambiguate events for more than one bot account.
+        // Fail-closed for named accounts so a multi-bot config cannot
+        // silently misroute events through the default bot's client
+        // (wrong botId for mention detection, wrong credentials for
+        // replies). Multi-bot webhook routing will require a path
+        // prefix scheme — deferred to v1.1.
+        if (botAccount.connectionMode === "webhook" && !isDefaultAccount) {
+          ctx.log?.error?.(
+            `${logPrefix} Webhook mode is only supported for the default bot account. ` +
+              `Named accounts must use connectionMode: "websocket". Skipping this account.`,
+          );
+          await waitForAbort(ctx.abortSignal);
+          return;
+        }
 
         const shouldMonitor =
           botAccount.connectionMode === "websocket" &&
@@ -222,10 +265,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
           ctx.log?.info?.(
             `${logPrefix} ${botAccount.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
           );
-          // Stay alive until gateway aborts so the account isn't restarted
-          await new Promise<void>((resolve) => {
-            ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-          });
+          await waitForAbort(ctx.abortSignal);
         }
       },
     },
@@ -278,7 +318,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         if (ctx.mediaUrl) {
           const fetched = await fetchGuardedAttachment({
             url: ctx.mediaUrl,
-            cfg: ctx.cfg,
+            botAccount: account,
           });
           const blob = new Blob(
             [new Uint8Array(fetched.buffer)],

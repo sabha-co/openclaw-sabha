@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { parseJoinUrl, selfRegisterBot } from "./setup-wizard.js";
 import {
-  listBotAccountIds,
+  listEnabledBotAccounts,
   resolveBotAccount,
   resolveDefaultBotAccountId,
 } from "./bot-accounts.js";
@@ -87,13 +87,22 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
     )
     .action(async (options: { account?: string }) => {
       const cfg = getConfig();
+
+      // Explicit `--account <id>` stays permissive: operators can probe
+      // a disabled account on demand. The default fan-out only iterates
+      // *enabled* accounts so a config with `enabled: false` entries
+      // doesn't surface expected failures as health-check noise.
       const targetIds = options.account
         ? [options.account]
-        : listBotAccountIds(cfg);
+        : listEnabledBotAccounts(cfg).map((a) => a.accountId);
 
-      // Report the default id once so operators can see which config the
-      // CLI resolved in the absence of `--account`.
       if (!options.account) {
+        if (targetIds.length === 0) {
+          console.log("No enabled Sabha bot accounts configured.");
+          return;
+        }
+        // Report the default id once so operators can see which config
+        // the CLI resolved in the absence of `--account`.
         const defaultId = resolveDefaultBotAccountId(cfg);
         console.log(`(default bot account: ${defaultId})\n`);
       }

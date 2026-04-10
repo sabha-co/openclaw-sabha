@@ -19,7 +19,7 @@ export async function fetchSkillPrompt(baseUrl: string): Promise<string> {
 
     cachedSkillText = await res.text();
     return cachedSkillText;
-  } catch (err) {
+  } catch {
     // Don't cache failures — retry next time
     return "";
   }

@@ -55,18 +55,28 @@ export type SabhaSearchResult = {
 };
 
 // Webhook payload from Sabha to bot
+//
+// Sabha's `BotEventsChannel` fans out nine event types (see Scout A
+// findings). The payload shape varies by event — message/boost events
+// carry `room` and `message`, while `user_*` events are scoped globally
+// and carry ONLY `user`. Model as a discriminated union on `event` so
+// TypeScript forces callers to narrow before touching optional fields.
 
 export type SabhaWebhookEvent =
   | "message_created"
   | "message_updated"
   | "message_deleted"
   | "boost_created"
-  | "user_created";
+  | "boost_deleted"
+  | "user_created"
+  | "user_deleted";
 
 export type SabhaWebhookUser = {
   id: number;
   name: string;
-  role: string;
+  // Tightened from `string` so callers can exhaustively switch on role
+  // without runtime guards. Matches `SabhaMember.role`.
+  role: SabhaMember["role"];
   url: string;
 };
 
@@ -93,13 +103,79 @@ export type SabhaWebhookMessage = {
   thread: SabhaThreadInfo | null;
 };
 
-export type SabhaWebhookPayload = {
-  event: SabhaWebhookEvent;
+export type SabhaMessageCreatedPayload = {
+  event: "message_created";
   user: SabhaWebhookUser;
   room: SabhaWebhookRoom;
   message: SabhaWebhookMessage;
-  boost?: { id: number; body: string };
 };
+
+export type SabhaMessageUpdatedPayload = {
+  event: "message_updated";
+  user: SabhaWebhookUser;
+  room: SabhaWebhookRoom;
+  message: SabhaWebhookMessage;
+};
+
+export type SabhaMessageDeletedPayload = {
+  event: "message_deleted";
+  user: SabhaWebhookUser;
+  room: SabhaWebhookRoom;
+  message: SabhaWebhookMessage;
+};
+
+export type SabhaBoostCreatedPayload = {
+  event: "boost_created";
+  user: SabhaWebhookUser;
+  room: SabhaWebhookRoom;
+  message: SabhaWebhookMessage;
+  boost: { id: number; body: string };
+};
+
+export type SabhaBoostDeletedPayload = {
+  event: "boost_deleted";
+  user: SabhaWebhookUser;
+  room: SabhaWebhookRoom;
+  message: SabhaWebhookMessage;
+  boost: { id: number; body: string };
+};
+
+// `user_*` events fan out globally across every active bot in the
+// workspace (notify_bots.rb:19-24) and explicitly do NOT carry a room
+// or message — they are bare-user notifications. See the privacy
+// invariant on the `handleUserCreated` / `handleUserDeleted` stubs
+// in `./inbound.ts` before wiring these to any agent-visible surface.
+export type SabhaUserCreatedPayload = {
+  event: "user_created";
+  user: SabhaWebhookUser;
+};
+
+export type SabhaUserDeletedPayload = {
+  event: "user_deleted";
+  user: SabhaWebhookUser;
+};
+
+export type SabhaWebhookPayload =
+  | SabhaMessageCreatedPayload
+  | SabhaMessageUpdatedPayload
+  | SabhaMessageDeletedPayload
+  | SabhaBoostCreatedPayload
+  | SabhaBoostDeletedPayload
+  | SabhaUserCreatedPayload
+  | SabhaUserDeletedPayload;
+
+/**
+ * Subset of `SabhaWebhookPayload` that carries a `room` and `message`
+ * (every event except `user_*`). Inbound helpers that read message
+ * content should accept this narrower type so TypeScript narrows
+ * correctly at every call site.
+ */
+export type SabhaMessageEventPayload =
+  | SabhaMessageCreatedPayload
+  | SabhaMessageUpdatedPayload
+  | SabhaMessageDeletedPayload
+  | SabhaBoostCreatedPayload
+  | SabhaBoostDeletedPayload;
 
 // Plugin config
 

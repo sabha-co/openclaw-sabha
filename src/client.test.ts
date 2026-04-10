@@ -47,9 +47,11 @@ describe("parseWebhookPayload", () => {
   it("accepts a valid payload", () => {
     const result = parseWebhookPayload(basePayload);
     expect(result.event).toBe("message_created");
-    expect(result.user.name).toBe("Alice");
-    expect(result.room.id).toBe(5);
-    expect(result.message.id).toBe(10);
+    if (result.event === "message_created") {
+      expect(result.user.name).toBe("Alice");
+      expect(result.room.id).toBe(5);
+      expect(result.message.id).toBe(10);
+    }
   });
 
   it("rejects null", () => {
@@ -58,6 +60,73 @@ describe("parseWebhookPayload", () => {
 
   it("rejects missing event", () => {
     expect(() => parseWebhookPayload({ user: {}, room: {}, message: {} })).toThrow("event");
+  });
+
+  it("rejects an unknown event type", () => {
+    expect(() =>
+      parseWebhookPayload({
+        event: "typing_started",
+        user: basePayload.user,
+        room: basePayload.room,
+        message: basePayload.message,
+      }),
+    ).toThrow("Unknown event type");
+  });
+
+  it("accepts every message-bearing variant", () => {
+    for (const event of [
+      "message_created",
+      "message_updated",
+      "message_deleted",
+    ] as const) {
+      const p = parseWebhookPayload({ ...basePayload, event });
+      expect(p.event).toBe(event);
+    }
+  });
+
+  it("accepts boost_created and boost_deleted with a boost field", () => {
+    for (const event of ["boost_created", "boost_deleted"] as const) {
+      const p = parseWebhookPayload({
+        ...basePayload,
+        event,
+        boost: { id: 99, body: "👍" },
+      });
+      expect(p.event).toBe(event);
+      if (p.event === "boost_created" || p.event === "boost_deleted") {
+        expect(p.boost.id).toBe(99);
+      }
+    }
+  });
+
+  it("rejects a boost event missing the boost field", () => {
+    expect(() =>
+      parseWebhookPayload({ ...basePayload, event: "boost_created" }),
+    ).toThrow(/boost/);
+  });
+
+  it("accepts user_created with only {event, user} (no room / no message)", () => {
+    const p = parseWebhookPayload({
+      event: "user_created",
+      user: basePayload.user,
+    });
+    expect(p.event).toBe("user_created");
+  });
+
+  it("accepts user_deleted with only {event, user}", () => {
+    const p = parseWebhookPayload({
+      event: "user_deleted",
+      user: basePayload.user,
+    });
+    expect(p.event).toBe("user_deleted");
+  });
+
+  it("still requires room/message on message-bearing events", () => {
+    expect(() =>
+      parseWebhookPayload({
+        event: "message_updated",
+        user: basePayload.user,
+      }),
+    ).toThrow(/room/);
   });
 });
 

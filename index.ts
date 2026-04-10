@@ -5,7 +5,15 @@ import {
 import { sabhaPlugin } from "./src/channel.js";
 import { resolveBotAccount } from "./src/bot-accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
-import { processInboundMessage } from "./src/inbound.js";
+import {
+  processInboundMessage,
+  handleMessageUpdated,
+  handleMessageDeleted,
+  handleBoostCreated,
+  handleBoostDeleted,
+  handleUserCreated,
+  handleUserDeleted,
+} from "./src/inbound.js";
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
 import { fetchSkillPrompt } from "./src/skill-prompt.js";
@@ -93,13 +101,18 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
           const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
           const payload = parseWebhookPayload(body);
 
+          // Webhook mode binds to one HTTP route per plugin, so we route
+          // every inbound event through the default bot account. Multi-
+          // bot webhook routing would need a path prefix scheme (e.g.
+          // /sabha/webhook/:botAccountId) — deferred to v1.1.
+          const cfg = getConfig();
+          const currentAccount = resolveBotAccount({ cfg });
+
+          // Mirror the monitor's dispatch table so every variant routes
+          // to its typed handler. Only `message_created` runs the full
+          // reply pipeline; the rest log via their typed stubs (Phase
+          // 2.2 will upgrade `boost_created` to approval routing).
           if (payload.event === "message_created" && pluginRuntime) {
-            const cfg = getConfig();
-            // Webhook mode binds to one HTTP route per plugin, so we
-            // route every inbound event through the default bot account.
-            // Multi-bot webhook routing would need a path prefix scheme
-            // (e.g. /sabha/webhook/:botAccountId) — deferred to v1.1.
-            const currentAccount = resolveBotAccount({ cfg });
             const client = new SabhaClient(
               currentAccount.baseUrl,
               currentAccount.botKey,
@@ -127,6 +140,41 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                 }
               },
             });
+          } else {
+            const botId = currentAccount.botId;
+            switch (payload.event) {
+              case "message_updated":
+                await handleMessageUpdated(payload, { botId, logger: api.logger });
+                break;
+              case "message_deleted":
+                await handleMessageDeleted(payload, { botId, logger: api.logger });
+                break;
+              case "boost_created":
+                await handleBoostCreated(payload, { botId, logger: api.logger });
+                break;
+              case "boost_deleted":
+                await handleBoostDeleted(payload, { botId, logger: api.logger });
+                break;
+              case "user_created":
+                await handleUserCreated(payload, { logger: api.logger });
+                break;
+              case "user_deleted":
+                await handleUserDeleted(payload, { logger: api.logger });
+                break;
+              case "message_created":
+                // Runtime not ready yet — drop silently. This branch
+                // only fires when `pluginRuntime` is undefined (before
+                // setRuntime has been called). Rare in practice.
+                break;
+              default: {
+                // Exhaustiveness check. If v1.1 adds a new event type
+                // and this branch fails to compile, extend the switch
+                // above so webhook mode stays in lock-step with the
+                // monitor's dispatch table.
+                const _exhaustive: never = payload;
+                void _exhaustive;
+              }
+            }
           }
 
           res.statusCode = 200;

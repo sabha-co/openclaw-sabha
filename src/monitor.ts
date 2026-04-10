@@ -4,7 +4,16 @@ type ChannelRuntime = PluginRuntime["channel"];
 import type { SabhaWebhookPayload, ConnectionStatus } from "./types.js";
 import type { ResolvedBotAccount } from "./bot-accounts.js";
 import { SabhaClient } from "./client.js";
-import { processInboundMessage, shouldHandleInbound } from "./inbound.js";
+import {
+  processInboundMessage,
+  shouldHandleInbound,
+  handleMessageUpdated,
+  handleMessageDeleted,
+  handleBoostCreated,
+  handleBoostDeleted,
+  handleUserCreated,
+  handleUserDeleted,
+} from "./inbound.js";
 import { parseWebhookPayload } from "./webhook.js";
 import {
   createSabhaConnectOnce,
@@ -18,6 +27,32 @@ import { TypingManager } from "./typing.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
+
+/**
+ * Build a dedup cache key from a webhook payload. Keys are scoped by
+ * `event` so the same numeric id across variants (e.g. message id 42
+ * as a create, update, and delete) never collide — each is a distinct
+ * event the agent should see at most once.
+ *
+ * `user_*` events fan out globally and don't carry a stable per-event
+ * id the plugin can dedup against, so we return `null` — they bypass
+ * the cache entirely. The stub handlers are side-effect-free, so
+ * duplicate delivery on reconnect is harmless.
+ */
+function buildDedupKey(payload: SabhaWebhookPayload): string | null {
+  switch (payload.event) {
+    case "message_created":
+    case "message_updated":
+    case "message_deleted":
+      return `${payload.event}:${payload.message.id}`;
+    case "boost_created":
+    case "boost_deleted":
+      return `${payload.event}:${payload.boost.id}`;
+    case "user_created":
+    case "user_deleted":
+      return null;
+  }
+}
 
 export type MonitorSabhaOpts = {
   /**
@@ -131,60 +166,110 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         return;
       }
 
-      if (payload.event !== "message_created") return;
-
-      // Pre-flight gating — skip self/non-mention before any side effects
-      // (dedup mark, status update, typing indicator). This ensures the
-      // bot doesn't flicker a typing indicator for messages it will ignore.
-      if (!shouldHandleInbound(payload, account.botId)) return;
-
-      const dedupKey = `msg:${payload.message.id}`;
-      if (dedup.has(dedupKey) || inFlight.has(dedupKey)) {
-        logger?.info?.(`${logPrefix} Skipping duplicate message ${payload.message.id}`);
+      // Dedup keys are scoped by event type so the same numeric id
+      // never collides across variants — e.g. `message_created:42`
+      // must not dedup `message_updated:42`, since those are two
+      // distinct events that the agent should observe independently.
+      // See src/dedup.ts — 2000-entry FIFO / 5min TTL is wide enough
+      // to absorb reconnect replay across all variants (Q5).
+      const dedupKey = buildDedupKey(payload);
+      if (dedupKey && (dedup.has(dedupKey) || inFlight.has(dedupKey))) {
+        logger?.info?.(`${logPrefix} Skipping duplicate ${dedupKey}`);
         return;
       }
 
-      // Optimistic mark: reserve the dedup slot *before* processing so a
-      // reconnect-driven redelivery that arrives while work is still in
-      // flight is suppressed by the in-flight guard + dedup cache. On
-      // failure we unmark below so the next reconnect redelivery can retry
-      // — Sabha only redelivers on reconnect, not on ack/NACK, so dropping
-      // the mark permanently would turn every transient failure into a
-      // silent lost reply.
-      dedup.mark(dedupKey);
+      // `message_created` is the only variant that runs the full reply
+      // pipeline (typing indicator → dispatch → deliver). Every other
+      // variant routes to a typed log-only handler. Phase 2.2 will
+      // upgrade `boost_created` to consume pending approvals, and the
+      // streaming work in Phase 2.1 may grow `message_updated` into a
+      // real edit-propagation path.
+      if (payload.event === "message_created") {
+        if (!shouldHandleInbound(payload, account.botId)) return;
+
+        // Optimistic mark: reserve the dedup slot *before* processing
+        // so a reconnect-driven redelivery that arrives while work is
+        // still in flight is suppressed by the in-flight guard + dedup
+        // cache. On failure we unmark below so the next reconnect
+        // redelivery can retry — Sabha only redelivers on reconnect,
+        // not on ack/NACK, so dropping the mark permanently would turn
+        // every transient failure into a silent lost reply.
+        dedup.mark(dedupKey!);
+        statusSink?.({ lastInboundAt: Date.now() });
+        typing?.start(payload.room.id);
+
+        const work = (async () => {
+          try {
+            await processInboundMessage(payload, {
+              runtime,
+              cfg: config,
+              account,
+              deliver: async (replyPayload) => {
+                const roomId = Number(replyPayload.to ?? payload.room.id);
+                const text = replyPayload.text ?? replyPayload.body ?? "";
+
+                if (replyPayload.threadId && replyPayload.replyToId) {
+                  await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
+                } else {
+                  await client.sendMessage(roomId, text);
+                }
+              },
+              logger,
+            });
+          } catch (err) {
+            // Roll back the optimistic mark so a future reconnect
+            // redelivery of this message_created event gets a fresh
+            // attempt instead of being silently dropped as a duplicate.
+            dedup.unmark(dedupKey!);
+            logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
+          } finally {
+            typing?.stop(payload.room.id);
+            inFlight.delete(dedupKey!);
+          }
+        })();
+        inFlight.set(dedupKey!, work);
+        return;
+      }
+
+      // Non-creation events: dedup, mark, dispatch. These handlers are
+      // synchronous (log-only) today, so we mark dedup up-front and
+      // don't need in-flight tracking. When Phase 2.2 upgrades the
+      // boost handler to do async approval routing, move its dispatch
+      // into the same optimistic-mark / rollback pattern used above.
+      if (dedupKey) dedup.mark(dedupKey);
       statusSink?.({ lastInboundAt: Date.now() });
-      typing?.start(payload.room.id);
 
-      const work = (async () => {
-        try {
-          await processInboundMessage(payload, {
-            runtime,
-            cfg: config,
-            account,
-            deliver: async (replyPayload) => {
-              const roomId = Number(replyPayload.to ?? payload.room.id);
-              const text = replyPayload.text ?? replyPayload.body ?? "";
-
-              if (replyPayload.threadId && replyPayload.replyToId) {
-                await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
-              } else {
-                await client.sendMessage(roomId, text);
-              }
-            },
-            logger,
-          });
-        } catch (err) {
-          // Roll back the optimistic mark so a future reconnect redelivery
-          // of this message_created event gets a fresh attempt instead of
-          // being silently dropped as a duplicate.
-          dedup.unmark(dedupKey);
-          logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
-        } finally {
-          typing?.stop(payload.room.id);
-          inFlight.delete(dedupKey);
+      try {
+        switch (payload.event) {
+          case "message_updated":
+            await handleMessageUpdated(payload, { botId: account.botId, logger });
+            break;
+          case "message_deleted":
+            await handleMessageDeleted(payload, { botId: account.botId, logger });
+            break;
+          case "boost_created":
+            await handleBoostCreated(payload, { botId: account.botId, logger });
+            break;
+          case "boost_deleted":
+            await handleBoostDeleted(payload, { botId: account.botId, logger });
+            break;
+          case "user_created":
+            await handleUserCreated(payload, { logger });
+            break;
+          case "user_deleted":
+            await handleUserDeleted(payload, { logger });
+            break;
+          default: {
+            // Exhaustiveness check — unreachable if the webhook parser
+            // rejects unknown events, which it does.
+            const _exhaustive: never = payload;
+            void _exhaustive;
+          }
         }
-      })();
-      inFlight.set(dedupKey, work);
+      } catch (err) {
+        if (dedupKey) dedup.unmark(dedupKey);
+        logger?.error?.(`${logPrefix} Handler error for ${payload.event}: ${err}`);
+      }
     },
   });
 

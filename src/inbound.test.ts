@@ -1,6 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { processInboundMessage, shouldHandleInbound } from "./inbound.js";
-import type { SabhaWebhookPayload, SabhaAccount } from "./types.js";
+import {
+  processInboundMessage,
+  shouldHandleInbound,
+  handleMessageUpdated,
+  handleMessageDeleted,
+  handleBoostCreated,
+  handleBoostDeleted,
+  handleUserCreated,
+  handleUserDeleted,
+} from "./inbound.js";
+import type {
+  SabhaMessageCreatedPayload,
+  SabhaMessageUpdatedPayload,
+  SabhaMessageDeletedPayload,
+  SabhaBoostCreatedPayload,
+  SabhaBoostDeletedPayload,
+  SabhaUserCreatedPayload,
+  SabhaUserDeletedPayload,
+  SabhaAccount,
+} from "./types.js";
 import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 
 // We stub dispatchInboundReplyWithBase to capture ctxPayload without
@@ -52,7 +70,9 @@ const baseAccount: SabhaAccount = {
 
 const baseCfg = { channels: { sabha: {} } } as unknown as OpenClawConfig;
 
-function makePayload(overrides: Partial<SabhaWebhookPayload> = {}): SabhaWebhookPayload {
+function makePayload(
+  overrides: Partial<SabhaMessageCreatedPayload> = {},
+): SabhaMessageCreatedPayload {
   return {
     event: "message_created",
     user: {
@@ -236,5 +256,175 @@ describe("shouldHandleInbound", () => {
       message: { ...makePayload().message, mentionees: [] },
     });
     expect(shouldHandleInbound(payload, 42)).toBe(true);
+  });
+
+  it("extends the self-echo filter to message_updated", () => {
+    // Bot edits its own message via Messages::ByBotsController#update;
+    // the WebSocket fan-out echoes it back to every eligible member
+    // including the bot itself. Must be filtered out the same way
+    // message_created is.
+    const payload: SabhaMessageUpdatedPayload = {
+      ...makePayload(),
+      event: "message_updated",
+      user: { id: 42, name: "MyBot", role: "bot", url: "" },
+    };
+    expect(shouldHandleInbound(payload, 42)).toBe(false);
+  });
+
+  it("extends the self-echo filter to message_deleted", () => {
+    const payload: SabhaMessageDeletedPayload = {
+      ...makePayload(),
+      event: "message_deleted",
+      user: { id: 42, name: "MyBot", role: "bot", url: "" },
+    };
+    expect(shouldHandleInbound(payload, 42)).toBe(false);
+  });
+});
+
+describe("handleMessageUpdated", () => {
+  it("logs at info level when the event is in scope", async () => {
+    const info = vi.fn();
+    const payload: SabhaMessageUpdatedPayload = {
+      ...makePayload(),
+      event: "message_updated",
+    };
+    await handleMessageUpdated(payload, { botId: 42, logger: { info } });
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining("message_updated"),
+    );
+  });
+
+  it("is silent for self-echo", async () => {
+    const info = vi.fn();
+    const payload: SabhaMessageUpdatedPayload = {
+      ...makePayload(),
+      event: "message_updated",
+      user: { id: 42, name: "MyBot", role: "bot", url: "" },
+    };
+    await handleMessageUpdated(payload, { botId: 42, logger: { info } });
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("is silent in groups when the bot is not mentioned (stateless tolerance)", async () => {
+    const info = vi.fn();
+    const payload: SabhaMessageUpdatedPayload = {
+      ...makePayload({
+        message: { ...makePayload().message, mentionees: [] },
+      }),
+      event: "message_updated",
+    };
+    await handleMessageUpdated(payload, { botId: 42, logger: { info } });
+    expect(info).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleMessageDeleted", () => {
+  it("logs and honors self-echo + mention filters", async () => {
+    const info = vi.fn();
+    const payload: SabhaMessageDeletedPayload = {
+      ...makePayload(),
+      event: "message_deleted",
+    };
+    await handleMessageDeleted(payload, { botId: 42, logger: { info } });
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining("message_deleted"),
+    );
+  });
+});
+
+describe("handleBoostCreated", () => {
+  it("logs boost events including the emoji body", async () => {
+    const info = vi.fn();
+    const payload: SabhaBoostCreatedPayload = {
+      ...makePayload(),
+      event: "boost_created",
+      boost: { id: 77, body: "👍" },
+    };
+    await handleBoostCreated(payload, { botId: 42, logger: { info } });
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("boost_created"));
+    const line = info.mock.calls[0][0] as string;
+    expect(line).toContain("👍");
+    expect(line).toContain("boost=77");
+  });
+
+  it("does NOT require an @mention (boosts are global on a message)", async () => {
+    const info = vi.fn();
+    const payload: SabhaBoostCreatedPayload = {
+      ...makePayload({
+        message: { ...makePayload().message, mentionees: [] },
+      }),
+      event: "boost_created",
+      boost: { id: 77, body: "👍" },
+    };
+    await handleBoostCreated(payload, { botId: 42, logger: { info } });
+    // Non-mention boost must still be logged — otherwise approval
+    // routing (Phase 2.2) would never see the reaction that resolves
+    // a pending approval.
+    expect(info).toHaveBeenCalledOnce();
+  });
+
+  it("filters self-boosts to prevent loops", async () => {
+    const info = vi.fn();
+    const payload: SabhaBoostCreatedPayload = {
+      ...makePayload(),
+      event: "boost_created",
+      user: { id: 42, name: "MyBot", role: "bot", url: "" },
+      boost: { id: 77, body: "👍" },
+    };
+    await handleBoostCreated(payload, { botId: 42, logger: { info } });
+    expect(info).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleBoostDeleted", () => {
+  it("logs the retraction", async () => {
+    const info = vi.fn();
+    const payload: SabhaBoostDeletedPayload = {
+      ...makePayload(),
+      event: "boost_deleted",
+      boost: { id: 77, body: "👍" },
+    };
+    await handleBoostDeleted(payload, { botId: 42, logger: { info } });
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("boost_deleted"));
+  });
+});
+
+describe("handleUserCreated / handleUserDeleted (privacy-scoped stubs)", () => {
+  it("logs user_created at DEBUG level and emits no agent-visible side effects", async () => {
+    const debug = vi.fn();
+    const info = vi.fn();
+    const error = vi.fn();
+    const payload: SabhaUserCreatedPayload = {
+      event: "user_created",
+      user: {
+        id: 77,
+        name: "Carol",
+        role: "member",
+        url: "https://sabha.co/users/77",
+      },
+    };
+    await handleUserCreated(payload, { logger: { debug, info, error } });
+    // Critical privacy invariant: these events MUST NOT surface at
+    // info-level or higher, and must NOT produce any output beyond the
+    // debug log. A future hook that wires them to an agent-visible
+    // surface has to opt in explicitly per bot account.
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("user_created"));
+    expect(info).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("logs user_deleted at DEBUG level", async () => {
+    const debug = vi.fn();
+    const payload: SabhaUserDeletedPayload = {
+      event: "user_deleted",
+      user: {
+        id: 77,
+        name: "Carol",
+        role: "member",
+        url: "https://sabha.co/users/77",
+      },
+    };
+    await handleUserDeleted(payload, { logger: { debug } });
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("user_deleted"));
   });
 });

@@ -6,6 +6,11 @@ import type {
   SabhaThreadReply,
   SabhaMessageBody,
 } from "./types.js";
+import {
+  createSabhaRetryRunner,
+  parseRetryAfter,
+  type RetryRunner,
+} from "./retry.js";
 
 export type SabhaClientOpts = {
   /**
@@ -19,6 +24,12 @@ export type SabhaClientOpts = {
    * inline on the WebSocket handler, so every call needs a bounded wait.
    */
   requestTimeoutMs?: number;
+  /**
+   * Retry runner wrapping every HTTP call. Defaults to the Sabha rate-limit
+   * runner, which honors `Retry-After` on 429 and retries 502/503/504 with
+   * exponential backoff + jitter. Pass a custom runner in tests.
+   */
+  retryRunner?: RetryRunner;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -32,6 +43,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export class SabhaClient {
   private readonly abortSignal?: AbortSignal;
   private readonly requestTimeoutMs: number;
+  private readonly retryRunner: RetryRunner;
 
   constructor(
     private readonly baseUrl: string,
@@ -40,6 +52,7 @@ export class SabhaClient {
   ) {
     this.abortSignal = opts.abortSignal;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.retryRunner = opts.retryRunner ?? createSabhaRetryRunner();
   }
 
   // --- Messaging ---
@@ -284,15 +297,19 @@ export class SabhaClient {
 
   private async fetch(path: string, init?: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
-    const signal = this.combineSignals(init?.signal ?? undefined);
-    const res = await globalThis.fetch(url, { ...init, signal });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new SabhaApiError(res.status, body, url);
-    }
-
-    return res;
+    const method = init?.method ?? "GET";
+    return await this.retryRunner(async () => {
+      // Rebuild the combined signal on each attempt so a previous attempt's
+      // timeout doesn't leak into the retried request.
+      const signal = this.combineSignals(init?.signal ?? undefined);
+      const res = await globalThis.fetch(url, { ...init, signal });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+        throw new SabhaApiError(res.status, body, url, retryAfterMs);
+      }
+      return res;
+    }, `${method} ${path}`);
   }
 
   private combineSignals(external?: AbortSignal): AbortSignal {
@@ -323,6 +340,13 @@ export class SabhaApiError extends Error {
     public readonly status: number,
     public readonly body: string,
     public readonly url: string,
+    /**
+     * Milliseconds the server asked us to wait before retrying (parsed from
+     * the `Retry-After` response header). Present on 429/503 responses when
+     * Sabha supplies a backpressure hint; read by the retry runner's
+     * `retryAfterMs` callback.
+     */
+    public readonly retryAfterMs?: number,
   ) {
     super(`Sabha API error ${status}: ${body} (${url})`);
     this.name = "SabhaApiError";

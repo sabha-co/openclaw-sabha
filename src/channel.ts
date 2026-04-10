@@ -170,7 +170,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         const hints = [
           `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
         ];
-        const skillText = getCachedSkillText();
+        const skillText = getCachedSkillText(account.baseUrl);
         if (skillText) {
           hints.push(
             `Here is the full Sabha API reference:\n\n${skillText}`,

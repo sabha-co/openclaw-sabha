@@ -3,7 +3,7 @@ import {
   type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
 import { sabhaPlugin } from "./src/channel.js";
-import { resolveBotAccount } from "./src/bot-accounts.js";
+import { listEnabledBotAccounts, resolveBotAccount } from "./src/bot-accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
 import {
   processInboundMessage,
@@ -66,14 +66,21 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
       api.registerTool(factory);
     }
 
-    // Fetch /skill on startup and cache for agent prompt hints. Uses the
-    // default bot account's baseUrl — multi-bot /skill caches are a v1.1
-    // concern since /skill describes the server, not the bot.
-    const account = resolveBotAccount({ cfg: getConfig() });
-    if (account.baseUrl) {
-      fetchSkillPrompt(account.baseUrl).then((text) => {
+    // Fetch /skill on startup for every unique workspace across enabled
+    // bot accounts. `/skill` renders per workspace (template interpolates
+    // `Current.account.name` + `request.base_url`), so bot accounts sharing
+    // a baseUrl share a cache entry while accounts on different workspaces
+    // each get their own.
+    const baseUrls = new Set<string>();
+    for (const botAccount of listEnabledBotAccounts(getConfig())) {
+      if (botAccount.baseUrl) baseUrls.add(botAccount.baseUrl);
+    }
+    for (const baseUrl of baseUrls) {
+      fetchSkillPrompt(baseUrl).then((text) => {
         if (text) {
-          api.logger.info?.("[sabha] Loaded /skill prompt for agent context");
+          api.logger.info?.(
+            `[sabha] Loaded /skill prompt for ${baseUrl}`,
+          );
         }
       });
     }

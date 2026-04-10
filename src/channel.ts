@@ -15,6 +15,7 @@ import { SabhaClient, extractBotId } from "./client.js";
 import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import { monitorSabha } from "./monitor.js";
+import { fetchGuardedAttachment } from "./ssrf-guard.js";
 
 const accountHelpers = createAccountListHelpers("sabha");
 
@@ -29,6 +30,7 @@ const SabhaConfigSchema = z.object({
   typingEnabled: z.boolean().optional(),
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
+  allowPrivateAttachmentHosts: z.boolean().optional(),
 });
 
 const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
@@ -76,6 +78,11 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       advanced: true,
       help: "User IDs for allowlist mode",
     },
+    allowPrivateAttachmentHosts: {
+      label: "Allow private attachment hosts",
+      advanced: true,
+      help: "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups.",
+    },
   },
 });
 
@@ -99,6 +106,7 @@ export function resolveAccount(
     typingEnabled: section?.typingEnabled !== false,
     dmPolicy: section?.dmPolicy ?? "open",
     allowFrom: section?.allowFrom ?? [],
+    allowPrivateAttachmentHosts: section?.allowPrivateAttachmentHosts === true,
   };
 }
 
@@ -262,9 +270,16 @@ export const sabhaPlugin = createChatChannelPlugin<SabhaAccount>({
         const roomId = Number(ctx.to);
 
         if (ctx.mediaUrl) {
-          const res = await globalThis.fetch(ctx.mediaUrl);
-          const blob = await res.blob();
-          const filename = ctx.mediaUrl.split("/").pop() ?? "attachment";
+          const fetched = await fetchGuardedAttachment({
+            url: ctx.mediaUrl,
+            cfg: ctx.cfg,
+          });
+          const blob = new Blob(
+            [new Uint8Array(fetched.buffer)],
+            fetched.contentType ? { type: fetched.contentType } : {},
+          );
+          const filename =
+            fetched.fileName ?? ctx.mediaUrl.split("/").pop() ?? "attachment";
           const messageId = await client.sendAttachment(roomId, blob, filename);
           return { messageId: messageId != null ? String(messageId) : "" };
         }

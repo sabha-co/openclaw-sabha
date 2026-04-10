@@ -114,6 +114,10 @@ export type SabhaConfig = {
   typingEnabled?: boolean;
   dmPolicy?: "open" | "allowlist";
   allowFrom?: string[];
+  // Opt out of strict SSRF filtering on attachment downloads and outbound
+  // media fetches. Only set this in corporate / split-horizon DNS setups
+  // that legitimately need to fetch from RFC1918 addresses.
+  allowPrivateAttachmentHosts?: boolean;
 };
 
 export type SabhaAccount = {
@@ -128,6 +132,7 @@ export type SabhaAccount = {
   typingEnabled: boolean;
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
+  allowPrivateAttachmentHosts: boolean;
 };
 
 // --- Delivery payload (from reply pipeline to deliver callback) ---

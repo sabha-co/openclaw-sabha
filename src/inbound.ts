@@ -2,6 +2,7 @@ import type { SabhaWebhookPayload, SabhaAccount, DeliveryPayload } from "./types
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { wasBotMentioned, resolveChatType } from "./webhook.js";
 import { resolveSessionFromPayload } from "./session.js";
+import { resolveAttachmentSsrfPolicy } from "./ssrf-guard.js";
 
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
@@ -85,7 +86,11 @@ export async function processInboundMessage(
   if (payload.message.has_attachment && payload.message.attachment) {
     try {
       const { url, filename, content_type } = payload.message.attachment;
-      const fetched = await channel.media.fetchRemoteMedia({ url });
+      const ssrfPolicy = resolveAttachmentSsrfPolicy(cfg);
+      const fetched = await channel.media.fetchRemoteMedia({
+        url,
+        ...(ssrfPolicy ? { ssrfPolicy } : {}),
+      });
       const saved = await channel.media.saveMediaBuffer(
         fetched.buffer,
         content_type,

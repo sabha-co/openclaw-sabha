@@ -109,7 +109,7 @@ export async function processInboundMessage(
   if (payload.message.has_attachment && payload.message.attachment) {
     try {
       const { url, filename, content_type } = payload.message.attachment;
-      const ssrfPolicy = resolveAttachmentSsrfPolicy(cfg);
+      const ssrfPolicy = resolveAttachmentSsrfPolicy(account);
       const fetched = await channel.media.fetchRemoteMedia({
         url,
         ...(ssrfPolicy ? { ssrfPolicy } : {}),

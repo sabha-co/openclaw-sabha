@@ -1,4 +1,3 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { ssrfPolicyFromAllowPrivateNetwork } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
@@ -6,7 +5,7 @@ import {
   type FetchLike,
 } from "openclaw/plugin-sdk/media-runtime";
 
-import type { SabhaConfig } from "./types.js";
+import type { ResolvedBotAccount } from "./bot-accounts.js";
 
 // Attachment fetches reach arbitrary URLs supplied by agents, Sabha signed
 // URLs, or outbound media payloads. Route them through the SDK guard so
@@ -15,14 +14,20 @@ import type { SabhaConfig } from "./types.js";
 // module only exists to translate the plugin's opt-in escape hatch
 // (`allowPrivateAttachmentHosts: true`) into the SDK's policy shape and to
 // give call sites a single import.
+//
+// The flag is resolved PER BOT ACCOUNT, not per base `channels.sabha`
+// block, so a multi-bot deployment can keep strict mode on most accounts
+// while one split-horizon DNS account opts in.
+
+type AccountPolicyInput = Pick<
+  ResolvedBotAccount,
+  "allowPrivateAttachmentHosts"
+>;
 
 export function resolveAttachmentSsrfPolicy(
-  cfg: OpenClawConfig,
+  botAccount: AccountPolicyInput,
 ): SsrFPolicy | undefined {
-  const section = (cfg.channels as Record<string, unknown>)?.sabha as
-    | SabhaConfig
-    | undefined;
-  if (section?.allowPrivateAttachmentHosts === true) {
+  if (botAccount.allowPrivateAttachmentHosts === true) {
     return ssrfPolicyFromAllowPrivateNetwork(true);
   }
   return undefined;
@@ -30,7 +35,7 @@ export function resolveAttachmentSsrfPolicy(
 
 export type FetchGuardedAttachmentOptions = {
   url: string;
-  cfg: OpenClawConfig;
+  botAccount: AccountPolicyInput;
   fetchImpl?: FetchLike;
   maxBytes?: number;
 };
@@ -38,7 +43,7 @@ export type FetchGuardedAttachmentOptions = {
 export async function fetchGuardedAttachment(
   options: FetchGuardedAttachmentOptions,
 ): Promise<{ buffer: Buffer; contentType?: string; fileName?: string }> {
-  const ssrfPolicy = resolveAttachmentSsrfPolicy(options.cfg);
+  const ssrfPolicy = resolveAttachmentSsrfPolicy(options.botAccount);
   return await fetchRemoteMedia({
     url: options.url,
     fetchImpl: options.fetchImpl,

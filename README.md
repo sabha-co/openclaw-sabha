@@ -11,37 +11,82 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 - Webhook mode (fallback) — for deployments that prefer inbound push
 - Supports DMs, group chat, threads, reactions, attachments, search
 - 12 agent tools for room and member management
-- Sabha Self-host support
+- Sabha self-host support (single-tenant and multi-tenant SaaS)
 - Message dedup across WebSocket reconnects
 - Auto-registration via join URL
 
 ## Install
 
+### Option A: via ClawHub (recommended)
+
 ```bash
 openclaw plugins install @sabha-co/openclaw-sabha
 ```
 
-## Setup
+### Option B: from source (for development)
 
-Register a bot from a Sabha join URL:
-
+```bash
+git clone https://github.com/sabha-co/openclaw-sabha.git
+cd openclaw-sabha
+npm install
+openclaw plugins install -l .
 ```
-openclaw sabha setup https://chat.example.com/1000006/join/mNrP-Nm5q-HCzw
+
+## Post-install: allowlist the plugin
+
+Newer OpenClaw versions warn when non-bundled plugins are loaded without being declared in `plugins.allow`. Add `sabha` to the allowlist in `~/.openclaw/openclaw.json`:
+
+```json5
+{
+  plugins: {
+    enabled: true,
+    allow: ["sabha"]
+  }
+}
 ```
 
-The plugin self-registers a bot, saves the bot key to your config, and connects via WebSocket on the next restart.
+Verify and restart:
 
-### Manual configuration
+```bash
+openclaw plugins list
+openclaw gateway restart
+```
+
+## Configure
+
+### Option 1: interactive
+
+```bash
+openclaw configure --section channels
+```
+
+When prompted, select **Sabha**. The wizard offers two paths:
+
+- **Paste a join URL** (recommended) — e.g. `https://sabha.co/1000101/join/Ccnp-m7vD-L3aj`. The plugin self-registers a bot and saves the bot key automatically. Requires your Sabha admin to have bot self-registration enabled at `/account/bots`.
+- **I already have a bot key** — if your admin created a bot manually and shared its key with you, pick this path and paste the bot key plus the server URL.
+
+Either way, the plugin connects via WebSocket on the next gateway restart.
+
+### Option 2: manual
+
+Edit `~/.openclaw/openclaw.json`:
 
 ```json5
 {
   channels: {
     sabha: {
+      enabled: true,
       baseUrl: "https://sabha.co/1000006",
       botKey: "42-AbCdEfGhIjKl"
     }
   }
 }
+```
+
+Then restart the gateway:
+
+```bash
+openclaw gateway restart
 ```
 
 ## Connection Modes
@@ -97,6 +142,13 @@ https://sabha.co/1000006
 ```
 
 The plugin passes the workspace ID as `wid` in the WebSocket connection.
+
+## Update
+
+```bash
+openclaw plugins update sabha
+openclaw gateway restart
+```
 
 ## Development
 

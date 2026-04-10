@@ -7,6 +7,7 @@ import type {
   SabhaMessageBody,
 } from "./types.js";
 import {
+  RETRYABLE_STATUS,
   createSabhaRetryRunner,
   parseRetryAfter,
   type RetryRunner,
@@ -30,6 +31,13 @@ export type SabhaClientOpts = {
    * exponential backoff + jitter. Pass a custom runner in tests.
    */
   retryRunner?: RetryRunner;
+  /**
+   * When `true`, the default retry runner logs each retry attempt at WARN.
+   * Ignored when a custom `retryRunner` is supplied. Off by default so
+   * production logs stay quiet; operators diagnosing a rate-limit storm
+   * can flip it on per-account without touching the SDK runtime.
+   */
+  verbose?: boolean;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -52,7 +60,11 @@ export class SabhaClient {
   ) {
     this.abortSignal = opts.abortSignal;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    this.retryRunner = opts.retryRunner ?? createSabhaRetryRunner();
+    this.retryRunner =
+      opts.retryRunner ??
+      createSabhaRetryRunner(
+        opts.verbose != null ? { verbose: opts.verbose } : {},
+      );
   }
 
   // --- Messaging ---
@@ -336,6 +348,13 @@ export class SabhaClient {
 }
 
 export class SabhaApiError extends Error {
+  /**
+   * Whether the retry runner will attempt this error again. Mirrors
+   * `isRetryableSabhaError` so callers can branch on the flag instead of
+   * re-importing the predicate. True for 429/502/503/504, false otherwise.
+   */
+  public readonly retryable: boolean;
+
   constructor(
     public readonly status: number,
     public readonly body: string,
@@ -350,6 +369,7 @@ export class SabhaApiError extends Error {
   ) {
     super(`Sabha API error ${status}: ${body} (${url})`);
     this.name = "SabhaApiError";
+    this.retryable = RETRYABLE_STATUS.has(status);
   }
 }
 

@@ -9,7 +9,9 @@ import {
 // they usually clear on a second attempt. Everything else (401/403/404/
 // 4xx) is a caller bug or permanent failure and must NOT retry, or we'd
 // turn typos into retry storms.
-const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+export const RETRYABLE_STATUS: ReadonlySet<number> = new Set([
+  429, 502, 503, 504,
+]);
 
 export const SABHA_RETRY_DEFAULTS = {
   attempts: 3,

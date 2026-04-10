@@ -49,17 +49,19 @@ describe("parseRetryAfter", () => {
 describe("isRetryableSabhaError", () => {
   it("is true for 429, 502, 503, 504", () => {
     for (const status of [429, 502, 503, 504]) {
-      expect(
-        isRetryableSabhaError(new SabhaApiError(status, "", "http://x")),
-      ).toBe(true);
+      const err = new SabhaApiError(status, "", "http://x");
+      expect(isRetryableSabhaError(err)).toBe(true);
+      // Field mirrors the predicate so callers can branch on `err.retryable`
+      // without importing the helper.
+      expect(err.retryable).toBe(true);
     }
   });
 
   it("is false for 400, 401, 403, 404, 500", () => {
     for (const status of [400, 401, 403, 404, 500]) {
-      expect(
-        isRetryableSabhaError(new SabhaApiError(status, "", "http://x")),
-      ).toBe(false);
+      const err = new SabhaApiError(status, "", "http://x");
+      expect(isRetryableSabhaError(err)).toBe(false);
+      expect(err.retryable).toBe(false);
     }
   });
 

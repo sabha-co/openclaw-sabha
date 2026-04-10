@@ -18,7 +18,7 @@ describe("createDedupCache", () => {
     expect(cache.size()).toBe(3);
   });
 
-  it("evicts oldest when at capacity", () => {
+  it("evicts in FIFO order (oldest insertion) when at capacity", () => {
     const cache = createDedupCache({ ttlMs: 60_000, maxSize: 3 });
     cache.mark("a");
     cache.mark("b");

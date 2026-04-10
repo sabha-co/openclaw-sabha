@@ -52,7 +52,12 @@ export function createDedupCache(opts: {
     mark(key: string): void {
       purge();
 
-      // Evict oldest if at capacity
+      // FIFO eviction by insertion order. Map iteration order is the
+      // insertion order, and `has()` does not refresh position — which is
+      // deliberate: entries expire on wall-clock TTL, so the oldest insert
+      // is also the one closest to its natural expiry. True LRU would be
+      // wrong here because bumping position on `has()` would let an entry
+      // outlive its `expiresAt` under churn.
       if (entries.size >= opts.maxSize) {
         const firstKey = entries.keys().next().value;
         if (firstKey !== undefined) entries.delete(firstKey);

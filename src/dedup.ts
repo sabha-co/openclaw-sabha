@@ -12,8 +12,14 @@ type DedupEntry = {
 export type DedupCache = {
   /** Returns true if the key was already marked (duplicate). */
   has(key: string): boolean;
-  /** Mark a key as processed. Call only after successful handling. */
+  /** Mark a key as seen. */
   mark(key: string): void;
+  /**
+   * Remove a previously-marked key. Used to roll back an optimistic `mark`
+   * when processing fails, so a subsequent reconnect-driven redelivery can
+   * retry instead of being silently dropped as a duplicate.
+   */
+  unmark(key: string): void;
   /** Number of entries currently tracked. */
   size(): number;
 };
@@ -53,6 +59,10 @@ export function createDedupCache(opts: {
       }
 
       entries.set(key, { expiresAt: Date.now() + opts.ttlMs });
+    },
+
+    unmark(key: string): void {
+      entries.delete(key);
     },
 
     size() {

@@ -7,6 +7,22 @@ import type {
   SabhaMessageBody,
 } from "./types.js";
 
+export type SabhaClientOpts = {
+  /**
+   * Signal shared by every request this client issues. Aborting it cancels
+   * all in-flight fetches so the owning monitor can drain cleanly on shutdown.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * Per-request deadline. Defaults to 30s. A hung server must never wedge
+   * the inbound pipeline — `processInboundMessage` awaits `sendMessage`
+   * inline on the WebSocket handler, so every call needs a bounded wait.
+   */
+  requestTimeoutMs?: number;
+};
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 /**
  * HTTP client for Sabha's Bot API.
  *
@@ -14,10 +30,17 @@ import type {
  * Bot key format: "{bot_id}-{bot_token}" (e.g., "42-AbCdEfGhIjKl").
  */
 export class SabhaClient {
+  private readonly abortSignal?: AbortSignal;
+  private readonly requestTimeoutMs: number;
+
   constructor(
     private readonly baseUrl: string,
     private readonly botKey: string,
-  ) {}
+    opts: SabhaClientOpts = {},
+  ) {
+    this.abortSignal = opts.abortSignal;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  }
 
   // --- Messaging ---
 
@@ -261,7 +284,8 @@ export class SabhaClient {
 
   private async fetch(path: string, init?: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
-    const res = await globalThis.fetch(url, init);
+    const signal = this.combineSignals(init?.signal ?? undefined);
+    const res = await globalThis.fetch(url, { ...init, signal });
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -269,6 +293,28 @@ export class SabhaClient {
     }
 
     return res;
+  }
+
+  private combineSignals(external?: AbortSignal): AbortSignal {
+    const timeout = AbortSignal.timeout(this.requestTimeoutMs);
+    const sources = [timeout, this.abortSignal, external].filter(
+      (s): s is AbortSignal => s !== undefined,
+    );
+    if (sources.length === 1) return sources[0];
+
+    const ctrl = new AbortController();
+    const forward = (source: AbortSignal) => {
+      if (ctrl.signal.aborted) return;
+      ctrl.abort(source.reason);
+    };
+    for (const source of sources) {
+      if (source.aborted) {
+        forward(source);
+        return ctrl.signal;
+      }
+      source.addEventListener("abort", () => forward(source), { once: true });
+    }
+    return ctrl.signal;
   }
 }
 

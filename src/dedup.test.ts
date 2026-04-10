@@ -46,6 +46,21 @@ describe("createDedupCache", () => {
     }
   });
 
+  it("unmark rolls back a prior mark", () => {
+    const cache = createDedupCache({ ttlMs: 60_000, maxSize: 100 });
+    cache.mark("msg:1");
+    expect(cache.has("msg:1")).toBe(true);
+    cache.unmark("msg:1");
+    expect(cache.has("msg:1")).toBe(false);
+    expect(cache.size()).toBe(0);
+  });
+
+  it("unmark of unknown key is a no-op", () => {
+    const cache = createDedupCache({ ttlMs: 60_000, maxSize: 100 });
+    cache.unmark("msg:never-seen");
+    expect(cache.size()).toBe(0);
+  });
+
   it("allows retry when mark is not called (processing failed)", () => {
     const cache = createDedupCache({ ttlMs: 60_000, maxSize: 100 });
     // Check but don't mark (simulates failed processing)

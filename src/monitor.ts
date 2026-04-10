@@ -64,12 +64,23 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
 export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   const { baseUrl, botKey, config, runtime, abortSignal, logger, statusSink } = opts;
   const account = resolveAccount(config);
-  const client = new SabhaClient(baseUrl, botKey);
+  const client = new SabhaClient(baseUrl, botKey, { abortSignal });
 
   const wsUrl = buildWebSocketUrl(baseUrl, botKey, account.websocketUrl);
   logger?.info?.(`[sabha] Connecting via WebSocket to ${wsUrl.replace(/bot_key=[^&]+/, "bot_key=***")}`);
 
   const dedup = createDedupCache({ ttlMs: DEDUP_TTL_MS, maxSize: DEDUP_MAX_SIZE });
+
+  // In-flight processing set. Guards against two hazards that surface when a
+  // reply takes longer than the connection lives:
+  //   1. Head-of-line blocking — the ws read loop must not `await` on
+  //      processInboundMessage, or one slow reply stalls every subsequent
+  //      inbound on this socket.
+  //   2. Reconnect double-dispatch — if the socket closes mid-processing and
+  //      Sabha redelivers on reconnect, the in-flight set drops the duplicate
+  //      before it races the original run.
+  // Keyed by dedupKey so the guard composes with the TTL dedup cache.
+  const inFlight = new Map<string, Promise<void>>();
 
   // Shared reference that points to the current ws.send — updated by
   // createSabhaConnectOnce whenever a new connection opens/closes.
@@ -110,21 +121,31 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         return;
       }
 
-      if (payload.event === "message_created") {
-        // Pre-flight gating — skip self/non-mention before any side effects
-        // (dedup mark, status update, typing indicator). This ensures the
-        // bot doesn't flicker a typing indicator for messages it will ignore.
-        if (!shouldHandleInbound(payload, account.botId)) return;
+      if (payload.event !== "message_created") return;
 
-        // Dedup: skip messages already processed (e.g. after reconnect)
-        const dedupKey = `msg:${payload.message.id}`;
-        if (dedup.has(dedupKey)) {
-          logger?.info?.(`[sabha] Skipping duplicate message ${payload.message.id}`);
-          return;
-        }
+      // Pre-flight gating — skip self/non-mention before any side effects
+      // (dedup mark, status update, typing indicator). This ensures the
+      // bot doesn't flicker a typing indicator for messages it will ignore.
+      if (!shouldHandleInbound(payload, account.botId)) return;
 
-        statusSink?.({ lastInboundAt: Date.now() });
-        typing?.start(payload.room.id);
+      const dedupKey = `msg:${payload.message.id}`;
+      if (dedup.has(dedupKey) || inFlight.has(dedupKey)) {
+        logger?.info?.(`[sabha] Skipping duplicate message ${payload.message.id}`);
+        return;
+      }
+
+      // Optimistic mark: reserve the dedup slot *before* processing so a
+      // reconnect-driven redelivery that arrives while work is still in
+      // flight is suppressed by the in-flight guard + dedup cache. On
+      // failure we unmark below so the next reconnect redelivery can retry
+      // — Sabha only redelivers on reconnect, not on ack/NACK, so dropping
+      // the mark permanently would turn every transient failure into a
+      // silent lost reply.
+      dedup.mark(dedupKey);
+      statusSink?.({ lastInboundAt: Date.now() });
+      typing?.start(payload.room.id);
+
+      const work = (async () => {
         try {
           await processInboundMessage(payload, {
             runtime,
@@ -142,15 +163,18 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             },
             logger,
           });
-          // Mark as seen only after successful processing
-          dedup.mark(dedupKey);
         } catch (err) {
-          // Don't mark as seen — allow retry on next delivery
+          // Roll back the optimistic mark so a future reconnect redelivery
+          // of this message_created event gets a fresh attempt instead of
+          // being silently dropped as a duplicate.
+          dedup.unmark(dedupKey);
           logger?.error?.(`[sabha] Failed to process message ${payload.message.id}: ${err}`);
         } finally {
           typing?.stop(payload.room.id);
+          inFlight.delete(dedupKey);
         }
-      }
+      })();
+      inFlight.set(dedupKey, work);
     },
   });
 
@@ -175,6 +199,14 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   } finally {
     // Cancel any outstanding refresh timers so the monitor can be GC'd.
     typing?.reset();
+    // Drain in-flight processing so we don't leave dangling fetches or
+    // half-sent replies after the monitor returns. The SabhaClient holds
+    // the same abortSignal, so an aborted shutdown cancels the pending
+    // HTTP calls and each work promise unwinds quickly.
+    if (inFlight.size > 0) {
+      logger?.info?.(`[sabha] Draining ${inFlight.size} in-flight message(s)`);
+      await Promise.allSettled(inFlight.values());
+    }
   }
 }
 

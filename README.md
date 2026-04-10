@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@sabha-co/openclaw-sabha)](https://www.npmjs.com/package/@sabha-co/openclaw-sabha)
 [![License](https://img.shields.io/github/license/sabha-co/openclaw-sabha)](LICENSE)
 
-OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSocket (ActionCable) for real-time event delivery — no public IP or webhook URL needed.
+OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSocket for real-time event delivery — no public IP or webhook URL needed.
 
 ## Features
 
@@ -14,6 +14,7 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 - Sabha self-host support (single-tenant and multi-tenant SaaS)
 - Message dedup across WebSocket reconnects
 - Auto-registration via join URL
+- Auto-joins all open rooms on setup
 
 ## Install
 
@@ -23,7 +24,7 @@ openclaw plugins install @sabha-co/openclaw-sabha
 
 ## Post-install: allowlist the plugin
 
-Newer OpenClaw versions warn when non-bundled plugins are loaded without being declared in `plugins.allow`. Add `sabha` to the allowlist in `~/.openclaw/openclaw.json`:
+Add `sabha` to the allowlist in `~/.openclaw/openclaw.json`:
 
 ```json5
 {

@@ -17,7 +17,7 @@ import {
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
 import { fetchSkillPrompt } from "./src/skill-prompt.js";
-import { createSabhaDraftStream } from "./src/draft-stream.js";
+import { createSabhaDraftStream, formatStreamError } from "./src/draft-stream.js";
 let pluginRuntime: PluginRuntime | undefined;
 
 const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEntry({
@@ -152,7 +152,8 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                 }
               : undefined;
 
-            await processInboundMessage(payload, {
+            try {
+              await processInboundMessage(payload, {
               runtime: pluginRuntime,
               cfg,
               account: currentAccount,
@@ -173,17 +174,61 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                   return;
                 }
 
-                // Streaming fast-path: finalize the preview in place
-                // instead of posting a second message. Matches monitor.ts.
+                // Streaming fast-path — see monitor.ts for the full
+                // rationale. Three cases: (a) alive + preview exists,
+                // finalize in place; (b) preview exists but loop died
+                // mid-turn, bypass the SDK and PATCH directly; (c)
+                // no preview, plain send.
                 if (draftStream && draftStream.messageId() !== undefined) {
-                  draftStream.update(text);
-                  await draftStream.stop();
-                  return;
+                  if (draftStream.isAlive()) {
+                    draftStream.update(text);
+                    await draftStream.stop();
+                    return;
+                  }
+                  const previewId = draftStream.messageId()!;
+                  try {
+                    await client.editMessage(roomId, previewId, text);
+                    return;
+                  } catch (err) {
+                    api.logger.error?.(
+                      `[sabha] Draft stream recovery edit failed: ${formatStreamError(err)}`,
+                    );
+                    await client
+                      .deleteMessage(roomId, previewId)
+                      .catch(() => undefined);
+                  }
                 }
 
                 await client.sendMessage(roomId, text);
               },
             });
+            } catch (err) {
+              // Q12 error-replace (webhook path). Mirrors monitor.ts:
+              // bypass the draft stream (it may be stopped) and PATCH
+              // the preview directly with a redacted error string so
+              // the bot_key embedded in `SabhaApiError` URLs never
+              // lands in a public room message.
+              if (draftStream && draftStream.messageId() !== undefined) {
+                const previewId = draftStream.messageId()!;
+                const safe = formatStreamError(err);
+                await client
+                  .editMessage(payload.room.id, previewId, safe)
+                  .catch((replaceErr) => {
+                    api.logger.error?.(
+                      `[sabha] Webhook error-replace edit failed: ${formatStreamError(replaceErr)}`,
+                    );
+                  });
+              }
+              api.logger.error?.(
+                `[sabha] Webhook dispatch failed: ${formatStreamError(err)}`,
+              );
+            } finally {
+              // Clear the SDK's pending setTimeout so the Node event
+              // loop can unwind after the request handler returns.
+              if (draftStream) {
+                await draftStream.stop().catch(() => undefined);
+              }
+            }
           } else {
             const botId = currentAccount.botId;
             switch (payload.event) {

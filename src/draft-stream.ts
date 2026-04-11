@@ -2,6 +2,33 @@ import { createFinalizableDraftLifecycle } from "openclaw/plugin-sdk/channel-lif
 import type { SabhaClient } from "./client.js";
 
 /**
+ * Render an error as a safe, bounded user-visible string.
+ *
+ * `SabhaApiError` puts the fully-formed fetch URL — including the
+ * `bot_key` path segment — inside its message (see `client.ts`, where
+ * `throw new SabhaApiError(status, body, url)` and the super constructor
+ * interpolates the url). Using `String(err)` on one of those errors
+ * would PATCH the bot key into a public room message. Redact the
+ * `{id}-{token}` pattern before it reaches any user-facing surface.
+ *
+ * Also trims to 500 chars so an LLM stack trace or a giant JSON error
+ * body doesn't dwarf the reply.
+ *
+ * Exported because the monitor / webhook error paths use it to build
+ * the Q12 error-replace text before calling `editMessage` directly.
+ */
+export function formatStreamError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  // Bot keys are `{numeric-id}-{token}` with a token of at least ~10
+  // alphanumeric chars. The numeric prefix is short (1-6 digits) and the
+  // token is URL-safe; matching `\d{1,8}-[A-Za-z0-9]{10,}` catches the
+  // full key without over-redacting unrelated identifiers like commit
+  // hashes or timestamps with a leading digit group.
+  const redacted = raw.replace(/\d{1,8}-[A-Za-z0-9]{10,}/g, "***");
+  return redacted.length > 500 ? redacted.slice(0, 500) + "…" : redacted;
+}
+
+/**
  * Throttle budget for streaming edits. Matches the Phase 2 gate decision
  * (Q10): ~2 edits/sec. Conservative vs Slack/Discord (3-5/sec) because
  * Sabha's Turbo Stream rebroadcast is untested at higher rates — see Q11
@@ -41,6 +68,16 @@ export type SabhaDraftStream = {
   flush: () => Promise<void>;
   /** Current stream message id, or undefined if nothing has been sent yet. */
   messageId: () => number | undefined;
+  /**
+   * `true` while the loop can still accept `update` calls. Flips to
+   * `false` the moment `sendOrEditStreamMessage` short-circuits due to an
+   * error, a null message id, or the max-chars cap. Callers in the
+   * `deliver` and error-replace paths MUST check this before routing
+   * finalization through `update` / `stop` — once the stream is dead
+   * the SDK's controls wrapper silently drops updates, and a caller
+   * assuming success would leave the preview stuck on the last partial.
+   */
+  isAlive: () => boolean;
   /** Delete the preview message (if any) and stop the loop. */
   clear: () => Promise<void>;
   /** Finalize the stream: mark final, drain the last text, guarantee one last edit. */
@@ -65,7 +102,18 @@ export type CreateSabhaDraftStreamParams = {
 export function createSabhaDraftStream(
   params: CreateSabhaDraftStreamParams,
 ): SabhaDraftStream {
-  const throttleMs = Math.max(250, params.throttleMs ?? DEFAULT_THROTTLE_MS);
+  const requestedThrottleMs = params.throttleMs ?? DEFAULT_THROTTLE_MS;
+  const throttleMs = Math.max(250, requestedThrottleMs);
+  if (throttleMs !== requestedThrottleMs) {
+    // Surface the clamp so operators don't silently get a different value
+    // than they configured. 250ms is a hard floor: below that the SDK
+    // loop starts to schedule faster than Sabha can comfortably serve
+    // PATCHes, and Phase 1's retry runner ends up doing the smoothing
+    // instead of the throttle itself.
+    params.logger?.warn?.(
+      `sabha draft stream throttleMs=${requestedThrottleMs} clamped to floor 250`,
+    );
+  }
   const maxChars = params.maxChars ?? DEFAULT_MAX_CHARS;
   const { client, roomId, logger } = params;
 
@@ -97,16 +145,18 @@ export function createSabhaDraftStream(
       return false;
     }
 
+    // Dedup against the last *successfully sent* text. We deliberately
+    // don't mutate `lastSentText` until after the await succeeds — if we
+    // mutated it optimistically and the send then threw, a caller doing
+    // a legitimate retry with the same snapshot would hit this dedup
+    // branch and silently skip the retry. See also the "coupled invariant"
+    // discussion in the commit that added `isAlive()`.
     if (trimmed === lastSentText) return true;
-
-    // Optimistically record what we're about to send so a duplicate
-    // callback from the loop (can happen if `flush` races a scheduled
-    // tick) dedups instead of re-PATCHing the same text.
-    lastSentText = trimmed;
 
     try {
       if (streamMessageId !== undefined) {
         await client.editMessage(roomId, streamMessageId, trimmed);
+        lastSentText = trimmed;
         return true;
       }
       const sentId = await client.sendMessage(roomId, trimmed);
@@ -120,10 +170,13 @@ export function createSabhaDraftStream(
         return false;
       }
       streamMessageId = sentId;
+      lastSentText = trimmed;
       return true;
     } catch (err) {
       state.stopped = true;
-      logger?.warn?.(`sabha draft stream failed: ${String(err)}`);
+      logger?.warn?.(
+        `sabha draft stream failed: ${formatStreamError(err)}`,
+      );
       return false;
     }
   };
@@ -165,6 +218,7 @@ export function createSabhaDraftStream(
     update,
     flush: loop.flush,
     messageId: readMessageId,
+    isAlive: () => !state.stopped,
     clear,
     stop,
     forceNewMessage,

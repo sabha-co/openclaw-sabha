@@ -24,7 +24,7 @@ import {
 import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
 import { TypingManager } from "./typing.js";
-import { createSabhaDraftStream } from "./draft-stream.js";
+import { createSabhaDraftStream, formatStreamError } from "./draft-stream.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
@@ -267,17 +267,49 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                   return;
                 }
 
-                // Streaming fast-path: if the draft stream already has
-                // a preview message from the partials, finalize it in
-                // place so the user sees one message grow into the final
-                // text instead of a "..." placeholder followed by a
-                // second post. If the stream never got a chance to send
-                // (e.g. reply was instant, no partials), the stream has
-                // no message id and we fall through to a plain send.
+                // Streaming fast-path. Three cases:
+                //
+                //   (a) Stream is alive and already has a preview
+                //       message — finalize in place via update + stop.
+                //       User sees one message grow into the final text,
+                //       no "..." leak, no second post.
+                //
+                //   (b) Stream has a preview message but the loop died
+                //       mid-turn (e.g. a partial edit threw). The SDK's
+                //       controls wrapper will silently drop further
+                //       updates, so update+stop would be a no-op and
+                //       leave the preview stuck on partial N-1. Bypass
+                //       the loop and PATCH the final text directly via
+                //       the client. This is the fix for the P0 flagged
+                //       in the review of 0fe41bf — without it, one
+                //       flaky edit anywhere in the turn loses the final
+                //       text entirely.
+                //
+                //   (c) Stream never got a chance to send (instant
+                //       reply, no partials, or the first send itself
+                //       failed) — fall through to plain sendMessage.
                 if (draftStream && draftStream.messageId() !== undefined) {
-                  draftStream.update(text);
-                  await draftStream.stop();
-                  return;
+                  if (draftStream.isAlive()) {
+                    draftStream.update(text);
+                    await draftStream.stop();
+                    return;
+                  }
+                  // Stream is dead but the preview exists. Best-effort
+                  // direct edit; on failure, delete the stale preview
+                  // and post fresh so the user sees something instead
+                  // of a frozen partial.
+                  const previewId = draftStream.messageId()!;
+                  try {
+                    await client.editMessage(roomId, previewId, text);
+                    return;
+                  } catch (err) {
+                    logger?.error?.(
+                      `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
+                    );
+                    await client
+                      .deleteMessage(roomId, previewId)
+                      .catch(() => undefined);
+                  }
                 }
 
                 await client.sendMessage(roomId, text);
@@ -289,19 +321,37 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // redelivery of this message_created event gets a fresh
             // attempt instead of being silently dropped as a duplicate.
             dedup.unmark(dedupKey!);
-            // Q12 (plain error text, no visual marker): if an error
-            // happens mid-turn and we have a stream preview already
-            // showing partial text, replace it with the error so the
-            // user doesn't see a stuck partial. Best-effort — if the
-            // replace itself fails (stream already stopped by an earlier
-            // network error), we swallow it; the log below still
-            // captures the original error for operators.
+            // Q12 error-replace: replace the preview with the error
+            // string so the user doesn't see a stuck partial. The
+            // stream may already be `stopped` from the failure that
+            // bubbled up here — going through `draftStream.update` /
+            // `stop` would be a silent no-op in that case (the SDK
+            // drops updates once stopped). Bypass the loop entirely
+            // and PATCH via the client. `formatStreamError` redacts
+            // bot keys from error messages before they land on a
+            // public room message — `SabhaApiError` embeds the fetch
+            // URL (which contains the bot key) in its message.
             if (draftStream && draftStream.messageId() !== undefined) {
-              draftStream.update(String(err));
+              const previewId = draftStream.messageId()!;
+              const safe = formatStreamError(err);
+              await client
+                .editMessage(payload.room.id, previewId, safe)
+                .catch((replaceErr) => {
+                  logger?.error?.(
+                    `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,
+                  );
+                });
+            }
+            logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${formatStreamError(err)}`);
+          } finally {
+            // Draft stream cleanup: even on the success path, the SDK's
+            // scheduled setTimeout is not unref'd. Explicitly stop the
+            // loop so any pending tick is cleared and Node can exit
+            // cleanly after an abort. Idempotent — calling stop on an
+            // already-stopped loop is a no-op.
+            if (draftStream) {
               await draftStream.stop().catch(() => undefined);
             }
-            logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
-          } finally {
             typing?.stop(payload.room.id);
             inFlight.delete(dedupKey!);
           }

@@ -50,16 +50,34 @@ function waitForAbort(abortSignal?: AbortSignal): Promise<void> {
  * as a create, update, and delete) never collide — each is a distinct
  * event the agent should see at most once.
  *
+ * For `message_updated`, the key also folds in `updated_at` so
+ * repeated edits of the same message id are treated as distinct
+ * events. Without the timestamp tiebreaker, every edit of message 14
+ * would hash to `message_updated:14` and the second edit through the
+ * pipeline would be silently dropped as a "duplicate" — which the
+ * self-echo pre-filter in `onMessage` mostly covers in practice (the
+ * stream of `editMessage` echoes from the bot's own partials never
+ * reaches dedup) but which would still silently drop a real user's
+ * second edit of their own message within the 5-minute dedup window.
+ *
  * `user_*` events fan out globally and don't carry a stable per-event
  * id the plugin can dedup against, so we return `null` — they bypass
  * the cache entirely. The stub handlers are side-effect-free, so
  * duplicate delivery on reconnect is harmless.
  */
-function buildDedupKey(payload: SabhaWebhookPayload): string | null {
+export function buildDedupKey(payload: SabhaWebhookPayload): string | null {
   switch (payload.event) {
     case "message_created":
+      return `${payload.event}:${payload.message.id}`;
     case "message_updated":
+      // Include `updated_at` so a user editing the same message twice
+      // in quick succession is not collapsed into one cache slot. The
+      // timestamp comes from the server side of Sabha (see
+      // `app/models/bot/event_payload.rb`) so clock drift between the
+      // bot host and Sabha does not matter.
+      return `${payload.event}:${payload.message.id}:${payload.message.updated_at}`;
     case "message_deleted":
+      // A message can only be deleted once; no tiebreaker required.
       return `${payload.event}:${payload.message.id}`;
     case "boost_created":
     case "boost_deleted":
@@ -67,6 +85,47 @@ function buildDedupKey(payload: SabhaWebhookPayload): string | null {
     case "user_created":
     case "user_deleted":
       return null;
+  }
+}
+
+/**
+ * Pre-filter for events the bot caused itself. Returns true when the
+ * payload's actor is the bot, for every variant that can plausibly be
+ * bot-originated (message create/update/delete and boost create/delete).
+ *
+ * Runs BEFORE the dedup cache check in `onMessage` so self-echoes
+ * never touch the cache and never produce "Skipping duplicate" log
+ * noise. This is load-bearing for streaming: every `editMessage` the
+ * bot issues causes Sabha to fan a `message_updated` frame back over
+ * the WS (Scout A, hazard #2), and a ~10-edit streaming turn without
+ * the pre-filter produces ~10 info-level log lines per turn and
+ * pollutes the dedup cache with entries that end up collapsing real
+ * events.
+ *
+ * `user_*` events are never bot-originated (Sabha fires these when a
+ * workspace member is created/deleted, not when a bot acts), so they
+ * are always passed through here. The downstream `user_*` stubs are
+ * side-effect-free per the privacy invariant in `src/inbound.ts`.
+ *
+ * The per-handler `shouldHandleInbound` check in `src/inbound.ts`
+ * still re-runs the same test as a belt-and-suspenders defense —
+ * removing it here would leave correctness to a single gate in
+ * `monitor.ts`, which is a change we don't want.
+ */
+export function isSelfEchoEvent(
+  payload: SabhaWebhookPayload,
+  botId: number,
+): boolean {
+  switch (payload.event) {
+    case "message_created":
+    case "message_updated":
+    case "message_deleted":
+    case "boost_created":
+    case "boost_deleted":
+      return payload.user.id === botId;
+    case "user_created":
+    case "user_deleted":
+      return false;
   }
 }
 
@@ -182,10 +241,25 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         return;
       }
 
+      // Self-echo pre-filter: drop events caused by the bot itself
+      // before they touch the dedup cache or the log. Without this
+      // early return, every `editMessage` the bot issues during a
+      // streaming turn (Phase 2.1) causes Sabha to fan a
+      // `message_updated` frame back over the WS (Scout A, hazard
+      // #2), polluting the dedup cache with the bot's own echoes
+      // and producing one "Skipping duplicate" info line per edit
+      // as soon as the `message_updated:<id>` dedup slot was first
+      // marked. Per-handler `shouldHandleInbound` still re-checks
+      // self-echo as a defensive double-check (see src/inbound.ts).
+      if (isSelfEchoEvent(payload, account.botId)) return;
+
       // Dedup keys are scoped by event type so the same numeric id
       // never collides across variants — e.g. `message_created:42`
       // must not dedup `message_updated:42`, since those are two
       // distinct events that the agent should observe independently.
+      // `message_updated` additionally folds in `updated_at` so two
+      // legitimate edits of the same message id within the dedup
+      // window are treated as distinct events — see `buildDedupKey`.
       // See src/dedup.ts — 2000-entry FIFO / 5min TTL is wide enough
       // to absorb reconnect replay across all variants (Q5).
       const dedupKey = buildDedupKey(payload);

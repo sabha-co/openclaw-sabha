@@ -6,6 +6,7 @@ import type {
   SabhaThreadReply,
   SabhaMessageBody,
 } from "./types.js";
+import { markdownToSabhaRichText } from "./outbound/format.js";
 import {
   RETRYABLE_STATUS,
   createSabhaRetryRunner,
@@ -69,11 +70,21 @@ export class SabhaClient {
 
   // --- Messaging ---
 
+  /**
+   * Send a markdown message to a Sabha room.
+   *
+   * The `text` argument is treated as markdown and converted to Sabha's
+   * ActionText / Trix HTML subset via `markdownToSabhaRichText` before the
+   * POST. Sabha stores message bodies as rich text via `has_rich_text :body`
+   * — every wire-level write has to be Trix-compatible HTML, and that's a
+   * wire fact the client owns alongside authentication and URL shape.
+   */
   async sendMessage(roomId: number, text: string): Promise<number | null> {
+    const body = markdownToSabhaRichText(text);
     const res = await this.fetch(`/rooms/${roomId}/${this.botKey}/messages`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
-      body: text,
+      body,
     });
 
     return this.extractMessageId(res);
@@ -102,17 +113,24 @@ export class SabhaClient {
     return match ? Number(match[1]) : null;
   }
 
+  /**
+   * Edit an existing message. `text` is treated as markdown and converted
+   * to Trix HTML before the PATCH, same as `sendMessage`. This is the only
+   * edit entry point (draft-stream.ts uses it for streaming previews), so
+   * the converter must run here too.
+   */
   async editMessage(
     roomId: number,
     messageId: number,
     text: string,
   ): Promise<SabhaMessageBody> {
+    const body = markdownToSabhaRichText(text);
     const res = await this.fetch(
       `/rooms/${roomId}/${this.botKey}/messages/${messageId}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "text/plain" },
-        body: text,
+        body,
       },
     );
 
@@ -141,17 +159,22 @@ export class SabhaClient {
     return (await res.json()) as SabhaMessage[];
   }
 
+  /**
+   * Post a reply inside a message's thread. `text` is treated as markdown
+   * and converted to Trix HTML before the POST, same as `sendMessage`.
+   */
   async replyInThread(
     roomId: number,
     messageId: number,
     text: string,
   ): Promise<SabhaThreadReply> {
+    const body = markdownToSabhaRichText(text);
     const res = await this.fetch(
       `/rooms/${roomId}/${this.botKey}/messages/${messageId}/thread`,
       {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: text,
+        body,
       },
     );
     return (await res.json()) as SabhaThreadReply;

@@ -18,6 +18,7 @@ import {
   resolveDefaultBotAccountId,
 } from "./bot-accounts.js";
 import { SabhaClient } from "./client.js";
+import { chunkMarkdownText } from "./outbound/chunk.js";
 import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import { monitorSabha } from "./monitor.js";
@@ -336,6 +337,8 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
     base: {
       deliveryMode: "direct",
       textChunkLimit: 10000,
+      chunkerMode: "markdown",
+      chunker: chunkMarkdownText,
     },
   },
 });

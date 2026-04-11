@@ -184,6 +184,22 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         const account = resolveBotAccount({ cfg: params.cfg });
         const hints = [
           `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
+          // Sabha mention syntax is deliberately NOT the same as Discord /
+          // Slack. Without this reinforcement, agents default to `<@id>`
+          // (Discord prior) or `@username` (Slack/plain text) and
+          // server-side format_mentions silently drops the mention — no
+          // pill, no notification, no mentionees[] entry. Sabha's
+          // `format_mentions` regex is `/@\{(.+?)\}/`, so only the
+          // curly-brace form triggers the rewrite. We surface the sender
+          // id as `Name (@{id})` in the inbound envelope's `from` field
+          // (see `src/inbound.ts`), and this hint tells the agent how to
+          // use it.
+          "MENTIONS IN SABHA: To mention a user, emit the literal token `@{USER_ID}` (curly braces, numeric id). " +
+            "Do NOT use Discord-style `<@USER_ID>` or Slack-style `@username` — Sabha's server will NOT rewrite those, " +
+            "and the user will see the raw text with no pill and no notification. The sender's id is shown in the " +
+            "incoming message envelope's `from` field as `Name (@{id})` — copy the `@{id}` token verbatim to reply-mention " +
+            "them. For example, if the envelope shows `From: Alice (@{42})`, reply with `Thanks @{42}, on it!` to produce " +
+            "a real mention pill.",
         ];
         const skillText = getCachedSkillText(account.baseUrl);
         if (skillText) {

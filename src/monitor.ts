@@ -29,6 +29,21 @@ const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
 
 /**
+ * Park until `abortSignal` fires. Used on fatal, unrecoverable errors
+ * to prevent the SDK's account supervisor from treating a clean return
+ * from `monitorSabha` as "finished" and auto-restarting us into the
+ * same failure. `channel.ts` has a sibling helper on the unserviceable
+ * path; this is the same idea, applied after the reconnect loop bails.
+ */
+function waitForAbort(abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) return new Promise(() => {});
+  if (abortSignal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    abortSignal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+/**
  * Build a dedup cache key from a webhook payload. Keys are scoped by
  * `event` so the same numeric id across variants (e.g. message id 42
  * as a create, update, and delete) never collide — each is a distinct
@@ -273,15 +288,27 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
     },
   });
 
+  // Tracks whether the reconnect loop exited because of a fatal,
+  // unrecoverable error (auth failure, subscription rejected). On fatal
+  // exits we park the hook until abort below so the SDK's account
+  // supervisor doesn't auto-restart us into the same failure — reconnect
+  // won't fix a wrong bot_key, it just spams the server and the logs.
+  let fatalReason: string | null = null;
   try {
     await runWithReconnect(connectOnce, {
       abortSignal,
       jitterRatio: 0.2,
       shouldReconnect: ({ error }) => {
         // Server explicitly told us not to reconnect (auth failure, etc.)
-        if (error instanceof DisconnectNoReconnectError) return false;
+        if (error instanceof DisconnectNoReconnectError) {
+          fatalReason = error.message;
+          return false;
+        }
         // Subscription rejected — bot_key is invalid/unauthorized
-        if (error instanceof SubscriptionRejectedError) return false;
+        if (error instanceof SubscriptionRejectedError) {
+          fatalReason = error.message;
+          return false;
+        }
         return true;
       },
       onError: (err) => {
@@ -291,6 +318,14 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         logger?.info?.(`${logPrefix} Reconnecting in ${Math.round(delayMs / 1000)}s`);
       },
     });
+
+    if (fatalReason && !abortSignal?.aborted) {
+      logger?.error?.(
+        `${logPrefix} Fatal Sabha error (${fatalReason}) — parking this account until gateway restart. Fix the bot_key / baseUrl and run \`openclaw gateway restart\`.`,
+      );
+      statusSink?.({ lastError: `fatal: ${fatalReason}` });
+      await waitForAbort(abortSignal);
+    }
   } finally {
     // Cancel any outstanding refresh timers so the monitor can be GC'd.
     typing?.reset();

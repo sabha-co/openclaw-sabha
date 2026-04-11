@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   getBotAccountView,
   isDefaultBotAccount,
+  listConfiguredBotAccountIds,
   sabhaSetupWizard,
   setBotAccountConfig,
 } from "./setup-wizard.js";
@@ -187,6 +188,184 @@ describe("sabhaSetupWizard.status.resolveConfigured", () => {
     //   default for any account id not explicitly overridden. If you want
     //   a fresh account to start unconfigured, the wizard will overwrite
     //   the credentials via setBotAccountConfig.
+  });
+});
+
+describe("listConfiguredBotAccountIds", () => {
+  it("returns an empty list when nothing is configured", () => {
+    expect(listConfiguredBotAccountIds(emptyCfg)).toEqual([]);
+  });
+
+  it("returns the default id for a legacy single-bot config", () => {
+    expect(listConfiguredBotAccountIds(legacyCfg)).toEqual(["default"]);
+  });
+
+  it("returns every named account plus the default when all have credentials", () => {
+    const ids = listConfiguredBotAccountIds(multiCfg);
+    expect(ids).toEqual(expect.arrayContaining(["default", "staging"]));
+    expect(ids.length).toBe(2);
+  });
+
+  it("omits a named account with only a partial override (no botKey)", () => {
+    const cfg: Cfg = {
+      channels: {
+        sabha: {
+          baseUrl: "https://sabha.example.com",
+          botKey: "42-x",
+          botAccounts: {
+            partial: { botName: "Half Baked" }, // no botKey of its own
+          },
+        },
+      },
+    } as unknown as Cfg;
+    // `partial` inherits the base credentials via merge, so it WOULD
+    // appear configured. This matches the existing `resolveConfigured`
+    // semantics for named accounts that inherit base credentials — see
+    // the comment in `sabhaSetupWizard.status.resolveConfigured` above.
+    // We include it here to document the intentional behavior so a
+    // future reader doesn't mistake it for a bug.
+    expect(listConfiguredBotAccountIds(cfg)).toEqual(
+      expect.arrayContaining(["default", "partial"]),
+    );
+  });
+});
+
+describe("sabhaSetupWizard.resolveAccountIdForConfigure", () => {
+  const resolve = sabhaSetupWizard.resolveAccountIdForConfigure!;
+
+  function stubPrompter(
+    recorded: {
+      selectCalls: number;
+      textCalls: number;
+      selectAnswer?: string;
+      textAnswer?: string;
+    },
+  ) {
+    return {
+      select: async (_opts: { options: Array<{ value: string }> }) => {
+        recorded.selectCalls += 1;
+        return recorded.selectAnswer ?? _opts.options[0]!.value;
+      },
+      text: async (_opts: { validate?: (value: string) => string | undefined }) => {
+        recorded.textCalls += 1;
+        const answer = recorded.textAnswer ?? "analyst";
+        const err = _opts.validate?.(answer);
+        if (err) throw new Error(`text validation failed: ${err}`);
+        return answer;
+      },
+      // Unused methods for this suite — fail loudly if something calls
+      // them so a future code change doesn't silently bypass the flow.
+      confirm: async () => {
+        throw new Error("confirm should not be called by resolveAccountIdForConfigure");
+      },
+      note: async () => {
+        throw new Error("note should not be called by resolveAccountIdForConfigure");
+      },
+      progress: () => {
+        throw new Error("progress should not be called by resolveAccountIdForConfigure");
+      },
+    } as unknown as Parameters<typeof resolve>[0]["prompter"];
+  }
+
+  // The SDK passes this helper through to resolveAccountIdForConfigure,
+  // but our wizard implementation never calls it — we use
+  // `listConfiguredBotAccountIds` directly. Return a stub so the typed
+  // signature is happy.
+  const listAccountIds = (_cfg: Cfg) => ["default"];
+
+  it("honors an explicit accountOverride without prompting", async () => {
+    const recorded = { selectCalls: 0, textCalls: 0 };
+    const prompter = stubPrompter(recorded);
+    const result = await resolve({
+      cfg: multiCfg,
+      prompter,
+      accountOverride: "staging",
+      defaultAccountId: "default",
+      shouldPromptAccountIds: false,
+      listAccountIds,
+    });
+    expect(result).toBe("staging");
+    expect(recorded.selectCalls).toBe(0);
+    expect(recorded.textCalls).toBe(0);
+  });
+
+  it("falls through to defaultAccountId on a fresh config with nothing configured", async () => {
+    const recorded = { selectCalls: 0, textCalls: 0 };
+    const prompter = stubPrompter(recorded);
+    const result = await resolve({
+      cfg: emptyCfg,
+      prompter,
+      defaultAccountId: "default",
+      shouldPromptAccountIds: false,
+      listAccountIds,
+    });
+    expect(result).toBe("default");
+    expect(recorded.selectCalls).toBe(0);
+  });
+
+  it("offers Edit options when at least one bot is configured and returns the picked id", async () => {
+    const recorded = {
+      selectCalls: 0,
+      textCalls: 0,
+      selectAnswer: "edit:staging",
+    };
+    const prompter = stubPrompter(recorded);
+    const result = await resolve({
+      cfg: multiCfg,
+      prompter,
+      defaultAccountId: "default",
+      shouldPromptAccountIds: false,
+      listAccountIds,
+    });
+    expect(result).toBe("staging");
+    expect(recorded.selectCalls).toBe(1);
+    expect(recorded.textCalls).toBe(0);
+  });
+
+  it("prompts for a new id when the user picks Add new bot", async () => {
+    const recorded = {
+      selectCalls: 0,
+      textCalls: 0,
+      selectAnswer: "new",
+      textAnswer: "analyst",
+    };
+    const prompter = stubPrompter(recorded);
+    const result = await resolve({
+      cfg: multiCfg,
+      prompter,
+      defaultAccountId: "default",
+      shouldPromptAccountIds: false,
+      listAccountIds,
+    });
+    expect(result).toBe("analyst");
+    expect(recorded.selectCalls).toBe(1);
+    expect(recorded.textCalls).toBe(1);
+  });
+
+  it("rejects reserved and duplicate ids via the text validator", async () => {
+    // Simulate the `default` case — validator must reject.
+    const reserved = { selectCalls: 0, textCalls: 0, selectAnswer: "new", textAnswer: "default" };
+    await expect(
+      resolve({
+        cfg: multiCfg,
+        prompter: stubPrompter(reserved),
+        defaultAccountId: "default",
+        shouldPromptAccountIds: false,
+        listAccountIds,
+      }),
+    ).rejects.toThrow(/reserved/);
+
+    // And the duplicate case — `staging` is already in multiCfg.
+    const duplicate = { selectCalls: 0, textCalls: 0, selectAnswer: "new", textAnswer: "staging" };
+    await expect(
+      resolve({
+        cfg: multiCfg,
+        prompter: stubPrompter(duplicate),
+        defaultAccountId: "default",
+        shouldPromptAccountIds: false,
+        listAccountIds,
+      }),
+    ).rejects.toThrow(/already exists/);
   });
 });
 

@@ -24,6 +24,7 @@ import {
 import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
 import { TypingManager } from "./typing.js";
+import { createSabhaDraftStream } from "./draft-stream.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
@@ -213,21 +214,73 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         statusSink?.({ lastInboundAt: Date.now() });
         typing?.start(payload.room.id);
 
+        // Streaming draft-stream preview. Lives for the duration of one
+        // inbound turn and is shared between `onPartialReply` (per-token
+        // updates) and `deliver` (final edit). Non-thread replies only
+        // in v1: streaming into a thread would need a first `replyInThread`
+        // to capture the thread sub-room id before subsequent PATCHes can
+        // target it, and the wiring isn't worth the complexity for the
+        // initial ship. Thread replies fall through to the non-streaming
+        // `replyInThread` path below.
+        const threadContext = payload.message.thread;
+        const streaming = threadContext == null;
+        const draftStream = streaming
+          ? createSabhaDraftStream({
+              client,
+              roomId: payload.room.id,
+              logger: {
+                debug: (msg) => logger?.info?.(`${logPrefix} ${msg}`),
+                warn: (msg) => logger?.error?.(`${logPrefix} ${msg}`),
+              },
+            })
+          : undefined;
+
+        // The runtime may stream partials with reasoning/thinking tags
+        // still embedded; we display text only. Reasoning previews are
+        // their own lane (`onReasoningStream`) that we do NOT wire — the
+        // bot surfaces the final assistant text, not its chain-of-thought.
+        const onPartialReply = draftStream
+          ? (partial: { text?: string }) => {
+              const text = partial.text;
+              if (typeof text !== "string" || text.length === 0) return;
+              draftStream.update(text);
+              // Stop the typing indicator once the first preview lands.
+              // Typing + an empty preview looks broken; typing + a growing
+              // preview is redundant. (Q12 default.)
+              typing?.stop(payload.room.id);
+            }
+          : undefined;
+
         const work = (async () => {
           try {
             await processInboundMessage(payload, {
               runtime,
               cfg: config,
               account,
+              ...(onPartialReply ? { onPartialReply } : {}),
               deliver: async (replyPayload) => {
                 const roomId = Number(replyPayload.to ?? payload.room.id);
                 const text = replyPayload.text ?? replyPayload.body ?? "";
 
                 if (replyPayload.threadId && replyPayload.replyToId) {
                   await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
-                } else {
-                  await client.sendMessage(roomId, text);
+                  return;
                 }
+
+                // Streaming fast-path: if the draft stream already has
+                // a preview message from the partials, finalize it in
+                // place so the user sees one message grow into the final
+                // text instead of a "..." placeholder followed by a
+                // second post. If the stream never got a chance to send
+                // (e.g. reply was instant, no partials), the stream has
+                // no message id and we fall through to a plain send.
+                if (draftStream && draftStream.messageId() !== undefined) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
+
+                await client.sendMessage(roomId, text);
               },
               logger,
             });
@@ -236,6 +289,17 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // redelivery of this message_created event gets a fresh
             // attempt instead of being silently dropped as a duplicate.
             dedup.unmark(dedupKey!);
+            // Q12 (plain error text, no visual marker): if an error
+            // happens mid-turn and we have a stream preview already
+            // showing partial text, replace it with the error so the
+            // user doesn't see a stuck partial. Best-effort — if the
+            // replace itself fails (stream already stopped by an earlier
+            // network error), we swallow it; the log below still
+            // captures the original error for operators.
+            if (draftStream && draftStream.messageId() !== undefined) {
+              draftStream.update(String(err));
+              await draftStream.stop().catch(() => undefined);
+            }
             logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
           } finally {
             typing?.stop(payload.room.id);

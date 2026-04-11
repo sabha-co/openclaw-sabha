@@ -17,6 +17,7 @@ import {
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
 import { fetchSkillPrompt } from "./src/skill-prompt.js";
+import { createSabhaDraftStream } from "./src/draft-stream.js";
 let pluginRuntime: PluginRuntime | undefined;
 
 const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEntry({
@@ -125,11 +126,38 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               currentAccount.botKey,
             );
 
+            // Streaming: non-thread replies get a draft stream that
+            // `onPartialReply` feeds token-by-token. Thread replies
+            // stay on the non-streaming path (see `monitor.ts` for the
+            // same split). The webhook handler has to return 200
+            // immediately, so we still `await processInboundMessage`
+            // below — webhook mode is inherently sync-to-the-runtime.
+            const threadContext = payload.message.thread;
+            const streaming = threadContext == null;
+            const draftStream = streaming
+              ? createSabhaDraftStream({
+                  client,
+                  roomId: payload.room.id,
+                  logger: {
+                    debug: (msg) => api.logger.info?.(`[sabha] ${msg}`),
+                    warn: (msg) => api.logger.error?.(`[sabha] ${msg}`),
+                  },
+                })
+              : undefined;
+            const onPartialReply = draftStream
+              ? (partial: { text?: string }) => {
+                  const text = partial.text;
+                  if (typeof text !== "string" || text.length === 0) return;
+                  draftStream.update(text);
+                }
+              : undefined;
+
             await processInboundMessage(payload, {
               runtime: pluginRuntime,
               cfg,
               account: currentAccount,
               logger: api.logger,
+              ...(onPartialReply ? { onPartialReply } : {}),
               deliver: async (replyPayload) => {
                 const roomId = Number(
                   replyPayload.to ?? payload.room.id,
@@ -142,9 +170,18 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                     Number(replyPayload.replyToId),
                     text,
                   );
-                } else {
-                  await client.sendMessage(roomId, text);
+                  return;
                 }
+
+                // Streaming fast-path: finalize the preview in place
+                // instead of posting a second message. Matches monitor.ts.
+                if (draftStream && draftStream.messageId() !== undefined) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
+
+                await client.sendMessage(roomId, text);
               },
             });
           } else {

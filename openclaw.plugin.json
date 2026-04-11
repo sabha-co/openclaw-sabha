@@ -30,6 +30,10 @@
             "type": "string",
             "description": "Bot key from registration via join code (e.g. 42-AbCdEfGhIjKl)."
           },
+          "botName": {
+            "type": "string",
+            "description": "Bot display name shown to users in typing indicators."
+          },
           "connectionMode": {
             "type": "string",
             "enum": ["websocket", "webhook"],
@@ -45,6 +49,11 @@
             "default": 8787,
             "description": "Webhook listener port (webhook mode only)."
           },
+          "typingEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show 'Bot is typing...' while processing (WebSocket mode only)."
+          },
           "dmPolicy": {
             "type": "string",
             "enum": ["open", "allowlist"],
@@ -55,6 +64,45 @@
             "type": "array",
             "items": { "type": "string" },
             "description": "User IDs allowed to DM (allowlist mode only)."
+          },
+          "allowPrivateAttachmentHosts": {
+            "type": "boolean",
+            "description": "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups."
+          },
+          "botAccounts": {
+            "type": "object",
+            "description": "Named bot accounts layered over the base config for multi-bot setups.",
+            "propertyNames": { "type": "string" },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "baseUrl": { "type": "string" },
+                "botKey": { "type": "string" },
+                "botName": { "type": "string" },
+                "connectionMode": {
+                  "type": "string",
+                  "enum": ["websocket", "webhook"]
+                },
+                "websocketUrl": { "type": "string" },
+                "webhookPort": { "type": "number" },
+                "typingEnabled": { "type": "boolean" },
+                "dmPolicy": {
+                  "type": "string",
+                  "enum": ["open", "allowlist"]
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "allowPrivateAttachmentHosts": { "type": "boolean" }
+              }
+            }
+          },
+          "defaultBotAccount": {
+            "type": "string",
+            "description": "Bot account id used when no explicit account is passed. Defaults to the alphabetic-first entry."
           }
         }
       },

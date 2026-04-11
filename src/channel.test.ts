@@ -92,6 +92,136 @@ describe("sabhaPlugin.meta", () => {
   });
 });
 
+describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
+  type CapturedLog = { level: string; message: string };
+
+  // Minimal ctx that exercises the early-return branches without
+  // touching monitorSabha. The disabled / wrong-mode branches never
+  // reach the "should monitor" block, so cfg / setStatus / channelRuntime
+  // don't need real implementations.
+  function makeCtx(
+    account: ReturnType<typeof resolveAccount>,
+    logs: CapturedLog[],
+    abortSignal: AbortSignal,
+  ): Parameters<
+    NonNullable<typeof sabhaPlugin.gateway>["startAccount"]
+  >[0] {
+    const record =
+      (level: string) =>
+      (message: string): void => {
+        logs.push({ level, message });
+      };
+    return {
+      account,
+      cfg: makeCfg(),
+      abortSignal,
+      log: {
+        debug: record("debug"),
+        info: record("info"),
+        warn: record("warn"),
+        error: record("error"),
+      },
+      channelRuntime: undefined,
+      setStatus: () => {},
+      getStatus: () => ({}),
+    } as unknown as Parameters<
+      NonNullable<typeof sabhaPlugin.gateway>["startAccount"]
+    >[0];
+  }
+
+  it("skips disabled accounts without starting a monitor", async () => {
+    const account = {
+      ...resolveAccount(
+        makeCfg({ baseUrl: "https://x", botKey: "1-a" }),
+      ),
+      enabled: false,
+    };
+    const logs: CapturedLog[] = [];
+    const ac = new AbortController();
+    const startPromise = sabhaPlugin.gateway!.startAccount!(
+      makeCtx(account, logs, ac.signal),
+    );
+    ac.abort();
+    await startPromise;
+
+    expect(
+      logs.some((l) => l.level === "info" && /Disabled/i.test(l.message)),
+    ).toBe(true);
+    // Must not have logged "Starting WebSocket monitor"
+    expect(logs.some((l) => /Starting WebSocket monitor/.test(l.message))).toBe(
+      false,
+    );
+  });
+
+  it("fails closed when a non-default account uses connectionMode webhook", async () => {
+    // Construct a named (non-default) bot account with webhook mode.
+    // Same shape as resolveAccount() but with a different accountId so
+    // the early-return guard trips.
+    const account = {
+      ...resolveAccount(
+        makeCfg({
+          baseUrl: "https://x",
+          botKey: "1-a",
+          connectionMode: "webhook",
+        }),
+      ),
+      accountId: "staging",
+      connectionMode: "webhook" as const,
+    };
+    const logs: CapturedLog[] = [];
+    const ac = new AbortController();
+    const startPromise = sabhaPlugin.gateway!.startAccount!(
+      makeCtx(account, logs, ac.signal),
+    );
+    ac.abort();
+    await startPromise;
+
+    expect(
+      logs.some(
+        (l) =>
+          l.level === "error" &&
+          /webhook/i.test(l.message) &&
+          /default bot account/i.test(l.message),
+      ),
+    ).toBe(true);
+    expect(logs.some((l) => /Starting WebSocket monitor/.test(l.message))).toBe(
+      false,
+    );
+  });
+
+  it("allows the default account to run in webhook mode", async () => {
+    // Default account + webhook mode is the only supported webhook
+    // configuration. It should idle (no error), not fail-close.
+    const account = {
+      ...resolveAccount(
+        makeCfg({
+          baseUrl: "https://x",
+          botKey: "1-a",
+          connectionMode: "webhook",
+        }),
+      ),
+      connectionMode: "webhook" as const,
+    };
+    const logs: CapturedLog[] = [];
+    const ac = new AbortController();
+    const startPromise = sabhaPlugin.gateway!.startAccount!(
+      makeCtx(account, logs, ac.signal),
+    );
+    ac.abort();
+    await startPromise;
+
+    expect(
+      logs.some((l) => l.level === "info" && /Webhook mode/.test(l.message)),
+    ).toBe(true);
+    // No error-level "Webhook mode is only supported" log
+    expect(
+      logs.some(
+        (l) => l.level === "error" && /only supported/.test(l.message),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("sabhaPlugin.status", () => {
   it("buildAccountSnapshot reports configured from account", () => {
     const account = resolveAccount(

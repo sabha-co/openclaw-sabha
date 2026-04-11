@@ -231,3 +231,52 @@ Sabha can run in SaaS mode where the same server hosts multiple workspaces. Cros
 - **No whisper fallback**: if Sabha is running without AnyCable whispering enabled (`AnyCable::Rails.enabled?` returns false), our whispers are silently dropped. We don't fall back to the slower `message` command that routes through Rails RPC. This matches Sabha's frontend, which only uses whispers when the `anycable-whisper` meta tag is present.
 - **First-whisper latency**: for brand-new rooms the first whisper can't flush until `confirm_subscription` arrives (~200ms typical). Users may not see the indicator if the LLM responds in under ~200ms, but that's a rare case.
 - **No explicit keepalive budget**: the refresh timer runs forever while a dispatch is in flight. If the LLM runs for 30+ minutes the plugin keeps whispering. Not a correctness issue, just a design choice.
+
+## Future: presence (online indicator)
+
+Deferred. Notes captured here so we don't re-research next time.
+
+### How Sabha does presence today
+
+Sabha has a custom `PresenceChannel` (`app/channels/presence_channel.rb`) that subclasses `RoomChannel`. It is **not** AnyCable's native presence protocol — it's plain ActionCable with `on_subscribe :present` / `on_unsubscribe :absent` hooks backed by a DB column on `memberships` (`connected_at`, `connections` counter, `CONNECTION_TTL = 60.seconds` — see `app/models/membership/connectable.rb`). The browser refreshes every 50s by sending an ActionCable RPC `{"command":"message", "data":"{\"action\":\"refresh\"}"}` to bump `connected_at`.
+
+### Protocol (for when we implement it)
+
+- **Subscribe**: `{"command":"subscribe","identifier":"{\"channel\":\"PresenceChannel\",\"room_id\":N}"}` — server fires `on_subscribe :present`, writes `connected_at = now`, responds with `confirm_subscription`.
+- **Refresh**: `{"command":"message","identifier":"{\"channel\":\"PresenceChannel\",\"room_id\":N}","data":"{\"action\":\"refresh\"}"}` — every ~50s. Note: this is `message` (Rails RPC), not `whisper`, because the action mutates a DB row.
+- **Leave**: no explicit frame. `ws.close` → `on_unsubscribe :absent` → `membership.disconnected`.
+- **No inbound events**: the channel is write-only from the bot's perspective. Unlike typing whispers, other users' presence is not broadcast back over this stream — the online dot is rendered from DB state on page load / HTML updates.
+
+### Key insight: room-scoped channel, user-scoped UX
+
+`PresenceChannel` requires a `room_id` and is scoped per-room, but what Sabha actually displays is a **per-user** activity tier (`:active` / `:away` / `:offline`) computed from `MAX(connected_at)` across **all** of a user's memberships (`Membership.activity_statuses_for`). Consumers:
+
+- **Web push routing** (`room/message_pusher.rb`) — skip push to users who are "connected" to the room. Bots don't receive push, so irrelevant to us.
+- **Unread broadcasts** (`room.rb`) — only broadcast unread to disconnected users. Same: irrelevant to bots.
+- **Green/yellow/gray dot** in sidebars and profile cards — computed globally per user.
+
+**Implication**: a bot only needs to subscribe to `PresenceChannel` for **one** room to appear online everywhere in Sabha. No room enumeration required.
+
+### Should we migrate Sabha to AnyCable's native presence?
+
+Considered and rejected. Tradeoffs:
+
+- **Pros**: offloads the 50s refresh RPC from Rails, enables real-time `presence:join`/`presence:leave` broadcasts to other subscribers.
+- **Cons**: AnyCable+ (Pro) feature — requires a paid license. Presence state would live in AnyCable-Go memory, lost on restart. `Membership.connected` would stop being a DB scope, breaking every consumer listed above. Significant migration work for no bot-side benefit.
+
+Not worth it unless Sabha moves to AnyCable+ for other reasons.
+
+### Design questions to resolve before implementing
+
+1. **Do we want the bot to show online at all?** The typing indicator already communicates "bot is thinking" — arguably a stronger signal than "bot is reachable." The online dot is a "is this human available" cue; applying it to a headless service may be noise. Leaning toward **skip** unless there's a concrete UX request.
+2. **If yes, which room do we subscribe to?** Since one subscription marks the bot online globally, options are:
+   - Subscribe to the first room the bot ever receives an inbound from; never unsubscribe until reconnect. Downside: after each restart, bot appears offline until someone pings it.
+   - Subscribe to a deterministic "bot home" room on startup (would need server-side convention — probably overkill).
+3. **Refresh interval**: match the browser at 50s (TTL is 60s).
+4. **Timer architecture**: one global `setInterval` iterating tracked rooms is simpler than per-room timers (same cadence for all).
+5. **Pending-start queue**: not needed. Unlike whispers, the `on_subscribe :present` server hook fires synchronously during subscription — the bot is marked present before `confirm_subscription` even reaches us. The first `refresh` RPC just needs to wait for `"ready"` state before firing.
+6. **Config**: would add `presenceEnabled` (default?) alongside `typingEnabled`. Same webhook-mode skip.
+
+### Plugin-side sketch (for future reference)
+
+Would mirror `TypingManager` structurally but simpler: no `pendingStart` queue, no `stop` whisper, one global refresh timer instead of per-room timers. Could reuse the existing `ConnectionRef`, `onAuxSubscriptionConfirmed`, and `onAuxSubscriptionRejected` plumbing in `monitor-websocket.ts` as-is — both managers would attach to the same aux-subscription callbacks and each would filter by `parsed.channel` in the identifier.

@@ -1,6 +1,14 @@
 export type ReconnectOutcome = "resolved" | "rejected";
 
 export type ShouldReconnectParams = {
+  /**
+   * Number of consecutive failures observed so far, *including* the one
+   * that triggered this call. A normal close (outcome: "resolved") resets
+   * this counter to 0 before the policy is consulted.
+   *
+   * Example: `shouldReconnect: ({ attempt }) => attempt < 3` allows up to
+   * three failed attempts before giving up.
+   */
   attempt: number;
   delayMs: number;
   outcome: ReconnectOutcome;
@@ -37,7 +45,6 @@ export async function runWithReconnect(
   let attempt = 0;
 
   while (!opts.abortSignal?.aborted) {
-    let shouldIncreaseDelay = false;
     let outcome: ReconnectOutcome = "resolved";
     let error: unknown;
     try {
@@ -48,8 +55,8 @@ export async function runWithReconnect(
       if (opts.abortSignal?.aborted) return;
       outcome = "rejected";
       error = err;
+      attempt++;
       opts.onError?.(err);
-      shouldIncreaseDelay = true;
     }
     if (opts.abortSignal?.aborted) return;
 
@@ -61,10 +68,9 @@ export async function runWithReconnect(
     opts.onReconnect?.(delayMs);
     await sleepAbortable(delayMs, opts.abortSignal);
 
-    if (shouldIncreaseDelay) {
+    if (outcome === "rejected") {
       retryDelay = Math.min(retryDelay * 2, maxDelayMs);
     }
-    attempt++;
   }
 }
 

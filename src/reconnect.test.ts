@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { runWithReconnect } from "./reconnect.js";
 
 describe("runWithReconnect", () => {
@@ -107,8 +107,9 @@ describe("runWithReconnect", () => {
       },
     );
 
-    // Errors increment attempt: 0, 1, 2 — stops when attempt=2 returns false
-    expect(calls).toBe(3);
+    // attempt counts failures so far: 1 after first fail (continue),
+    // 2 after second fail (policy returns false, stop).
+    expect(calls).toBe(2);
   });
 
   it("stops immediately on abort", async () => {

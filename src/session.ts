@@ -1,14 +1,20 @@
-import type { SabhaWebhookPayload } from "./types.js";
+import type { SabhaMessageEventPayload } from "./types.js";
 
 /**
  * Build an OpenClaw session conversation key from a Sabha webhook payload.
+ *
+ * Accepts only message-bearing variants (`message_*` and `boost_*`).
+ * `user_*` events are global and have no room/message context, so they
+ * cannot produce a session key — callers must not invoke this with
+ * those variants (TypeScript enforces this via the discriminated
+ * union).
  *
  * Session key format:
  *   Room (Open/Closed): sabha:group:{room_id}
  *   Direct message:     sabha:direct:{room_id}
  *   Thread:             sabha:group:{parent_room_id}:thread:{thread_room_id}
  */
-export function resolveSessionFromPayload(payload: SabhaWebhookPayload): {
+export function resolveSessionFromPayload(payload: SabhaMessageEventPayload): {
   chatType: "direct" | "group";
   conversationId: string;
   threadId?: string;

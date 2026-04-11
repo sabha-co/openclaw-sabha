@@ -18,7 +18,7 @@ describe("createDedupCache", () => {
     expect(cache.size()).toBe(3);
   });
 
-  it("evicts oldest when at capacity", () => {
+  it("evicts in FIFO order (oldest insertion) when at capacity", () => {
     const cache = createDedupCache({ ttlMs: 60_000, maxSize: 3 });
     cache.mark("a");
     cache.mark("b");
@@ -44,6 +44,21 @@ describe("createDedupCache", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("unmark rolls back a prior mark", () => {
+    const cache = createDedupCache({ ttlMs: 60_000, maxSize: 100 });
+    cache.mark("msg:1");
+    expect(cache.has("msg:1")).toBe(true);
+    cache.unmark("msg:1");
+    expect(cache.has("msg:1")).toBe(false);
+    expect(cache.size()).toBe(0);
+  });
+
+  it("unmark of unknown key is a no-op", () => {
+    const cache = createDedupCache({ ttlMs: 60_000, maxSize: 100 });
+    cache.unmark("msg:never-seen");
+    expect(cache.size()).toBe(0);
   });
 
   it("allows retry when mark is not called (processing failed)", () => {

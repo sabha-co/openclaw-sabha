@@ -6,6 +6,41 @@ import type {
   SabhaThreadReply,
   SabhaMessageBody,
 } from "./types.js";
+import {
+  RETRYABLE_STATUS,
+  createSabhaRetryRunner,
+  parseRetryAfter,
+  type RetryRunner,
+} from "./retry.js";
+
+export type SabhaClientOpts = {
+  /**
+   * Signal shared by every request this client issues. Aborting it cancels
+   * all in-flight fetches so the owning monitor can drain cleanly on shutdown.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * Per-request deadline. Defaults to 30s. A hung server must never wedge
+   * the inbound pipeline — `processInboundMessage` awaits `sendMessage`
+   * inline on the WebSocket handler, so every call needs a bounded wait.
+   */
+  requestTimeoutMs?: number;
+  /**
+   * Retry runner wrapping every HTTP call. Defaults to the Sabha rate-limit
+   * runner, which honors `Retry-After` on 429 and retries 502/503/504 with
+   * exponential backoff + jitter. Pass a custom runner in tests.
+   */
+  retryRunner?: RetryRunner;
+  /**
+   * When `true`, the default retry runner logs each retry attempt at WARN.
+   * Ignored when a custom `retryRunner` is supplied. Off by default so
+   * production logs stay quiet; operators diagnosing a rate-limit storm
+   * can flip it on per-account without touching the SDK runtime.
+   */
+  verbose?: boolean;
+};
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * HTTP client for Sabha's Bot API.
@@ -14,10 +49,23 @@ import type {
  * Bot key format: "{bot_id}-{bot_token}" (e.g., "42-AbCdEfGhIjKl").
  */
 export class SabhaClient {
+  private readonly abortSignal?: AbortSignal;
+  private readonly requestTimeoutMs: number;
+  private readonly retryRunner: RetryRunner;
+
   constructor(
     private readonly baseUrl: string,
     private readonly botKey: string,
-  ) {}
+    opts: SabhaClientOpts = {},
+  ) {
+    this.abortSignal = opts.abortSignal;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.retryRunner =
+      opts.retryRunner ??
+      createSabhaRetryRunner(
+        opts.verbose != null ? { verbose: opts.verbose } : {},
+      );
+  }
 
   // --- Messaging ---
 
@@ -261,25 +309,67 @@ export class SabhaClient {
 
   private async fetch(path: string, init?: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
-    const res = await globalThis.fetch(url, init);
+    const method = init?.method ?? "GET";
+    return await this.retryRunner(async () => {
+      // Rebuild the combined signal on each attempt so a previous attempt's
+      // timeout doesn't leak into the retried request.
+      const signal = this.combineSignals(init?.signal ?? undefined);
+      const res = await globalThis.fetch(url, { ...init, signal });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+        throw new SabhaApiError(res.status, body, url, retryAfterMs);
+      }
+      return res;
+    }, `${method} ${path}`);
+  }
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new SabhaApiError(res.status, body, url);
+  private combineSignals(external?: AbortSignal): AbortSignal {
+    const timeout = AbortSignal.timeout(this.requestTimeoutMs);
+    const sources = [timeout, this.abortSignal, external].filter(
+      (s): s is AbortSignal => s !== undefined,
+    );
+    if (sources.length === 1) return sources[0];
+
+    const ctrl = new AbortController();
+    const forward = (source: AbortSignal) => {
+      if (ctrl.signal.aborted) return;
+      ctrl.abort(source.reason);
+    };
+    for (const source of sources) {
+      if (source.aborted) {
+        forward(source);
+        return ctrl.signal;
+      }
+      source.addEventListener("abort", () => forward(source), { once: true });
     }
-
-    return res;
+    return ctrl.signal;
   }
 }
 
 export class SabhaApiError extends Error {
+  /**
+   * Whether the retry runner will attempt this error again. Mirrors
+   * `isRetryableSabhaError` so callers can branch on the flag instead of
+   * re-importing the predicate. True for 429/502/503/504, false otherwise.
+   */
+  public readonly retryable: boolean;
+
   constructor(
     public readonly status: number,
     public readonly body: string,
     public readonly url: string,
+    /**
+     * Milliseconds the server asked us to wait before retrying (parsed from
+     * the `Retry-After` response header). Present on 429/503 responses when
+     * Sabha supplies a backpressure hint; read by the retry runner's
+     * `retryAfterMs` callback.
+     */
+    public readonly retryAfterMs?: number,
   ) {
     super(`Sabha API error ${status}: ${body} (${url})`);
     this.name = "SabhaApiError";
+    this.retryable = RETRYABLE_STATUS.has(status);
   }
 }
 

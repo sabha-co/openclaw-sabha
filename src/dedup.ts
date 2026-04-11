@@ -12,8 +12,14 @@ type DedupEntry = {
 export type DedupCache = {
   /** Returns true if the key was already marked (duplicate). */
   has(key: string): boolean;
-  /** Mark a key as processed. Call only after successful handling. */
+  /** Mark a key as seen. */
   mark(key: string): void;
+  /**
+   * Remove a previously-marked key. Used to roll back an optimistic `mark`
+   * when processing fails, so a subsequent reconnect-driven redelivery can
+   * retry instead of being silently dropped as a duplicate.
+   */
+  unmark(key: string): void;
   /** Number of entries currently tracked. */
   size(): number;
 };
@@ -46,13 +52,22 @@ export function createDedupCache(opts: {
     mark(key: string): void {
       purge();
 
-      // Evict oldest if at capacity
+      // FIFO eviction by insertion order. Map iteration order is the
+      // insertion order, and `has()` does not refresh position — which is
+      // deliberate: entries expire on wall-clock TTL, so the oldest insert
+      // is also the one closest to its natural expiry. True LRU would be
+      // wrong here because bumping position on `has()` would let an entry
+      // outlive its `expiresAt` under churn.
       if (entries.size >= opts.maxSize) {
         const firstKey = entries.keys().next().value;
         if (firstKey !== undefined) entries.delete(firstKey);
       }
 
       entries.set(key, { expiresAt: Date.now() + opts.ttlMs });
+    },
+
+    unmark(key: string): void {
+      entries.delete(key);
     },
 
     size() {

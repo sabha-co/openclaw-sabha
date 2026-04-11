@@ -1,7 +1,12 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ChannelSetupWizard } from "openclaw/plugin-sdk/channel-setup";
+import {
+  DEFAULT_ACCOUNT_ID,
+  normalizeAccountId,
+} from "openclaw/plugin-sdk/account-core";
 import type { SabhaConfig, SabhaRoom } from "./types.js";
 import { SabhaClient } from "./client.js";
+import { mergeBotAccountConfig } from "./bot-accounts.js";
 
 // The prompter is provided by OpenClaw — infer the type from the wizard's finalize param
 type FinalizeParams = Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0];
@@ -164,21 +169,74 @@ function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function getSabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {
-  return (cfg.channels as Record<string, unknown>)?.sabha as SabhaConfig | undefined;
+/**
+ * Returns `true` if `accountId` refers to the implicit legacy bot account
+ * whose config lives in the base `channels.sabha` block (zero-migration for
+ * pre-multi-bot configs). Named accounts under `botAccounts.<id>` are stored
+ * separately and layered over the base by `mergeBotAccountConfig`.
+ */
+export function isDefaultBotAccount(
+  accountId: string | undefined | null,
+): boolean {
+  if (!accountId) return true;
+  return normalizeAccountId(accountId) === DEFAULT_ACCOUNT_ID;
 }
 
-function setSabhaConfig(
+/**
+ * Merged view of one bot account's setup-relevant fields. Reads the base
+ * `channels.sabha` block for the default account and the named entry under
+ * `botAccounts.<id>` for every other account, merged on top of the base.
+ */
+export function getBotAccountView(
   cfg: OpenClawConfig,
+  accountId: string | undefined | null,
+): SabhaConfig {
+  const id = accountId ? normalizeAccountId(accountId) : DEFAULT_ACCOUNT_ID;
+  return mergeBotAccountConfig(cfg, id);
+}
+
+/**
+ * Write setup output for one bot account. The default account continues to
+ * write into the base `channels.sabha` block (preserving legacy single-bot
+ * configs unchanged); named accounts write into `botAccounts.<id>` so the
+ * base config is never clobbered when a second bot is configured.
+ */
+export function setBotAccountConfig(
+  cfg: OpenClawConfig,
+  accountId: string | undefined | null,
   patch: Partial<SabhaConfig>,
 ): OpenClawConfig {
   const channels = (cfg.channels ?? {}) as Record<string, unknown>;
   const existing = (channels.sabha ?? {}) as Record<string, unknown>;
+
+  if (isDefaultBotAccount(accountId)) {
+    return {
+      ...cfg,
+      channels: {
+        ...channels,
+        sabha: { ...existing, ...patch, enabled: true },
+      },
+    };
+  }
+
+  const id = normalizeAccountId(accountId!);
+  const botAccounts = {
+    ...((existing.botAccounts as Record<string, Partial<SabhaConfig>>) ?? {}),
+  };
+  const existingAccount = botAccounts[id] ?? {};
+  botAccounts[id] = { ...existingAccount, ...patch, enabled: true };
+
   return {
     ...cfg,
     channels: {
       ...channels,
-      sabha: { ...existing, ...patch, enabled: true },
+      sabha: {
+        ...existing,
+        // Base stays enabled so legacy default-account config keeps working
+        // while named accounts layer over it.
+        enabled: existing.enabled !== false,
+        botAccounts,
+      },
     },
   };
 }
@@ -191,9 +249,9 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     unconfiguredLabel: "Sabha",
     configuredHint: "Bot is registered and ready",
     unconfiguredHint: "Connect to a Sabha chat server",
-    resolveConfigured: ({ cfg }) => {
-      const section = getSabhaSection(cfg);
-      return Boolean(section?.baseUrl && section?.botKey);
+    resolveConfigured: ({ cfg, accountId }) => {
+      const view = getBotAccountView(cfg, accountId);
+      return Boolean(view.baseUrl && view.botKey);
     },
   },
 
@@ -212,13 +270,16 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   // branching (join URL vs manual key) and better error messages.
   credentials: [],
 
-  finalize: async ({ cfg, prompter }) => {
-    const section = getSabhaSection(cfg);
+  finalize: async ({ cfg, accountId, prompter }) => {
+    const view = getBotAccountView(cfg, accountId);
+    const accountLabel = isDefaultBotAccount(accountId)
+      ? ""
+      : ` [${normalizeAccountId(accountId!)}]`;
 
     // If already configured, offer to keep or reconfigure
-    if (section?.baseUrl && section?.botKey) {
+    if (view.baseUrl && view.botKey) {
       const keep = await prompter.confirm({
-        message: `Keep existing Sabha bot at ${section.baseUrl}?`,
+        message: `Keep existing Sabha bot${accountLabel} at ${view.baseUrl}?`,
         initialValue: true,
       });
       if (keep) return { cfg };
@@ -266,12 +327,12 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         await autoJoinOpenRooms(parsed.baseUrl, result.bot_key, prompter);
 
         return {
-          cfg: setSabhaConfig(cfg, {
+          cfg: setBotAccountConfig(cfg, accountId, {
             baseUrl: parsed.baseUrl,
             botKey: result.bot_key,
             botName: result.name,
             websocketUrl: result.websocket_url,
-            dmPolicy: section?.dmPolicy ?? "open",
+            dmPolicy: view.dmPolicy ?? "open",
           }),
         };
       } catch (err) {
@@ -316,7 +377,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const baseUrl = await prompter.text({
       message: "Sabha server URL",
       placeholder: "https://sabha.co/1000006",
-      initialValue: section?.baseUrl,
+      initialValue: view.baseUrl,
       validate: (value) => {
         if (!value.trim()) return "Required";
         try {
@@ -331,7 +392,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const botKey = await prompter.text({
       message: "Bot key",
       placeholder: "42-AbCdEfGhIjKl",
-      initialValue: section?.botKey,
+      initialValue: view.botKey,
       validate: (value) => {
         if (!value.trim()) return "Required";
         if (!/^\d+-/.test(value)) return 'Expected format: "42-AbCdEfGhIjKl"';
@@ -342,7 +403,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const botNameInput = await prompter.text({
       message: "Bot display name",
       placeholder: "OpenClaw",
-      initialValue: section?.botName ?? "OpenClaw",
+      initialValue: view.botName ?? "OpenClaw",
       validate: (value) => (value.trim() ? undefined : "Required"),
     });
 
@@ -353,11 +414,11 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     await autoJoinOpenRooms(resolvedBaseUrl, resolvedBotKey, prompter);
 
     return {
-      cfg: setSabhaConfig(cfg, {
+      cfg: setBotAccountConfig(cfg, accountId, {
         baseUrl: resolvedBaseUrl,
         botKey: resolvedBotKey,
         botName: botNameInput.trim(),
-        dmPolicy: section?.dmPolicy ?? "open",
+        dmPolicy: view.dmPolicy ?? "open",
       }),
     };
   },
@@ -375,13 +436,13 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     channel: "sabha",
     policyKey: "channels.sabha.dmPolicy",
     allowFromKey: "channels.sabha.allowFrom",
-    getCurrent: (cfg: OpenClawConfig) => {
-      const section = getSabhaSection(cfg);
-      return (section?.dmPolicy ?? "open") as "open" | "allowlist";
+    getCurrent: (cfg: OpenClawConfig, accountId?: string) => {
+      const view = getBotAccountView(cfg, accountId);
+      return (view.dmPolicy ?? "open") as "open" | "allowlist";
     },
-    setPolicy: (cfg: OpenClawConfig, policy: string) => {
+    setPolicy: (cfg: OpenClawConfig, policy: string, accountId?: string) => {
       const dmPolicy = policy === "allowlist" ? "allowlist" : "open";
-      return setSabhaConfig(cfg, { dmPolicy });
+      return setBotAccountConfig(cfg, accountId, { dmPolicy });
     },
   },
 };

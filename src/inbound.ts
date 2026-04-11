@@ -1,12 +1,30 @@
-import type { SabhaWebhookPayload, SabhaAccount, DeliveryPayload } from "./types.js";
+import type {
+  SabhaAccount,
+  DeliveryPayload,
+  SabhaMessageCreatedPayload,
+  SabhaMessageEventPayload,
+  SabhaMessageUpdatedPayload,
+  SabhaMessageDeletedPayload,
+  SabhaBoostCreatedPayload,
+  SabhaBoostDeletedPayload,
+  SabhaUserCreatedPayload,
+  SabhaUserDeletedPayload,
+} from "./types.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { wasBotMentioned, resolveChatType } from "./webhook.js";
 import { resolveSessionFromPayload } from "./session.js";
+import { resolveAttachmentSsrfPolicy } from "./ssrf-guard.js";
 
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
 
 type ChannelRuntime = PluginRuntime["channel"];
+
+type Logger = {
+  debug?: (message: string) => void;
+  info?: (message: string) => void;
+  error?: (message: string) => void;
+};
 
 const CHANNEL_ID = "sabha";
 
@@ -15,13 +33,19 @@ const CHANNEL_ID = "sabha";
  *
  * Mirrors the gating logic at the top of `processInboundMessage` so
  * callers (like the WebSocket monitor) can decide whether to start a
- * typing indicator without duplicating the rules.
+ * typing indicator without duplicating the rules. Applies uniformly to
+ * every message-bearing variant: the bot's own events are always
+ * filtered out, and in groups we require an @mention regardless of
+ * whether the event is a create, edit, delete, or boost.
  */
 export function shouldHandleInbound(
-  payload: SabhaWebhookPayload,
+  payload: SabhaMessageEventPayload,
   botId: number,
 ): boolean {
-  // Skip messages from the bot itself
+  // Skip the bot's own events (self-echo filter). This covers both
+  // `message_created` replies and any `message_updated` / `*_deleted`
+  // echoes Sabha sends back when the bot edits / deletes its own content
+  // through the by-bots controllers (Scout A, hazard #2).
   if (payload.user.id === botId) return false;
   // In groups, only respond when mentioned (DMs always handled)
   const isDm = resolveChatType(payload.room.type) === "direct";
@@ -34,14 +58,14 @@ type InboundDeps = {
   cfg: OpenClawConfig;
   account: SabhaAccount;
   deliver: (payload: DeliveryPayload) => Promise<void>;
-  logger?: { info?: (message: string) => void; error?: (message: string) => void };
+  logger?: Logger;
 };
 
 /**
  * Process an inbound Sabha webhook event and dispatch it to OpenClaw's reply pipeline.
  */
 export async function processInboundMessage(
-  payload: SabhaWebhookPayload,
+  payload: SabhaMessageCreatedPayload,
   deps: InboundDeps,
 ): Promise<void> {
   const { runtime: runtimeOrChannel, cfg, account, deliver, logger } = deps;
@@ -85,7 +109,11 @@ export async function processInboundMessage(
   if (payload.message.has_attachment && payload.message.attachment) {
     try {
       const { url, filename, content_type } = payload.message.attachment;
-      const fetched = await channel.media.fetchRemoteMedia({ url });
+      const ssrfPolicy = resolveAttachmentSsrfPolicy(account);
+      const fetched = await channel.media.fetchRemoteMedia({
+        url,
+        ...(ssrfPolicy ? { ssrfPolicy } : {}),
+      });
       const saved = await channel.media.saveMediaBuffer(
         fetched.buffer,
         content_type,
@@ -166,4 +194,118 @@ export async function processInboundMessage(
       logger?.error?.(`[sabha] Dispatch error (${info.kind}): ${err}`);
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Edit / delete / boost handlers
+// ---------------------------------------------------------------------------
+//
+// Phase 1.5 wires the dispatch table end-to-end for every message-bearing
+// event but keeps the handlers intentionally light: they log at INFO so
+// operators can confirm the pipeline is flowing, apply the same self-echo
+// and mention filters as `message_created`, and otherwise return. Agent-
+// facing semantics (forwarding an edit into the LLM's conversation state,
+// propagating a delete, consuming a boost for approval routing) belong to
+// Phase 2 — streaming will flesh out edit context and section 2.2
+// (approvals via boost reactions) will upgrade `boost_created` to the
+// approval handler. The current shape is: "fully typed, fully dispatched,
+// ready to grow."
+
+type MessageEventHandlerDeps = {
+  botId: number;
+  logger?: Logger;
+};
+
+export async function handleMessageUpdated(
+  payload: SabhaMessageUpdatedPayload,
+  deps: MessageEventHandlerDeps,
+): Promise<void> {
+  if (!shouldHandleInbound(payload, deps.botId)) return;
+  // Stateless tolerance: the bot may receive `message_updated` for a
+  // message it never observed at create time (Scout A, hazard #1 —
+  // `Room#bot_memberships_for_events` fires updates to every eligible
+  // member, not just the original mention targets). Don't assume prior
+  // state. Log and return.
+  deps.logger?.info?.(
+    `[sabha] message_updated {id=${payload.message.id}, room=${payload.room.name}, from=${payload.user.name}}`,
+  );
+}
+
+export async function handleMessageDeleted(
+  payload: SabhaMessageDeletedPayload,
+  deps: MessageEventHandlerDeps,
+): Promise<void> {
+  if (!shouldHandleInbound(payload, deps.botId)) return;
+  // Soft-delete: `payload.message.body` is still populated server-side
+  // at the moment this event fires. We don't forward the body here
+  // because doing so would circumvent the user's intent to delete.
+  deps.logger?.info?.(
+    `[sabha] message_deleted {id=${payload.message.id}, room=${payload.room.name}, from=${payload.user.name}}`,
+  );
+}
+
+export async function handleBoostCreated(
+  payload: SabhaBoostCreatedPayload,
+  deps: MessageEventHandlerDeps,
+): Promise<void> {
+  // Self-echo filter only — boosts are global by design and we do NOT
+  // require an @mention on the underlying message to route a boost
+  // through the plugin. Phase 2.2 (approval routing) will route boosts
+  // on pending-approval messages here before this handler runs.
+  if (payload.user.id === deps.botId) return;
+  deps.logger?.info?.(
+    `[sabha] boost_created {message=${payload.message.id}, boost=${payload.boost.id}, body=${JSON.stringify(payload.boost.body)}, from=${payload.user.name}}`,
+  );
+}
+
+export async function handleBoostDeleted(
+  payload: SabhaBoostDeletedPayload,
+  deps: MessageEventHandlerDeps,
+): Promise<void> {
+  if (payload.user.id === deps.botId) return;
+  deps.logger?.info?.(
+    `[sabha] boost_deleted {message=${payload.message.id}, boost=${payload.boost.id}, from=${payload.user.name}}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// user_* stubs
+// ---------------------------------------------------------------------------
+//
+// PRIVACY INVARIANT: `user_created` and `user_deleted` fan out globally
+// across every active bot in the Sabha workspace — see
+// `app/controllers/concerns/notify_bots.rb:19-24`. If we forwarded these
+// payloads to any agent-visible surface, bot A could observe bot B's
+// user-creation patterns, leaking information across bot tenants in the
+// same tenant. These stubs exist purely to keep the dispatch table
+// complete (so future hooks don't have to re-touch webhook parsing or
+// monitor dispatch); they MUST NOT emit the payload through
+// `dispatchInboundReplyWithBase`, `formatAgentEnvelope`, or any other
+// agent-runtime path. Any future feature wiring `user_*` to a visible
+// surface must gate on a per-bot-account opt-in flag and document the
+// tradeoff in `docs/ARCHITECTURE.md`.
+
+type UserEventHandlerDeps = {
+  logger?: Logger;
+};
+
+export async function handleUserCreated(
+  payload: SabhaUserCreatedPayload,
+  deps: UserEventHandlerDeps,
+): Promise<void> {
+  // TODO(v1.1+): optional welcome-DM hook, opted into per bot account
+  // via `channels.sabha.botAccounts.<id>.onUserCreated: "welcome-dm"`.
+  deps.logger?.debug?.(
+    `[sabha] user_created {id=${payload.user.id}, name=${payload.user.name}} — no handler configured`,
+  );
+}
+
+export async function handleUserDeleted(
+  payload: SabhaUserDeletedPayload,
+  deps: UserEventHandlerDeps,
+): Promise<void> {
+  // TODO(v1.1+): user-cleanup hook (e.g. purge cached user state).
+  deps.logger?.debug?.(
+    `[sabha] user_deleted {id=${payload.user.id}, name=${payload.user.name}} — no handler configured`,
+  );
 }

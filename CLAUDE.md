@@ -55,7 +55,7 @@ Both converge on `processInboundMessage` in `src/inbound.ts`, which:
 
 There are **three** outbound code paths, and new features often need to touch all of them to stay consistent:
 
-1. **Reply pipeline `deliver` callback** (automatic reply to an inbound event) — the lambda passed into `processInboundMessage` from `index.ts` and `monitor.ts`.
+1. **Reply pipeline `deliver` callback** (automatic reply to an inbound event) — the lambda passed into `processInboundMessage` from `index.ts` and `monitor.ts`. In 0.9.2+ this lambda also receives a per-turn `SabhaDraftStream` and its finalization branches on `draftStream.isAlive()` — see "Streaming agent replies" below for the full contract before changing anything in the finalize path.
 2. **`outbound.attachedResults.sendText` / `sendMedia`** on the plugin object in `src/channel.ts` — invoked by OpenClaw core's shared `message` tool.
 3. **Agent tools** in `src/tools.ts` (`sabha_list_rooms`, `sabha_create_room`, `sabha_add_member`, `sabha_search`, etc.) — invoked directly by the LLM. These hit `SabhaClient` methods with no reply-pipeline involvement.
 
@@ -77,6 +77,21 @@ Thread context comes from `message.thread` on the payload. `parentConversationCa
 
 `src/typing.ts` + `TypingManager` sends AnyCable **whispers** on the same WebSocket connection used for `BotEventsChannel`, subscribing to `TypingNotificationsChannel` per room and emitting `{action: "start"|"stop", user}` frames while the LLM is generating. Whispers are routed by AnyCable-Go directly between subscribers with no Rails round-trip — do not try to implement this via REST. See `docs/TYPING.md` for protocol details.
 
+### Streaming agent replies
+
+`src/draft-stream.ts`'s `createSabhaDraftStream()` edits one preview message in place as the agent yields partials, instead of waiting for the final turn. It wraps the SDK's `createFinalizableDraftLifecycle` from `openclaw/plugin-sdk/channel-lifecycle` — the same pattern as `extensions/discord/src/draft-stream.ts` and `extensions/telegram/src/draft-stream.ts`. The `onPartialReply` callback is threaded through `processInboundMessage` → `dispatchInboundReplyWithBase.replyOptions`, and gets the **full accumulated text snapshot** on every partial (not a delta). Callers pass the snapshot to `draftStream.update(text)`; the lifecycle helper internally throttles edits to ~500ms / 100 char. The first `update` sends a new message and captures its id; subsequent updates edit that id; `stop()` guarantees a final edit with the latest text.
+
+**Finalization branches on `isAlive()`, not `messageId()`.** In `deliver` (both `monitor.ts` and the webhook path in `index.ts`):
+- **Alive + preview exists** → finalize through the SDK loop via `update(finalText) + stop()`. `stop()`'s `flush()` awaits `inFlightPromise`, so if the first partial's `sendMessage` is still in-flight, the final edit correctly queues against the captured preview id.
+- **Dead with preview** → bypass the loop and PATCH via direct `client.editMessage`, with a delete+fresh-send fallback.
+- **No preview yet** → plain `sendMessage`.
+
+Do **not** gate the fast-path on `draftStream.messageId() !== undefined`. It returns `undefined` during the window where the first send is in flight, and falling through in that window double-posts — the caller posts a second message via plain `sendMessage`, then the in-flight preview lands moments later. Regression test in `src/draft-stream.test.ts` anchors this invariant; see commit `e47974c` for the full narrative.
+
+**Error copy must be redacted.** `SabhaApiError.message` interpolates the fetch URL, and `SabhaClient` embeds `bot_key` in the URL path (`/rooms/5/42-AbCdEfGhIjKl/messages`). Never do `draftStream.update(String(err))` or paste a raw error into a user-visible surface — use `formatStreamError(err)` exported from `src/draft-stream.ts`. It redacts `\d{1,8}-[A-Za-z0-9]{10,}` patterns (deliberately narrow to avoid over-redacting commit hashes, port numbers, timestamps) and truncates to 500 chars. Also used by the stream's internal warn logs so bot keys don't leak into operator logs either.
+
+**Thread replies skip streaming** in 0.9.2. Thread sub-room id discovery would require a first `replyInThread` round-trip before edits can target the thread — the non-streaming path is retained for threads until that's worth the complexity.
+
 ### `/skill` prompt injection
 
 On startup, `src/skill-prompt.ts` fetches the Sabha server's `/skill` endpoint (an LLM-readable API reference) and caches the text. `channel.ts`'s `agentPrompt.messageToolHints` reads it via `getCachedSkillText()` and appends it to the agent's prompt so the agent "knows" the Sabha API without the plugin hardcoding docs. If you add a new capability, prefer extending agent tools + letting `/skill` describe them over stuffing instructions into the plugin code.
@@ -85,7 +100,7 @@ On startup, `src/skill-prompt.ts` fetches the Sabha server's `/skill` endpoint (
 
 - **No webhook auto-reply**. Sabha supports returning text in the HTTP response body of a webhook, but this plugin always returns `200` immediately because LLM replies are async and can take 30+s. Don't try to "simplify" by reintroducing sync reply.
 - **No polling**. Inbound is push-only (WS or webhook).
-- **Config is single-account**, keyed as `channels.sabha` in `~/.openclaw/openclaw.json`. `accountHelpers` is wired but there's effectively one account. Workspace multi-tenancy is expressed via a numeric path prefix on `baseUrl` (e.g. `https://sabha.co/1000006`), not via multiple accounts.
+- **Multi-bot-account is supported.** Config is keyed as `channels.sabha` in `~/.openclaw/openclaw.json`, and the base block can be extended with a `botAccounts: Record<id, Partial<SabhaConfig>>` map plus an optional `defaultBotAccount`. `src/bot-accounts.ts` layers each `botAccounts.<id>` entry over the base block; `listBotAccountIds`, `resolveBotAccount`, and `listEnabledBotAccounts` are wired into the SDK's `listAccountIds` / `resolveAccount` slots so `gateway.startAccount` spins up one monitor per bot. Legacy single-bot configs still work unchanged — the base block is the `"default"` bot. Each bot has its own `baseUrl`, `botKey`, `botName`, `connectionMode`, `websocketUrl`, `dmPolicy`, `allowFrom`, `typingEnabled`. Workspace multi-tenancy can additionally be expressed via a numeric path prefix on `baseUrl` (e.g. `https://sabha.co/1000006`). There is **no per-agent persona mapping** (agent→bot); the bot that replies is whichever one's `botKey` received the inbound event. The webhook fallback route currently resolves to the default bot only — per-bot routes at `/sabha/webhook/:botAccountId` are v1.1 work.
 - **Dedup is FIFO, not LRU** — insertion order eviction. The comment in `src/dedup.ts` was recently corrected; keep it accurate.
 
 ## Reference: related checkouts

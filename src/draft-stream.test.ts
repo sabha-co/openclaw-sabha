@@ -227,6 +227,64 @@ describe("createSabhaDraftStream", () => {
     expect(stream.messageId()).toBe(43);
   });
 
+  it("update + stop coalesces when a partial send is still in flight (regression)", async () => {
+    // Regression for the P1 race flagged by the second review pass:
+    //
+    // 1. A fast model emits a partial → `update("Hel")` → SDK schedules
+    //    a flush → `client.sendMessage("Hel")` starts (slow Sabha API).
+    // 2. Before the send resolves, the runtime finalizes the turn and
+    //    the caller tries to finalize via the streaming fast-path.
+    // 3. At the moment of the fast-path check, `messageId()` is still
+    //    `undefined` (the in-flight send hasn't written it yet).
+    //
+    // The old gate was `messageId() !== undefined`, which meant the
+    // caller fell through to `client.sendMessage(finalText)` and the
+    // user saw TWO messages: the partial preview that eventually landed
+    // PLUS a fresh "final" reply. The fix gates on `isAlive()` instead
+    // and relies on `stop()` to drain the in-flight via `inFlightPromise`
+    // before sending the final edit.
+    //
+    // This test anchors the SDK-level invariant: `update(final) + stop()`
+    // while a partial send is pending must result in exactly one
+    // observable preview message containing the final text — no second
+    // send, no stale partial.
+    const { client, sendMessage, editMessage } = makeStubClient();
+    let resolveFirstSend: (id: number | null) => void = () => {};
+    const firstSendPromise = new Promise<number | null>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+    sendMessage.mockReset().mockReturnValueOnce(firstSendPromise);
+
+    const stream = createSabhaDraftStream({ client, roomId: 10 });
+
+    // Partial arrives. This kicks off `sendMessage("Hel")` which is
+    // now pending on `firstSendPromise`.
+    stream.update("Hel");
+    // Let the microtask queue run so the SDK loop actually starts the send.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(10, "Hel");
+    // Still no messageId — that's the race window the old gate missed.
+    expect(stream.messageId()).toBeUndefined();
+    // But the stream is still alive, which is what the new gate uses.
+    expect(stream.isAlive()).toBe(true);
+
+    // Runtime finalizes. Caller updates with the full text and stops.
+    stream.update("Hello world");
+    const stopPromise = stream.stop();
+
+    // stop() is waiting on `inFlightPromise`. Resolve the partial send.
+    resolveFirstSend(42);
+    await stopPromise;
+
+    // Exactly one send (the partial), exactly one edit (the final text),
+    // exactly one preview message. No double-post.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(editMessage).toHaveBeenCalledExactlyOnceWith(10, 42, "Hello world");
+    expect(stream.messageId()).toBe(42);
+  });
+
   it("stop() with no pending text does not re-send the last snapshot", async () => {
     const { client, sendMessage, editMessage } = makeStubClient();
     const stream = createSabhaDraftStream({ client, roomId: 10 });

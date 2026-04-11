@@ -175,16 +175,17 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                 }
 
                 // Streaming fast-path — see monitor.ts for the full
-                // rationale. Three cases: (a) alive + preview exists,
-                // finalize in place; (b) preview exists but loop died
-                // mid-turn, bypass the SDK and PATCH directly; (c)
-                // no preview, plain send.
+                // rationale. Three cases: (a) stream is alive → route
+                // through update + stop which drains any in-flight
+                // partial send; (b) stream is dead but preview exists
+                // → bypass the SDK and PATCH directly; (c) stream is
+                // dead with no preview → plain send.
+                if (draftStream && draftStream.isAlive()) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
                 if (draftStream && draftStream.messageId() !== undefined) {
-                  if (draftStream.isAlive()) {
-                    draftStream.update(text);
-                    await draftStream.stop();
-                    return;
-                  }
                   const previewId = draftStream.messageId()!;
                   try {
                     await client.editMessage(roomId, previewId, text);
@@ -204,10 +205,15 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
             });
             } catch (err) {
               // Q12 error-replace (webhook path). Mirrors monitor.ts:
-              // bypass the draft stream (it may be stopped) and PATCH
-              // the preview directly with a redacted error string so
-              // the bot_key embedded in `SabhaApiError` URLs never
-              // lands in a public room message.
+              // drain in-flight partial sends first so messageId() is
+              // accurate, then bypass the draft stream (it may be
+              // stopped) and PATCH the preview directly with a
+              // redacted error string so the bot_key embedded in
+              // `SabhaApiError` URLs never lands in a public room
+              // message.
+              if (draftStream) {
+                await draftStream.flush().catch(() => undefined);
+              }
               if (draftStream && draftStream.messageId() !== undefined) {
                 const previewId = draftStream.messageId()!;
                 const safe = formatStreamError(err);

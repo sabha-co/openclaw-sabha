@@ -269,35 +269,37 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
                 // Streaming fast-path. Three cases:
                 //
-                //   (a) Stream is alive and already has a preview
-                //       message — finalize in place via update + stop.
-                //       User sees one message grow into the final text,
-                //       no "..." leak, no second post.
+                //   (a) Stream is alive — route the final text through
+                //       `update + stop`. The `stop()` implementation
+                //       awaits the SDK loop's `inFlightPromise` before
+                //       sending the final edit, so this is correct even
+                //       when a partial's `sendMessage` is still pending
+                //       and `messageId()` is momentarily undefined. That
+                //       race (fast model, slow Sabha API) was the reason
+                //       the earlier gate `messageId() !== undefined`
+                //       double-posted: it fell through to plain send
+                //       while the in-flight partial was still writing
+                //       its id. `isAlive()` gates on "can the loop
+                //       still accept updates," which is what we need.
                 //
-                //   (b) Stream has a preview message but the loop died
-                //       mid-turn (e.g. a partial edit threw). The SDK's
-                //       controls wrapper will silently drop further
-                //       updates, so update+stop would be a no-op and
-                //       leave the preview stuck on partial N-1. Bypass
-                //       the loop and PATCH the final text directly via
-                //       the client. This is the fix for the P0 flagged
-                //       in the review of 0fe41bf — without it, one
-                //       flaky edit anywhere in the turn loses the final
-                //       text entirely.
+                //   (b) Stream is dead but a preview exists — the SDK's
+                //       controls wrapper silently drops further updates
+                //       once stopped, so `update + stop` would no-op
+                //       and leave the preview stuck on partial N-1.
+                //       Bypass the loop and PATCH the final text
+                //       directly via the client. If even the direct
+                //       edit fails, delete the stale preview and post
+                //       fresh so the user sees the final reply.
                 //
-                //   (c) Stream never got a chance to send (instant
-                //       reply, no partials, or the first send itself
-                //       failed) — fall through to plain sendMessage.
+                //   (c) Stream is dead with no preview (first send
+                //       failed, or no partials ever arrived) — fall
+                //       through to plain `sendMessage`.
+                if (draftStream && draftStream.isAlive()) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
                 if (draftStream && draftStream.messageId() !== undefined) {
-                  if (draftStream.isAlive()) {
-                    draftStream.update(text);
-                    await draftStream.stop();
-                    return;
-                  }
-                  // Stream is dead but the preview exists. Best-effort
-                  // direct edit; on failure, delete the stale preview
-                  // and post fresh so the user sees something instead
-                  // of a frozen partial.
                   const previewId = draftStream.messageId()!;
                   try {
                     await client.editMessage(roomId, previewId, text);
@@ -331,6 +333,17 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // bot keys from error messages before they land on a
             // public room message — `SabhaApiError` embeds the fetch
             // URL (which contains the bot key) in its message.
+            //
+            // Drain any in-flight partial send first so `messageId()`
+            // is accurate. Without the flush, an error arriving while
+            // a partial's `sendMessage` was pending would skip the
+            // error-replace entirely (messageId undefined → gate
+            // fails), leave the partial to land as a stale preview
+            // with no error indication, and the user would see
+            // whatever the last partial said instead of the error.
+            if (draftStream) {
+              await draftStream.flush().catch(() => undefined);
+            }
             if (draftStream && draftStream.messageId() !== undefined) {
               const previewId = draftStream.messageId()!;
               const safe = formatStreamError(err);

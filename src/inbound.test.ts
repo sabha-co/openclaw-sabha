@@ -229,6 +229,36 @@ describe("processInboundMessage", () => {
     expect(call.channel).toBe("sabha");
     expect(call.core.channel).toBeDefined();
   });
+
+  it("threads onPartialReply through replyOptions when provided", async () => {
+    const onPartialReply = vi.fn();
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+      onPartialReply,
+    });
+
+    const call = mockDispatch.mock.calls[0][0] as {
+      replyOptions?: { onPartialReply?: unknown };
+    };
+    expect(call.replyOptions?.onPartialReply).toBe(onPartialReply);
+  });
+
+  it("omits replyOptions entirely when onPartialReply is not provided", async () => {
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const call = mockDispatch.mock.calls[0][0] as {
+      replyOptions?: unknown;
+    };
+    expect(call.replyOptions).toBeUndefined();
+  });
 });
 
 describe("shouldHandleInbound", () => {

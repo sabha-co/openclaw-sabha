@@ -59,6 +59,16 @@ type InboundDeps = {
   account: SabhaAccount;
   deliver: (payload: DeliveryPayload) => Promise<void>;
   logger?: Logger;
+  /**
+   * Streaming hook. Called by the OpenClaw runtime as the agent yields
+   * partial output during a turn. `payload.text` carries the full
+   * accumulated snapshot on every call, not a delta. Wired into
+   * `dispatchInboundReplyWithBase`'s `replyOptions.onPartialReply` so
+   * Phase 2.1's draft stream can PATCH the preview message in place.
+   * Left undefined on code paths that don't want streaming (e.g.
+   * thread replies in v1 — see `src/draft-stream.ts` for why).
+   */
+  onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
 };
 
 /**
@@ -68,7 +78,14 @@ export async function processInboundMessage(
   payload: SabhaMessageCreatedPayload,
   deps: InboundDeps,
 ): Promise<void> {
-  const { runtime: runtimeOrChannel, cfg, account, deliver, logger } = deps;
+  const {
+    runtime: runtimeOrChannel,
+    cfg,
+    account,
+    deliver,
+    logger,
+    onPartialReply,
+  } = deps;
 
   // Normalize: accept either PluginRuntime or ChannelRuntime directly
   const channel: ChannelRuntime = "channel" in runtimeOrChannel
@@ -193,6 +210,13 @@ export async function processInboundMessage(
     onDispatchError: (err, info) => {
       logger?.error?.(`[sabha] Dispatch error (${info.kind}): ${err}`);
     },
+    // `replyOptions` threads through to the agent runtime. `onPartialReply`
+    // is how streaming draft-stream previews are driven — each call carries
+    // the full accumulated text snapshot (not a delta), so the caller can
+    // feed it directly into `SabhaDraftStream.update`. See §2.1 of the
+    // plan for the Q10/Q12 decisions and `src/draft-stream.ts` for the
+    // throttle / lifecycle contract.
+    ...(onPartialReply ? { replyOptions: { onPartialReply } } : {}),
   });
 }
 

@@ -17,6 +17,7 @@ import {
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
 import { fetchSkillPrompt } from "./src/skill-prompt.js";
+import { createSabhaDraftStream, formatStreamError } from "./src/draft-stream.js";
 let pluginRuntime: PluginRuntime | undefined;
 
 const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEntry({
@@ -125,11 +126,39 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               currentAccount.botKey,
             );
 
-            await processInboundMessage(payload, {
+            // Streaming: non-thread replies get a draft stream that
+            // `onPartialReply` feeds token-by-token. Thread replies
+            // stay on the non-streaming path (see `monitor.ts` for the
+            // same split). The webhook handler has to return 200
+            // immediately, so we still `await processInboundMessage`
+            // below — webhook mode is inherently sync-to-the-runtime.
+            const threadContext = payload.message.thread;
+            const streaming = threadContext == null;
+            const draftStream = streaming
+              ? createSabhaDraftStream({
+                  client,
+                  roomId: payload.room.id,
+                  logger: {
+                    debug: (msg) => api.logger.info?.(`[sabha] ${msg}`),
+                    warn: (msg) => api.logger.error?.(`[sabha] ${msg}`),
+                  },
+                })
+              : undefined;
+            const onPartialReply = draftStream
+              ? (partial: { text?: string }) => {
+                  const text = partial.text;
+                  if (typeof text !== "string" || text.length === 0) return;
+                  draftStream.update(text);
+                }
+              : undefined;
+
+            try {
+              await processInboundMessage(payload, {
               runtime: pluginRuntime,
               cfg,
               account: currentAccount,
               logger: api.logger,
+              ...(onPartialReply ? { onPartialReply } : {}),
               deliver: async (replyPayload) => {
                 const roomId = Number(
                   replyPayload.to ?? payload.room.id,
@@ -142,11 +171,70 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                     Number(replyPayload.replyToId),
                     text,
                   );
-                } else {
-                  await client.sendMessage(roomId, text);
+                  return;
                 }
+
+                // Streaming fast-path — see monitor.ts for the full
+                // rationale. Three cases: (a) stream is alive → route
+                // through update + stop which drains any in-flight
+                // partial send; (b) stream is dead but preview exists
+                // → bypass the SDK and PATCH directly; (c) stream is
+                // dead with no preview → plain send.
+                if (draftStream && draftStream.isAlive()) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
+                if (draftStream && draftStream.messageId() !== undefined) {
+                  const previewId = draftStream.messageId()!;
+                  try {
+                    await client.editMessage(roomId, previewId, text);
+                    return;
+                  } catch (err) {
+                    api.logger.error?.(
+                      `[sabha] Draft stream recovery edit failed: ${formatStreamError(err)}`,
+                    );
+                    await client
+                      .deleteMessage(roomId, previewId)
+                      .catch(() => undefined);
+                  }
+                }
+
+                await client.sendMessage(roomId, text);
               },
             });
+            } catch (err) {
+              // Q12 error-replace (webhook path). Mirrors monitor.ts:
+              // drain in-flight partial sends first so messageId() is
+              // accurate, then bypass the draft stream (it may be
+              // stopped) and PATCH the preview directly with a
+              // redacted error string so the bot_key embedded in
+              // `SabhaApiError` URLs never lands in a public room
+              // message.
+              if (draftStream) {
+                await draftStream.flush().catch(() => undefined);
+              }
+              if (draftStream && draftStream.messageId() !== undefined) {
+                const previewId = draftStream.messageId()!;
+                const safe = formatStreamError(err);
+                await client
+                  .editMessage(payload.room.id, previewId, safe)
+                  .catch((replaceErr) => {
+                    api.logger.error?.(
+                      `[sabha] Webhook error-replace edit failed: ${formatStreamError(replaceErr)}`,
+                    );
+                  });
+              }
+              api.logger.error?.(
+                `[sabha] Webhook dispatch failed: ${formatStreamError(err)}`,
+              );
+            } finally {
+              // Clear the SDK's pending setTimeout so the Node event
+              // loop can unwind after the request handler returns.
+              if (draftStream) {
+                await draftStream.stop().catch(() => undefined);
+              }
+            }
           } else {
             const botId = currentAccount.botId;
             switch (payload.event) {

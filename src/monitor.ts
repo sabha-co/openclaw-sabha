@@ -24,6 +24,7 @@ import {
 import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
 import { TypingManager } from "./typing.js";
+import { createSabhaDraftStream, formatStreamError } from "./draft-stream.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
@@ -213,21 +214,107 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         statusSink?.({ lastInboundAt: Date.now() });
         typing?.start(payload.room.id);
 
+        // Streaming draft-stream preview. Lives for the duration of one
+        // inbound turn and is shared between `onPartialReply` (per-token
+        // updates) and `deliver` (final edit). Non-thread replies only
+        // in v1: streaming into a thread would need a first `replyInThread`
+        // to capture the thread sub-room id before subsequent PATCHes can
+        // target it, and the wiring isn't worth the complexity for the
+        // initial ship. Thread replies fall through to the non-streaming
+        // `replyInThread` path below.
+        const threadContext = payload.message.thread;
+        const streaming = threadContext == null;
+        const draftStream = streaming
+          ? createSabhaDraftStream({
+              client,
+              roomId: payload.room.id,
+              logger: {
+                debug: (msg) => logger?.info?.(`${logPrefix} ${msg}`),
+                warn: (msg) => logger?.error?.(`${logPrefix} ${msg}`),
+              },
+            })
+          : undefined;
+
+        // The runtime may stream partials with reasoning/thinking tags
+        // still embedded; we display text only. Reasoning previews are
+        // their own lane (`onReasoningStream`) that we do NOT wire — the
+        // bot surfaces the final assistant text, not its chain-of-thought.
+        const onPartialReply = draftStream
+          ? (partial: { text?: string }) => {
+              const text = partial.text;
+              if (typeof text !== "string" || text.length === 0) return;
+              draftStream.update(text);
+              // Stop the typing indicator once the first preview lands.
+              // Typing + an empty preview looks broken; typing + a growing
+              // preview is redundant. (Q12 default.)
+              typing?.stop(payload.room.id);
+            }
+          : undefined;
+
         const work = (async () => {
           try {
             await processInboundMessage(payload, {
               runtime,
               cfg: config,
               account,
+              ...(onPartialReply ? { onPartialReply } : {}),
               deliver: async (replyPayload) => {
                 const roomId = Number(replyPayload.to ?? payload.room.id);
                 const text = replyPayload.text ?? replyPayload.body ?? "";
 
                 if (replyPayload.threadId && replyPayload.replyToId) {
                   await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
-                } else {
-                  await client.sendMessage(roomId, text);
+                  return;
                 }
+
+                // Streaming fast-path. Three cases:
+                //
+                //   (a) Stream is alive — route the final text through
+                //       `update + stop`. The `stop()` implementation
+                //       awaits the SDK loop's `inFlightPromise` before
+                //       sending the final edit, so this is correct even
+                //       when a partial's `sendMessage` is still pending
+                //       and `messageId()` is momentarily undefined. That
+                //       race (fast model, slow Sabha API) was the reason
+                //       the earlier gate `messageId() !== undefined`
+                //       double-posted: it fell through to plain send
+                //       while the in-flight partial was still writing
+                //       its id. `isAlive()` gates on "can the loop
+                //       still accept updates," which is what we need.
+                //
+                //   (b) Stream is dead but a preview exists — the SDK's
+                //       controls wrapper silently drops further updates
+                //       once stopped, so `update + stop` would no-op
+                //       and leave the preview stuck on partial N-1.
+                //       Bypass the loop and PATCH the final text
+                //       directly via the client. If even the direct
+                //       edit fails, delete the stale preview and post
+                //       fresh so the user sees the final reply.
+                //
+                //   (c) Stream is dead with no preview (first send
+                //       failed, or no partials ever arrived) — fall
+                //       through to plain `sendMessage`.
+                if (draftStream && draftStream.isAlive()) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
+                if (draftStream && draftStream.messageId() !== undefined) {
+                  const previewId = draftStream.messageId()!;
+                  try {
+                    await client.editMessage(roomId, previewId, text);
+                    return;
+                  } catch (err) {
+                    logger?.error?.(
+                      `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
+                    );
+                    await client
+                      .deleteMessage(roomId, previewId)
+                      .catch(() => undefined);
+                  }
+                }
+
+                await client.sendMessage(roomId, text);
               },
               logger,
             });
@@ -236,8 +323,48 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // redelivery of this message_created event gets a fresh
             // attempt instead of being silently dropped as a duplicate.
             dedup.unmark(dedupKey!);
-            logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${err}`);
+            // Q12 error-replace: replace the preview with the error
+            // string so the user doesn't see a stuck partial. The
+            // stream may already be `stopped` from the failure that
+            // bubbled up here — going through `draftStream.update` /
+            // `stop` would be a silent no-op in that case (the SDK
+            // drops updates once stopped). Bypass the loop entirely
+            // and PATCH via the client. `formatStreamError` redacts
+            // bot keys from error messages before they land on a
+            // public room message — `SabhaApiError` embeds the fetch
+            // URL (which contains the bot key) in its message.
+            //
+            // Drain any in-flight partial send first so `messageId()`
+            // is accurate. Without the flush, an error arriving while
+            // a partial's `sendMessage` was pending would skip the
+            // error-replace entirely (messageId undefined → gate
+            // fails), leave the partial to land as a stale preview
+            // with no error indication, and the user would see
+            // whatever the last partial said instead of the error.
+            if (draftStream) {
+              await draftStream.flush().catch(() => undefined);
+            }
+            if (draftStream && draftStream.messageId() !== undefined) {
+              const previewId = draftStream.messageId()!;
+              const safe = formatStreamError(err);
+              await client
+                .editMessage(payload.room.id, previewId, safe)
+                .catch((replaceErr) => {
+                  logger?.error?.(
+                    `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,
+                  );
+                });
+            }
+            logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${formatStreamError(err)}`);
           } finally {
+            // Draft stream cleanup: even on the success path, the SDK's
+            // scheduled setTimeout is not unref'd. Explicitly stop the
+            // loop so any pending tick is cleared and Node can exit
+            // cleanly after an abort. Idempotent — calling stop on an
+            // already-stopped loop is a no-op.
+            if (draftStream) {
+              await draftStream.stop().catch(() => undefined);
+            }
             typing?.stop(payload.room.id);
             inFlight.delete(dedupKey!);
           }

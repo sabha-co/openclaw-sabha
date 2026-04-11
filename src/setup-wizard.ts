@@ -5,7 +5,7 @@ import {
   normalizeAccountId,
 } from "openclaw/plugin-sdk/account-core";
 import type { SabhaConfig, SabhaRoom } from "./types.js";
-import { SabhaClient } from "./client.js";
+import { SabhaClient, SabhaApiError } from "./client.js";
 import { mergeBotAccountConfig } from "./bot-accounts.js";
 
 // The prompter is provided by OpenClaw — infer the type from the wizard's finalize param
@@ -167,6 +167,245 @@ async function autoJoinOpenRooms(
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+type ProbeResult =
+  | { ok: true }
+  | { ok: false; kind: "auth"; message: string }
+  | { ok: false; kind: "network"; message: string };
+
+type BaseUrlProbeResult =
+  | { ok: true }
+  | { ok: false; kind: "invalid"; message: string }
+  | { ok: false; kind: "network"; message: string };
+
+const BASE_URL_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Probe `{baseUrl}/skill` to decide whether `baseUrl` actually points at a
+ * Sabha server. `/skill` is the unauthenticated LLM-readable API reference
+ * (see `src/skill-prompt.ts`), which lets the wizard separate "wrong URL"
+ * from "wrong bot key" — a bad URL fails here, a bad key fails later in
+ * `probeBotKey`.
+ *
+ * Classification:
+ * - `invalid` — reached an HTTP server but the response doesn't look like
+ *   `/skill` (non-2xx, empty body, or an HTML page). Re-prompting the URL
+ *   is the right action.
+ * - `network` — couldn't reach anything at all (DNS, refused, TLS, timeout).
+ *   User may prefer to save and come back later.
+ */
+async function probeBaseUrl(baseUrl: string): Promise<BaseUrlProbeResult> {
+  const url = `${baseUrl}/skill`;
+  let res: Response;
+  try {
+    res = await globalThis.fetch(url, {
+      headers: { Accept: "text/plain" },
+      signal: AbortSignal.timeout(BASE_URL_PROBE_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err : new Error(String(err));
+    if (cause.name === "AbortError" || cause.name === "TimeoutError") {
+      return {
+        ok: false,
+        kind: "network",
+        message: `Timed out after ${BASE_URL_PROBE_TIMEOUT_MS / 1000}s reaching ${url}`,
+      };
+    }
+    return {
+      ok: false,
+      kind: "network",
+      message: `Could not reach ${url}: ${cause.message}`,
+    };
+  }
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      kind: "invalid",
+      message: `${url} returned HTTP ${res.status} — this doesn't look like a Sabha server.`,
+    };
+  }
+
+  const body = (await res.text().catch(() => "")).trim();
+  if (!body) {
+    return {
+      ok: false,
+      kind: "invalid",
+      message: `${url} returned an empty body — this doesn't look like a Sabha server.`,
+    };
+  }
+  // Rails default error pages / login redirects land here with HTML. The
+  // real /skill endpoint returns plain markdown/text, so an HTML response
+  // means we're either at the wrong workspace prefix or not pointed at
+  // Sabha at all.
+  if (/^<(?:!doctype|html|head|body)/i.test(body)) {
+    return {
+      ok: false,
+      kind: "invalid",
+      message: `${url} returned HTML instead of Sabha's /skill text. Check the workspace prefix in the URL (e.g. https://sabha.co/1000006).`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Verify that `baseUrl` + `botKey` actually authenticate against a Sabha
+ * server. Called from the manual setup path before the config is written,
+ * so a typo/expired key is caught at setup time instead of silently
+ * saving and then spinning the gateway's account supervisor through
+ * ~15 minutes of "unauthorized" reconnect attempts.
+ *
+ * Classifies failures so the wizard can react differently:
+ * - `auth` — server reachable but rejected the credential (401/403/404,
+ *   or an HTML login page that failed JSON parse). Re-prompt is sensible.
+ * - `network` — server unreachable or erroring in a way that doesn't
+ *   indicate credential validity. "Save anyway" is sensible.
+ */
+async function probeBotKey(
+  baseUrl: string,
+  botKey: string,
+): Promise<ProbeResult> {
+  const client = new SabhaClient(baseUrl, botKey);
+  try {
+    await client.listJoinableRooms();
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof SabhaApiError) {
+      if (err.status === 401 || err.status === 403 || err.status === 404) {
+        return {
+          ok: false,
+          kind: "auth",
+          message: `Server rejected the bot key (HTTP ${err.status})`,
+        };
+      }
+      return {
+        ok: false,
+        kind: "network",
+        message: `Server returned HTTP ${err.status}`,
+      };
+    }
+    // `listJoinableRooms` calls `res.json()` — a 200 response that is
+    // actually an HTML login page (common Rails default for an invalid
+    // bot key) surfaces here as SyntaxError, not SabhaApiError. Treat
+    // that as an auth problem since the server clearly didn't route
+    // us to the JSON API.
+    if (err instanceof SyntaxError) {
+      return {
+        ok: false,
+        kind: "auth",
+        message:
+          "Server returned a non-JSON response — the bot key is likely invalid or the server URL is wrong.",
+      };
+    }
+    return {
+      ok: false,
+      kind: "network",
+      message: formatError(err),
+    };
+  }
+}
+
+/**
+ * Run a probe and, on failure, ask the user whether to retry, save
+ * anyway, or abort. Returns the user's decision so the caller can loop
+ * back to re-prompting for credentials when the user picks "retry".
+ */
+async function verifyBotKeyInteractive(
+  baseUrl: string,
+  botKey: string,
+  prompter: WizardPrompter,
+): Promise<"accepted" | "retry" | "save-anyway"> {
+  const progress = prompter.progress("Verifying bot key");
+  const result = await probeBotKey(baseUrl, botKey);
+  if (result.ok) {
+    progress.stop("Bot key accepted");
+    return "accepted";
+  }
+  progress.stop("Bot key verification failed");
+
+  const title =
+    result.kind === "auth"
+      ? "Bot key rejected"
+      : "Could not reach Sabha server";
+  await prompter.note(result.message, title);
+
+  const action = await prompter.select<"retry" | "save-anyway" | "abort">({
+    message: "What would you like to do?",
+    options: [
+      {
+        value: "retry",
+        label: "Re-enter server URL and bot key",
+        hint: "Recommended",
+      },
+      {
+        value: "save-anyway",
+        label: "Save anyway",
+        hint: "Gateway will fail to connect until fixed",
+      },
+      { value: "abort", label: "Abort setup" },
+    ],
+    initialValue: "retry",
+  });
+
+  if (action === "abort") {
+    throw new SabhaRegistrationError(
+      "Bot key verification failed; setup aborted.",
+      "verification_aborted",
+    );
+  }
+  return action;
+}
+
+/**
+ * Run `probeBaseUrl` and, on failure, let the user retry, save anyway,
+ * or abort. Mirrors `verifyBotKeyInteractive` but with a different set
+ * of failure messages — an invalid base URL is almost always a typo in
+ * the workspace prefix, so we hint toward that.
+ */
+async function verifyBaseUrlInteractive(
+  baseUrl: string,
+  prompter: WizardPrompter,
+): Promise<"accepted" | "retry" | "save-anyway"> {
+  const progress = prompter.progress("Checking Sabha server URL");
+  const result = await probeBaseUrl(baseUrl);
+  if (result.ok) {
+    progress.stop("Server URL looks good");
+    return "accepted";
+  }
+  progress.stop("Server URL check failed");
+
+  const title =
+    result.kind === "invalid"
+      ? "URL doesn't look like a Sabha server"
+      : "Could not reach Sabha server";
+  await prompter.note(result.message, title);
+
+  const action = await prompter.select<"retry" | "save-anyway" | "abort">({
+    message: "What would you like to do?",
+    options: [
+      {
+        value: "retry",
+        label: "Re-enter the server URL",
+        hint: "Recommended",
+      },
+      {
+        value: "save-anyway",
+        label: "Save anyway",
+        hint: "Gateway will fail to connect until fixed",
+      },
+      { value: "abort", label: "Abort setup" },
+    ],
+    initialValue: "retry",
+  });
+
+  if (action === "abort") {
+    throw new SabhaRegistrationError(
+      "Server URL verification failed; setup aborted.",
+      "verification_aborted",
+    );
+  }
+  return action;
 }
 
 /**
@@ -373,51 +612,115 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       }
     }
 
-    // Manual path — user already has a bot key
-    const baseUrl = await prompter.text({
-      message: "Sabha server URL",
-      placeholder: "https://sabha.co/1000006",
-      initialValue: view.baseUrl,
-      validate: (value) => {
-        if (!value.trim()) return "Required";
-        try {
-          new URL(value);
-          return undefined;
-        } catch {
-          return "Invalid URL";
-        }
-      },
-    });
+    // Manual path — user already has a bot key. Runs two independent
+    // probes so each failure mode has a precise error message:
+    //
+    //   1. `verifyBaseUrlInteractive` hits `{baseUrl}/skill` (unauthenticated)
+    //      to confirm we're pointed at a real Sabha server at the right
+    //      workspace prefix. Wrong URL = retry the URL prompt only.
+    //   2. `verifyBotKeyInteractive` hits an authenticated endpoint with
+    //      the now-trusted baseUrl. Wrong key = retry *both* URL and key
+    //      (the bot key can only be "wrong" in the sense of "invalid for
+    //      this workspace," which may mean the workspace URL is also
+    //      wrong — the advertised retry label says as much, so we honor
+    //      it by re-prompting the URL from the outer loop below).
+    //
+    // Pre-filling `initialValue` with the last attempt makes "retry" a
+    // one-keystroke correction instead of re-typing everything: the
+    // user can hit enter through prompts they don't want to change.
+    let pendingBaseUrl = view.baseUrl ?? "";
+    let pendingBotKey = view.botKey ?? "";
+    let pendingBotName = view.botName ?? "OpenClaw";
+    let baseUrlAccepted = false;
+    let botKeyAccepted = false;
 
-    const botKey = await prompter.text({
-      message: "Bot key",
-      placeholder: "42-AbCdEfGhIjKl",
-      initialValue: view.botKey,
-      validate: (value) => {
-        if (!value.trim()) return "Required";
-        if (!/^\d+-/.test(value)) return 'Expected format: "42-AbCdEfGhIjKl"';
-        return undefined;
-      },
-    });
+    credentialsLoop: while (true) {
+      baseUrlAccepted = false;
+      botKeyAccepted = false;
+
+      // Inner loop: re-prompt the URL alone on a base-URL-only retry
+      // (the URL probe's label is "Re-enter the server URL", so this
+      // one doesn't drag the bot key along).
+      while (true) {
+        const baseUrl = await prompter.text({
+          message: "Sabha server URL",
+          placeholder: "https://sabha.co/1000006",
+          initialValue: pendingBaseUrl,
+          validate: (value) => {
+            if (!value.trim()) return "Required";
+            try {
+              new URL(value);
+              return undefined;
+            } catch {
+              return "Invalid URL";
+            }
+          },
+        });
+        pendingBaseUrl = baseUrl.replace(/\/+$/, "");
+
+        const decision = await verifyBaseUrlInteractive(
+          pendingBaseUrl,
+          prompter,
+        );
+        if (decision === "retry") continue;
+        baseUrlAccepted = decision === "accepted";
+        break;
+      }
+
+      const botKey = await prompter.text({
+        message: "Bot key",
+        placeholder: "42-AbCdEfGhIjKl",
+        initialValue: pendingBotKey,
+        validate: (value) => {
+          if (!value.trim()) return "Required";
+          if (!/^\d+-/.test(value)) return 'Expected format: "42-AbCdEfGhIjKl"';
+          return undefined;
+        },
+      });
+      pendingBotKey = botKey.trim();
+
+      // Only run the authenticated probe when we trust the base URL;
+      // otherwise we'd be hitting a server we've already told the user
+      // is unreliable, and the resulting error would be noise.
+      if (baseUrlAccepted) {
+        const decision = await verifyBotKeyInteractive(
+          pendingBaseUrl,
+          pendingBotKey,
+          prompter,
+        );
+        // Bot-key retry jumps to the outer loop so the user gets a
+        // fresh pass at *both* the URL and the key — the "retry" label
+        // on that select promises "Re-enter server URL and bot key",
+        // so this honors it. Without this, a user who entered the
+        // correct-looking workspace URL for the wrong workspace would
+        // be trapped re-typing bot keys forever.
+        if (decision === "retry") continue credentialsLoop;
+        botKeyAccepted = decision === "accepted";
+      }
+      break;
+    }
 
     const botNameInput = await prompter.text({
       message: "Bot display name",
       placeholder: "OpenClaw",
-      initialValue: view.botName ?? "OpenClaw",
+      initialValue: pendingBotName,
       validate: (value) => (value.trim() ? undefined : "Required"),
     });
+    pendingBotName = botNameInput.trim();
 
-    const resolvedBaseUrl = baseUrl.replace(/\/+$/, "");
-    const resolvedBotKey = botKey.trim();
-
-    // Auto-join all open rooms so the bot is immediately discoverable
-    await autoJoinOpenRooms(resolvedBaseUrl, resolvedBotKey, prompter);
+    // Auto-join open rooms only when *both* probes accepted. If either
+    // was a "save-anyway" or couldn't run, hitting the authenticated
+    // API again would just re-surface the same error (wrong URL, wrong
+    // key, or unreachable server) as a noisy "Auto-join skipped" note.
+    if (baseUrlAccepted && botKeyAccepted) {
+      await autoJoinOpenRooms(pendingBaseUrl, pendingBotKey, prompter);
+    }
 
     return {
       cfg: setBotAccountConfig(cfg, accountId, {
-        baseUrl: resolvedBaseUrl,
-        botKey: resolvedBotKey,
-        botName: botNameInput.trim(),
+        baseUrl: pendingBaseUrl,
+        botKey: pendingBotKey,
+        botName: pendingBotName,
         dmPolicy: view.dmPolicy ?? "open",
       }),
     };

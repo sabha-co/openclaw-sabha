@@ -152,11 +152,25 @@ export async function processInboundMessage(
     ? `${rawBody}\n\n[Attachment: ${payload.message.attachment!.filename} — saved to ${attachmentPath}]`
     : rawBody;
 
-  // Build the formatted envelope (with sender/timestamp context)
+  // Build the formatted envelope (with sender/timestamp context).
+  //
+  // Why the `from` field embeds `@{id}`: Sabha's mention syntax is
+  // `@{user_id}` (see `/skill` — "To mention a user, use @{user_id}
+  // syntax"). The envelope body the LLM reads is the only place the
+  // agent learns who sent the message, and `formatAgentEnvelope` only
+  // accepts `from: string` (no separate id field on the SDK type). If we
+  // pass just the display name the agent has no way to construct a
+  // mention, because the numeric id lives in `ctxPayload.SenderId` which
+  // is metadata, not prompt text. Folding the literal `@{id}` token into
+  // the from string gives the agent the exact syntax to echo back —
+  // nextcloud-talk sets precedent for non-plain-name from values
+  // (`user:42`, `room:General`). This is the fix for 0.9.4's "mentions
+  // never trigger server-side" bug where agents emitted plain-text
+  // `@Alice` instead of `@{1}`.
   const envelopeOpts = channel.reply.resolveEnvelopeFormatOptions(cfg);
   const envelope = channel.reply.formatAgentEnvelope({
     channel: CHANNEL_ID,
-    from: payload.user.name,
+    from: `${payload.user.name} (@{${payload.user.id}})`,
     timestamp: new Date(payload.message.created_at).getTime(),
     envelope: envelopeOpts,
     body: bodyWithAttachment,

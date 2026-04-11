@@ -175,6 +175,11 @@ describe("processInboundMessage", () => {
     expect(ctx.From).toBe("Alice");
     expect(ctx.SenderId).toBe("1");
     expect(ctx.SenderName).toBe("Alice");
+    // Envelope's `from` (distinct from `ctx.From` metadata) embeds the
+    // `@{id}` mention token so the agent can echo it back verbatim —
+    // see `inbound.ts` comment. Body rendering uses `[${from}]: ${body}`
+    // in the test stub.
+    expect(ctx.Body).toContain("[Alice (@{1})]:");
     expect(ctx.To).toBe("5");
     expect(ctx.SessionKey).toBe("sabha:group:5");
     expect(ctx.AccountId).toBe("default");

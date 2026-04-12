@@ -39,6 +39,13 @@ export type SabhaClientOpts = {
    * can flip it on per-account without touching the SDK runtime.
    */
   verbose?: boolean;
+  /**
+   * Optional pre-processor that rewrites `@DisplayName` to `@{user_id}`
+   * before the text is converted to Trix HTML. Populated from inbound
+   * events' `user.id` + `user.name` so the rewriter knows every user
+   * the bot has seen. See `src/outbound/mention-rewrite.ts`.
+   */
+  mentionRewriter?: (text: string) => string;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -53,6 +60,7 @@ export class SabhaClient {
   private readonly abortSignal?: AbortSignal;
   private readonly requestTimeoutMs: number;
   private readonly retryRunner: RetryRunner;
+  private readonly mentionRewriter?: (text: string) => string;
 
   constructor(
     private readonly baseUrl: string,
@@ -61,11 +69,18 @@ export class SabhaClient {
   ) {
     this.abortSignal = opts.abortSignal;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.mentionRewriter = opts.mentionRewriter;
     this.retryRunner =
       opts.retryRunner ??
       createSabhaRetryRunner(
         opts.verbose != null ? { verbose: opts.verbose } : {},
       );
+  }
+
+  /** Run mention rewriter (if configured) then markdown→Trix converter. */
+  private toRichText(text: string): string {
+    const rewritten = this.mentionRewriter ? this.mentionRewriter(text) : text;
+    return markdownToSabhaRichText(rewritten);
   }
 
   // --- Messaging ---
@@ -80,7 +95,7 @@ export class SabhaClient {
    * wire fact the client owns alongside authentication and URL shape.
    */
   async sendMessage(roomId: number, text: string): Promise<number | null> {
-    const body = markdownToSabhaRichText(text);
+    const body = this.toRichText(text);
     const res = await this.fetch(`/rooms/${roomId}/${this.botKey}/messages`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
@@ -124,7 +139,7 @@ export class SabhaClient {
     messageId: number,
     text: string,
   ): Promise<SabhaMessageBody> {
-    const body = markdownToSabhaRichText(text);
+    const body = this.toRichText(text);
     const res = await this.fetch(
       `/rooms/${roomId}/${this.botKey}/messages/${messageId}`,
       {
@@ -168,7 +183,7 @@ export class SabhaClient {
     messageId: number,
     text: string,
   ): Promise<SabhaThreadReply> {
-    const body = markdownToSabhaRichText(text);
+    const body = this.toRichText(text);
     const res = await this.fetch(
       `/rooms/${roomId}/${this.botKey}/messages/${messageId}/thread`,
       {

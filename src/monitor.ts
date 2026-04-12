@@ -25,6 +25,7 @@ import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
 import { TypingManager } from "./typing.js";
 import { createSabhaDraftStream, formatStreamError } from "./draft-stream.js";
+import { MentionRewriter } from "./outbound/mention-rewrite.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
 const DEDUP_MAX_SIZE = 2000;
@@ -178,7 +179,14 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
 export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   const { botAccount: account, config, runtime, abortSignal, logger, statusSink } = opts;
   const logPrefix = `[sabha:${account.accountId}]`;
-  const client = new SabhaClient(account.baseUrl, account.botKey, { abortSignal });
+  // Mention rewriter: maps display names → user ids so outbound @Name
+  // tokens get deterministically rewritten to @{id} for format_mentions.
+  // Populated from every inbound event's user.id + user.name + mentionees.
+  const mentionRewriter = new MentionRewriter();
+  const client = new SabhaClient(account.baseUrl, account.botKey, {
+    abortSignal,
+    mentionRewriter: (text) => mentionRewriter.rewrite(text),
+  });
 
   const wsUrl = buildWebSocketUrl(
     account.baseUrl,
@@ -252,6 +260,19 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       // marked. Per-handler `shouldHandleInbound` still re-checks
       // self-echo as a defensive double-check (see src/inbound.ts).
       if (isSelfEchoEvent(payload, account.botId)) return;
+
+      // Feed every inbound event's user into the mention rewriter so
+      // outbound @DisplayName → @{id} rewrites work for every user
+      // the bot has seen. Also feed mentionees from message events so
+      // the bot can mention users it hasn't directly interacted with.
+      if ("user" in payload && payload.user) {
+        mentionRewriter.add(payload.user.name, payload.user.id);
+      }
+      if ("message" in payload && payload.message?.mentionees) {
+        for (const m of payload.message.mentionees) {
+          mentionRewriter.add(m.name, m.id);
+        }
+      }
 
       // Dedup keys are scoped by event type so the same numeric id
       // never collides across variants — e.g. `message_created:42`

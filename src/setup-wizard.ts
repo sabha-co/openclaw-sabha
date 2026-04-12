@@ -412,6 +412,12 @@ async function verifyBaseUrlInteractive(
   return action;
 }
 
+// Stash the human-readable name entered during `resolveAccountIdForConfigure`
+// so `finalize` can use it as the bot display name. The SDK interface only
+// returns a string (the account ID) from the resolver, so there's no other
+// way to thread the original name through.
+let pendingAccountName: string | undefined;
+
 /**
  * Returns `true` if `accountId` refers to the default bot account.
  */
@@ -521,6 +527,9 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     accountOverride,
     defaultAccountId,
   }) => {
+    // Clear any stale name from a previous run in the same process.
+    pendingAccountName = undefined;
+
     // Programmatic callers (CLI flags, env, automated provisioning)
     // pass the account id explicitly; honor it without prompting.
     const override = accountOverride?.trim();
@@ -568,7 +577,8 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       },
     });
     const accountId = normalizeAccountId(name.trim());
-    if (name.trim() !== accountId) {
+    pendingAccountName = name.trim();
+    if (pendingAccountName !== accountId) {
       await prompter.note(
         `Account id will be "${accountId}".`,
         "Sabha account",
@@ -604,6 +614,10 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   credentials: [],
 
   finalize: async ({ cfg, accountId, prompter }) => {
+    // Consume the name stashed by resolveAccountIdForConfigure (if any).
+    const botDisplayName = pendingAccountName;
+    pendingAccountName = undefined;
+
     const view = getBotAccountView(cfg, accountId);
     const accountLabel = isDefaultBotAccount(accountId)
       ? ""
@@ -661,8 +675,9 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       const progress = prompter.progress("Registering bot with Sabha");
 
       try {
+        const registrationName = botDisplayName || view.botName || "OpenClaw";
         const result = await selfRegisterBot(parsed.baseUrl, parsed.joinCode, {
-          name: "OpenClaw",
+          name: registrationName,
         });
         progress.stop(`Bot "${result.name}" registered`);
 
@@ -734,7 +749,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     // user can hit enter through prompts they don't want to change.
     let pendingBaseUrl = view.baseUrl ?? "";
     let pendingBotKey = view.botKey ?? "";
-    let pendingBotName = view.botName ?? "OpenClaw";
+    let pendingBotName = botDisplayName || view.botName || "OpenClaw";
     let baseUrlAccepted = false;
     let botKeyAccepted = false;
 

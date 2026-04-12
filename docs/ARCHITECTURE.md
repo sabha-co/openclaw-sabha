@@ -90,8 +90,7 @@ src/
                         resolveBotAccountForSdk (SDK-boundary shim).
                         Layers `botAccounts.<id>` overrides on top of the
                         base `channels.sabha` block via the SDK's
-                        resolveMergedAccountConfig so legacy single-bot
-                        configs need zero migration.
+                        resolveMergedAccountConfig.
 
   client.ts             Sabha REST Bot API client
                         All Bot API endpoints, typed responses.
@@ -282,7 +281,7 @@ The plugin supports N bot identities per install. The SDK drives the lifecycle �
 
 **Config key naming — intentional deviation.** Sabha uses `botAccounts:` and `defaultBotAccount:` instead of the ecosystem-canonical `accounts:` and `defaultAccount:`. The rename exists to avoid colliding with Sabha's own server-side domain concept (multi-tenant workspaces and user accounts): an operator reading `channels.sabha.accounts:` could reasonably assume it referred to Sabha user accounts, not plugin-level bot identities. No other reference plugin (Slack, Discord, Feishu, Mattermost) renames the key, so contributors grepping the ecosystem will find `accounts:` everywhere — treat this deliberate deviation as a cost we accept, not a mistake. The SDK boundary still speaks `accountId` (hardcoded in `gateway.startAccount`, `ctx.agentAccountId`, outbound callbacks) and `bot-accounts.ts` translates locally via `resolveBotAccountForSdk`.
 
-**Legacy compat is free.** A pre-0.9 single-bot config with `channels.sabha.baseUrl` and `botKey` at the top level continues to work unchanged — `mergeBotAccountConfig` treats the base block as the default bot account's config and `botAccounts.<id>` entries layer over it. Secondary named accounts are added next to the base, not instead of it.
+**All bots must be declared under `botAccounts`.** The base `channels.sabha` block holds only shared fields (e.g. `baseUrl`); per-bot overrides in `botAccounts.<id>` layer on top via `mergeBotAccountConfig`. There is no implicit default-account fallback when `botAccounts` is absent.
 
 **`createAccountListHelpers` is deliberately not used.** The SDK helper hardcodes the config path to `channels.<key>.accounts`, which conflicts with the rename. `bot-accounts.ts` hand-rolls a ~10-line list helper using the lower-level `listCombinedAccountIds` + `resolveListedDefaultAccountId` primitives from `plugin-sdk/account-core`. Everything else — `resolveMergedAccountConfig`, `normalizeAccountId`, `DEFAULT_ACCOUNT_ID` — is generic and reused as-is.
 
@@ -381,41 +380,41 @@ Thread context is extracted from `message.thread`. `resolveSessionFromPayload` a
 
 ## Configuration
 
-Single-bot (legacy, still supported unchanged — the base block is the default bot account):
+Single-bot:
 
 ```json5
 {
   channels: {
     sabha: {
       enabled: true,
-      baseUrl: "https://sabha.co/1000006",  // include workspace id for multi-tenant SaaS
-      botKey: "42-AbCdEfGhIjKl",            // secret; stored as-is, used in URL path
-      botName: "OpenClaw",                   // shown in typing indicators
-      connectionMode: "websocket",           // "websocket" (default) | "webhook"
-      websocketUrl: "",                      // optional override; auto-built from baseUrl
-      webhookPort: 8787,                     // webhook mode only
-      typingEnabled: true,                   // whisper-based typing indicator (WS only)
-      dmPolicy: "open",                      // "open" | "allowlist"
-      allowFrom: [],                         // user ids allowed when policy is "allowlist"
-      allowPrivateAttachmentHosts: false,    // dangerous SSRF escape hatch; corporate DNS only
+      baseUrl: "https://sabha.co/1000006",  // shared; include workspace id for multi-tenant SaaS
+      botAccounts: {
+        default: {
+          botKey: "42-AbCdEfGhIjKl",          // secret; stored as-is, used in URL path
+          botName: "OpenClaw",                 // shown in typing indicators
+          connectionMode: "websocket",         // "websocket" (default) | "webhook"
+          dmPolicy: "open",                    // "open" | "allowlist"
+        },
+      },
     }
   }
 }
 ```
 
-Multi-bot (0.9.0+). Named accounts under `botAccounts.<id>` layer over the base, so unset fields on a named account inherit from the base:
+Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset fields on a named account inherit from the base:
 
 ```json5
 {
   channels: {
     sabha: {
       enabled: true,
-      // Base block = default bot account
+      // Shared base — inherited by every bot unless overridden
       baseUrl: "https://sabha.co/1000006",
-      botKey: "42-prodkey",
-      botName: "OpenClaw",
-      // Secondary bots
       botAccounts: {
+        default: {
+          botKey: "42-prodkey",
+          botName: "OpenClaw",
+        },
         staging: {
           baseUrl: "https://staging.sabha.co/1000006",
           botKey: "17-stagingkey",

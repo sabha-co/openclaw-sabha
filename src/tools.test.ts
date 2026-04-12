@@ -119,12 +119,16 @@ describe("createSabhaTools — account routing", () => {
     expect(url).toContain("https://sabha.example/staging");
   });
 
-  it("works with a legacy single-bot config", async () => {
+  it("works with a single-bot config", async () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
     const factory = buildListRoomsTool(() =>
-      cfg({ baseUrl: "https://sabha.example/solo", botKey: "7-SoloKey" }),
+      cfg({
+        botAccounts: {
+          default: { baseUrl: "https://sabha.example/solo", botKey: "7-SoloKey" },
+        },
+      }),
     );
     const tool = factory({ agentAccountId: undefined });
     await tool.execute("id", {});

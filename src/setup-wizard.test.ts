@@ -12,13 +12,17 @@ type Cfg = OpenClawConfig;
 
 const emptyCfg: Cfg = { channels: {} } as Cfg;
 
-const legacyCfg: Cfg = {
+const singleBotCfg: Cfg = {
   channels: {
     sabha: {
-      baseUrl: "https://sabha.example.com",
-      botKey: "42-legacy",
-      botName: "Default Bot",
-      dmPolicy: "open",
+      botAccounts: {
+        default: {
+          baseUrl: "https://sabha.example.com",
+          botKey: "42-default",
+          botName: "Default Bot",
+          dmPolicy: "open",
+        },
+      },
     },
   },
 } as unknown as Cfg;
@@ -27,9 +31,12 @@ const multiCfg: Cfg = {
   channels: {
     sabha: {
       baseUrl: "https://sabha.example.com",
-      botKey: "42-legacy",
-      botName: "Default Bot",
       botAccounts: {
+        default: {
+          baseUrl: "https://sabha.example.com",
+          botKey: "42-default",
+          botName: "Default Bot",
+        },
         staging: {
           baseUrl: "https://staging.sabha.example.com",
           botKey: "17-staging",
@@ -58,10 +65,10 @@ describe("isDefaultBotAccount", () => {
 });
 
 describe("getBotAccountView", () => {
-  it("reads the base section for the default account on a legacy config", () => {
-    const view = getBotAccountView(legacyCfg, undefined);
+  it("reads the default account from botAccounts", () => {
+    const view = getBotAccountView(singleBotCfg, undefined);
     expect(view.baseUrl).toBe("https://sabha.example.com");
-    expect(view.botKey).toBe("42-legacy");
+    expect(view.botKey).toBe("42-default");
   });
 
   it("returns an empty view when nothing is configured", () => {
@@ -78,15 +85,15 @@ describe("getBotAccountView", () => {
     expect(view.botName).toBe("Staging Bot");
   });
 
-  it("still returns the base values for the default account when named accounts exist", () => {
+  it("still returns the default account values when named accounts exist", () => {
     const view = getBotAccountView(multiCfg, undefined);
     expect(view.baseUrl).toBe("https://sabha.example.com");
-    expect(view.botKey).toBe("42-legacy");
+    expect(view.botKey).toBe("42-default");
   });
 });
 
 describe("setBotAccountConfig", () => {
-  it("writes the default account into the base section (legacy-compatible)", () => {
+  it("writes the default account into botAccounts.default", () => {
     const next = setBotAccountConfig(emptyCfg, undefined, {
       baseUrl: "https://chat.example.com",
       botKey: "5-new",
@@ -96,15 +103,14 @@ describe("setBotAccountConfig", () => {
       string,
       unknown
     >;
-    expect(section.baseUrl).toBe("https://chat.example.com");
-    expect(section.botKey).toBe("5-new");
-    expect(section.enabled).toBe(true);
-    // Must NOT create a botAccounts map when only the default is being saved
-    expect(section.botAccounts).toBeUndefined();
+    const botAccounts = section.botAccounts as Record<string, Record<string, unknown>>;
+    expect(botAccounts.default.baseUrl).toBe("https://chat.example.com");
+    expect(botAccounts.default.botKey).toBe("5-new");
+    expect(botAccounts.default.enabled).toBe(true);
   });
 
-  it("writes a named account under botAccounts.<id> without clobbering the base", () => {
-    const next = setBotAccountConfig(legacyCfg, "staging", {
+  it("writes a named account under botAccounts.<id> without clobbering other accounts", () => {
+    const next = setBotAccountConfig(singleBotCfg, "staging", {
       baseUrl: "https://staging.sabha.example.com",
       botKey: "17-staging",
       botName: "Staging Bot",
@@ -115,12 +121,11 @@ describe("setBotAccountConfig", () => {
       unknown
     >;
 
-    // Base is preserved unchanged
-    expect(section.baseUrl).toBe("https://sabha.example.com");
-    expect(section.botKey).toBe("42-legacy");
+    // Existing default account is preserved
+    const botAccounts = section.botAccounts as Record<string, Record<string, unknown>>;
+    expect(botAccounts.default.botKey).toBe("42-default");
 
     // Named account is nested under botAccounts
-    const botAccounts = section.botAccounts as Record<string, Record<string, unknown>>;
     expect(botAccounts.staging.baseUrl).toBe("https://staging.sabha.example.com");
     expect(botAccounts.staging.botKey).toBe("17-staging");
     expect(botAccounts.staging.enabled).toBe(true);
@@ -157,8 +162,8 @@ describe("setBotAccountConfig", () => {
 describe("sabhaSetupWizard.status.resolveConfigured", () => {
   const resolveConfigured = sabhaSetupWizard.status.resolveConfigured;
 
-  it("returns true for the default account on a legacy config", () => {
-    expect(resolveConfigured({ cfg: legacyCfg, accountId: undefined })).toBe(
+  it("returns true for the default account on a single-bot config", () => {
+    expect(resolveConfigured({ cfg: singleBotCfg, accountId: undefined })).toBe(
       true,
     );
   });
@@ -182,12 +187,7 @@ describe("sabhaSetupWizard.status.resolveConfigured", () => {
   });
 
   it("returns false for an unknown account id", () => {
-    expect(resolveConfigured({ cfg: multiCfg, accountId: "prod" })).toBe(true);
-    // ^ "prod" inherits base credentials because no override exists. This
-    //   matches Slack/Discord semantics: the base section is the implicit
-    //   default for any account id not explicitly overridden. If you want
-    //   a fresh account to start unconfigured, the wizard will overwrite
-    //   the credentials via setBotAccountConfig.
+    expect(resolveConfigured({ cfg: multiCfg, accountId: "prod" })).toBe(false);
   });
 });
 
@@ -196,8 +196,8 @@ describe("listConfiguredBotAccountIds", () => {
     expect(listConfiguredBotAccountIds(emptyCfg)).toEqual([]);
   });
 
-  it("returns the default id for a legacy single-bot config", () => {
-    expect(listConfiguredBotAccountIds(legacyCfg)).toEqual(["default"]);
+  it("returns the default id for a single-bot config", () => {
+    expect(listConfiguredBotAccountIds(singleBotCfg)).toEqual(["default"]);
   });
 
   it("returns every named account plus the default when all have credentials", () => {
@@ -211,22 +211,17 @@ describe("listConfiguredBotAccountIds", () => {
       channels: {
         sabha: {
           baseUrl: "https://sabha.example.com",
-          botKey: "42-x",
           botAccounts: {
+            default: { botKey: "42-x" },
             partial: { botName: "Half Baked" }, // no botKey of its own
           },
         },
       },
     } as unknown as Cfg;
-    // `partial` inherits the base credentials via merge, so it WOULD
-    // appear configured. This matches the existing `resolveConfigured`
-    // semantics for named accounts that inherit base credentials — see
-    // the comment in `sabhaSetupWizard.status.resolveConfigured` above.
-    // We include it here to document the intentional behavior so a
-    // future reader doesn't mistake it for a bug.
-    expect(listConfiguredBotAccountIds(cfg)).toEqual(
-      expect.arrayContaining(["default", "partial"]),
-    );
+    // `partial` inherits baseUrl from the base section but has no botKey
+    // (botKey lives in botAccounts.default, not at the base level), so
+    // it does not appear as configured.
+    expect(listConfiguredBotAccountIds(cfg)).toEqual(["default"]);
   });
 });
 
@@ -377,9 +372,8 @@ describe("sabhaSetupWizard.dmPolicy", () => {
       channels: {
         sabha: {
           baseUrl: "https://sabha.example.com",
-          botKey: "42-x",
-          dmPolicy: "open",
           botAccounts: {
+            default: { botKey: "42-x", dmPolicy: "open" },
             staging: { dmPolicy: "allowlist" },
           },
         },
@@ -390,28 +384,31 @@ describe("sabhaSetupWizard.dmPolicy", () => {
     expect(dmPolicy.getCurrent(cfg, "staging")).toBe("allowlist");
   });
 
-  it("setPolicy writes to the named account without clobbering the base", () => {
-    const next = dmPolicy.setPolicy(legacyCfg, "allowlist", "staging");
+  it("setPolicy writes to the named account without clobbering other accounts", () => {
+    const next = dmPolicy.setPolicy(singleBotCfg, "allowlist", "staging");
     const section = (next.channels as Record<string, unknown>).sabha as Record<
       string,
       unknown
     >;
-    // Base dmPolicy unchanged
-    expect(section.dmPolicy).toBe("open");
     const botAccounts = section.botAccounts as Record<
       string,
       Record<string, unknown>
     >;
+    // Default account dmPolicy unchanged
+    expect(botAccounts.default.dmPolicy).toBe("open");
     expect(botAccounts.staging.dmPolicy).toBe("allowlist");
   });
 
-  it("setPolicy still writes the base section for the default account", () => {
-    const next = dmPolicy.setPolicy(legacyCfg, "allowlist", undefined);
+  it("setPolicy writes the default account under botAccounts.default", () => {
+    const next = dmPolicy.setPolicy(singleBotCfg, "allowlist", undefined);
     const section = (next.channels as Record<string, unknown>).sabha as Record<
       string,
       unknown
     >;
-    expect(section.dmPolicy).toBe("allowlist");
-    expect(section.botAccounts).toBeUndefined();
+    const botAccounts = section.botAccounts as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(botAccounts.default.dmPolicy).toBe("allowlist");
   });
 });

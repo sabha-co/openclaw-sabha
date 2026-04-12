@@ -1,18 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { sabhaPlugin, resolveAccount } from "./channel.js";
+import { sabhaPlugin } from "./channel.js";
+import { resolveBotAccount } from "./bot-accounts.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 function makeCfg(sabha?: Record<string, unknown>): OpenClawConfig {
   return { channels: { sabha } } as unknown as OpenClawConfig;
 }
 
-describe("resolveAccount", () => {
+describe("resolveBotAccount", () => {
   it("resolves from config", () => {
     const cfg = makeCfg({
-      baseUrl: "https://sabha.co/1000006",
-      botKey: "42-AbCdEfGhIjKl",
+      botAccounts: {
+        default: {
+          baseUrl: "https://sabha.co/1000006",
+          botKey: "42-AbCdEfGhIjKl",
+        },
+      },
     });
-    const account = resolveAccount(cfg);
+    const account = resolveBotAccount({ cfg });
     expect(account.baseUrl).toBe("https://sabha.co/1000006");
     expect(account.botKey).toBe("42-AbCdEfGhIjKl");
     expect(account.botId).toBe(42);
@@ -20,28 +25,33 @@ describe("resolveAccount", () => {
 
   it("defaults connectionMode to websocket", () => {
     const cfg = makeCfg({
-      baseUrl: "https://chat.example.com",
-      botKey: "1-xyz",
+      botAccounts: { default: { baseUrl: "https://chat.example.com", botKey: "1-xyz" } },
     });
-    expect(resolveAccount(cfg).connectionMode).toBe("websocket");
+    expect(resolveBotAccount({ cfg }).connectionMode).toBe("websocket");
   });
 
   it("respects explicit webhook connectionMode", () => {
     const cfg = makeCfg({
-      baseUrl: "https://chat.example.com",
-      botKey: "1-xyz",
-      connectionMode: "webhook",
+      botAccounts: {
+        default: {
+          baseUrl: "https://chat.example.com",
+          botKey: "1-xyz",
+          connectionMode: "webhook",
+        },
+      },
     });
-    expect(resolveAccount(cfg).connectionMode).toBe("webhook");
+    expect(resolveBotAccount({ cfg }).connectionMode).toBe("webhook");
   });
 
   it("defaults dmPolicy to open", () => {
-    const cfg = makeCfg({ baseUrl: "x", botKey: "1-a" });
-    expect(resolveAccount(cfg).dmPolicy).toBe("open");
+    const cfg = makeCfg({
+      botAccounts: { default: { baseUrl: "x", botKey: "1-a" } },
+    });
+    expect(resolveBotAccount({ cfg }).dmPolicy).toBe("open");
   });
 
   it("returns empty strings for missing config", () => {
-    const account = resolveAccount(makeCfg());
+    const account = resolveBotAccount({ cfg: makeCfg() });
     expect(account.baseUrl).toBe("");
     expect(account.botKey).toBe("");
     expect(account.botId).toBe(0);
@@ -100,7 +110,7 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
   // reach the "should monitor" block, so cfg / setStatus / channelRuntime
   // don't need real implementations.
   function makeCtx(
-    account: ReturnType<typeof resolveAccount>,
+    account: ReturnType<typeof resolveBotAccount>,
     logs: CapturedLog[],
     abortSignal: AbortSignal,
   ): Parameters<
@@ -131,9 +141,9 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
 
   it("skips disabled accounts without starting a monitor", async () => {
     const account = {
-      ...resolveAccount(
-        makeCfg({ baseUrl: "https://x", botKey: "1-a" }),
-      ),
+      ...resolveBotAccount({
+        cfg: makeCfg({ botAccounts: { default: { baseUrl: "https://x", botKey: "1-a" } } }),
+      }),
       enabled: false,
     };
     const logs: CapturedLog[] = [];
@@ -154,19 +164,15 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
   });
 
   it("fails closed when a non-default account uses connectionMode webhook", async () => {
-    // Construct a named (non-default) bot account with webhook mode.
-    // Same shape as resolveAccount() but with a different accountId so
-    // the early-return guard trips.
     const account = {
-      ...resolveAccount(
-        makeCfg({
-          baseUrl: "https://x",
-          botKey: "1-a",
-          connectionMode: "webhook",
+      ...resolveBotAccount({
+        cfg: makeCfg({
+          botAccounts: {
+            staging: { baseUrl: "https://x", botKey: "1-a", connectionMode: "webhook" },
+          },
         }),
-      ),
-      accountId: "staging",
-      connectionMode: "webhook" as const,
+        botAccountId: "staging",
+      }),
     };
     const logs: CapturedLog[] = [];
     const ac = new AbortController();
@@ -193,14 +199,13 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
     // Default account + webhook mode is the only supported webhook
     // configuration. It should idle (no error), not fail-close.
     const account = {
-      ...resolveAccount(
-        makeCfg({
-          baseUrl: "https://x",
-          botKey: "1-a",
-          connectionMode: "webhook",
+      ...resolveBotAccount({
+        cfg: makeCfg({
+          botAccounts: {
+            default: { baseUrl: "https://x", botKey: "1-a", connectionMode: "webhook" },
+          },
         }),
-      ),
-      connectionMode: "webhook" as const,
+      }),
     };
     const logs: CapturedLog[] = [];
     const ac = new AbortController();
@@ -224,9 +229,9 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
 
 describe("sabhaPlugin.status", () => {
   it("buildAccountSnapshot reports configured from account", () => {
-    const account = resolveAccount(
-      makeCfg({ baseUrl: "https://sabha.co", botKey: "1-abc" }),
-    );
+    const account = resolveBotAccount({
+      cfg: makeCfg({ botAccounts: { default: { baseUrl: "https://sabha.co", botKey: "1-abc" } } }),
+    });
     const snapshot = sabhaPlugin.status!.buildAccountSnapshot!({
       account,
       cfg: makeCfg(),
@@ -237,9 +242,9 @@ describe("sabhaPlugin.status", () => {
   });
 
   it("buildAccountSnapshot reflects runtime running state", () => {
-    const account = resolveAccount(
-      makeCfg({ baseUrl: "x", botKey: "1-a" }),
-    );
+    const account = resolveBotAccount({
+      cfg: makeCfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    });
     const snapshot = sabhaPlugin.status!.buildAccountSnapshot!({
       account,
       cfg: makeCfg(),

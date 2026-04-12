@@ -14,18 +14,10 @@ function cfg(sabha: Record<string, unknown>): OpenClawConfig {
 }
 
 describe("listBotAccountIds", () => {
-  it("returns a single 'default' id for legacy single-bot configs", () => {
-    const ids = listBotAccountIds(
-      cfg({ baseUrl: "https://sabha.example", botKey: "1-abc" }),
-    );
-    expect(ids).toEqual(["default"]);
-  });
-
   it("returns a sorted list when botAccounts is populated", () => {
     const ids = listBotAccountIds(
       cfg({
         baseUrl: "https://sabha.example",
-        botKey: "1-abc",
         botAccounts: {
           staging: { botKey: "2-bbb" },
           production: { botKey: "3-ccc" },
@@ -35,15 +27,15 @@ describe("listBotAccountIds", () => {
     expect(ids).toEqual(["production", "staging"]);
   });
 
-  it("still returns 'default' when botAccounts is present but empty", () => {
+  it("returns an empty list when botAccounts is empty", () => {
     const ids = listBotAccountIds(
-      cfg({ baseUrl: "x", botKey: "1-a", botAccounts: {} }),
+      cfg({ baseUrl: "x", botAccounts: {} }),
     );
-    expect(ids).toEqual(["default"]);
+    expect(ids).toEqual([]);
   });
 
-  it("does not crash when channels.sabha is missing", () => {
-    expect(listBotAccountIds({} as OpenClawConfig)).toEqual(["default"]);
+  it("returns an empty list when channels.sabha is missing", () => {
+    expect(listBotAccountIds({} as OpenClawConfig)).toEqual([]);
   });
 });
 
@@ -77,20 +69,26 @@ describe("resolveDefaultBotAccountId", () => {
     expect(id).toBe("production");
   });
 
-  it("is 'default' for legacy single-bot configs", () => {
+  it("returns the alphabetic-first when no override and single account", () => {
     expect(
-      resolveDefaultBotAccountId(cfg({ baseUrl: "x", botKey: "1-a" })),
-    ).toBe("default");
+      resolveDefaultBotAccountId(
+        cfg({ botAccounts: { primary: { baseUrl: "x", botKey: "1-a" } } }),
+      ),
+    ).toBe("primary");
   });
 });
 
 describe("resolveBotAccount", () => {
-  it("returns the base config for the default account in legacy mode", () => {
+  it("resolves a bot account from botAccounts map", () => {
     const account = resolveBotAccount({
       cfg: cfg({
-        baseUrl: "https://sabha.co/1000006",
-        botKey: "42-BaseKey",
-        botName: "BaseBot",
+        botAccounts: {
+          default: {
+            baseUrl: "https://sabha.co/1000006",
+            botKey: "42-BaseKey",
+            botName: "BaseBot",
+          },
+        },
       }),
     });
     expect(account.accountId).toBe("default");
@@ -129,7 +127,7 @@ describe("resolveBotAccount", () => {
 
   it("defaults connectionMode to websocket", () => {
     const account = resolveBotAccount({
-      cfg: cfg({ baseUrl: "x", botKey: "1-a" }),
+      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
     });
     expect(account.connectionMode).toBe("websocket");
   });
@@ -166,8 +164,6 @@ describe("resolveBotAccount", () => {
   it("defaults to the resolved default bot account when id is omitted", () => {
     const account = resolveBotAccount({
       cfg: cfg({
-        baseUrl: "x",
-        botKey: "1-a",
         botAccounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },
@@ -242,10 +238,11 @@ describe("resolveBotAccount", () => {
     // during merge, the field leaks into every resolved account's shape.
     const account = resolveBotAccount({
       cfg: cfg({
-        baseUrl: "x",
-        botKey: "1-a",
-        botAccounts: { staging: { baseUrl: "y", botKey: "2-b" } },
+        botAccounts: {
+          staging: { baseUrl: "y", botKey: "2-b" },
+        },
       }),
+      botAccountId: "staging",
     });
     expect((account as unknown as { botAccounts?: unknown }).botAccounts).toBeUndefined();
   });
@@ -255,8 +252,6 @@ describe("resolveBotAccountForSdk", () => {
   it("forwards accountId through to resolveBotAccount", () => {
     const account = resolveBotAccountForSdk(
       cfg({
-        baseUrl: "x",
-        botKey: "1-a",
         botAccounts: { staging: { baseUrl: "y", botKey: "2-b" } },
       }),
       "staging",
@@ -267,7 +262,7 @@ describe("resolveBotAccountForSdk", () => {
 
   it("handles nullish accountId by resolving the default", () => {
     const account = resolveBotAccountForSdk(
-      cfg({ baseUrl: "x", botKey: "1-a" }),
+      cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
       null,
     );
     expect(account.accountId).toBe("default");
@@ -278,8 +273,6 @@ describe("listEnabledBotAccounts", () => {
   it("returns every enabled bot account", () => {
     const accounts = listEnabledBotAccounts(
       cfg({
-        baseUrl: "x",
-        botKey: "1-a",
         botAccounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },
@@ -295,8 +288,6 @@ describe("listEnabledBotAccounts", () => {
   it("filters out disabled bot accounts", () => {
     const accounts = listEnabledBotAccounts(
       cfg({
-        baseUrl: "x",
-        botKey: "1-a",
         botAccounts: {
           staging: { enabled: false, baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },

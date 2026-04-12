@@ -1,5 +1,5 @@
 import type {
-  SabhaAccount,
+  ResolvedBotAccount,
   DeliveryPayload,
   SabhaMessageCreatedPayload,
   SabhaMessageEventPayload,
@@ -56,7 +56,7 @@ export function shouldHandleInbound(
 type InboundDeps = {
   runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;
-  account: SabhaAccount;
+  account: ResolvedBotAccount;
   deliver: (payload: DeliveryPayload) => Promise<void>;
   logger?: Logger;
   /**

@@ -96,19 +96,6 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
   },
 });
 
-/**
- * Back-compat shim: earlier code imported `resolveAccount` from this module.
- * New code should import `resolveBotAccount` directly from `./bot-accounts.js`
- * so the "bot account" naming stays consistent with the SDK boundary
- * translation.
- */
-export function resolveAccount(
-  cfg: OpenClawConfig,
-  accountId?: string | null,
-): ResolvedBotAccount {
-  return resolveBotAccount({ cfg, botAccountId: accountId });
-}
-
 function getClient(account: ResolvedBotAccount): SabhaClient {
   return new SabhaClient(account.baseUrl, account.botKey);
 }

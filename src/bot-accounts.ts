@@ -1,6 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
-  DEFAULT_ACCOUNT_ID,
   listCombinedAccountIds,
   normalizeAccountId,
   normalizeOptionalAccountId,
@@ -19,18 +18,14 @@ import { extractBotId } from "./client.js";
 // Config shape:
 //   channels:
 //     sabha:
-//       # legacy / default bot account (kept as base for zero-migration):
+//       # shared base fields (inherited by every bot unless overridden):
 //       baseUrl: ...
-//       botKey: ...
-//       # additional bots, layered over the base:
+//       # per-bot entries:
 //       botAccounts:
+//         default:   { botKey: ... }
 //         staging:   { baseUrl: ..., botKey: ... }
 //         prod-eu:   { baseUrl: ..., botKey: ... }
 //       defaultBotAccount: prod-eu   # optional override
-//
-// Legacy single-bot configs work unchanged: `botAccounts` is absent, and the
-// default account resolves to `"default"` with the base config as its
-// merged config.
 
 export type ResolvedBotAccount = {
   accountId: string;
@@ -67,10 +62,8 @@ function getBotAccountsMap(
 }
 
 /**
- * Enumerate every bot account id the plugin should spin up. Always returns
- * at least one id so a legacy single-bot config still starts a monitor —
- * the base `channels.sabha` block acts as the "default" bot account when
- * no `botAccounts` map is present.
+ * Enumerate every bot account id the plugin should spin up. Returns an
+ * empty array when no `botAccounts` map is configured.
  */
 export function listBotAccountIds(cfg: OpenClawConfig): string[] {
   const accounts = getBotAccountsMap(cfg);
@@ -79,7 +72,6 @@ export function listBotAccountIds(cfg: OpenClawConfig): string[] {
     : [];
   return listCombinedAccountIds({
     configuredAccountIds: configuredIds,
-    fallbackAccountIdWhenEmpty: DEFAULT_ACCOUNT_ID,
   });
 }
 

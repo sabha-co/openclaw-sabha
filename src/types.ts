@@ -181,9 +181,7 @@ export type SabhaMessageEventPayload =
 
 export type SabhaConfig = {
   enabled?: boolean;
-  // Base fields double as the "default" bot account's config in the legacy
-  // single-bot shape. When `botAccounts` is populated, these still act as
-  // the base that per-bot overrides layer onto.
+  // Shared base fields that per-bot overrides in `botAccounts` layer onto.
   baseUrl?: string;
   botKey?: string;
   botName?: string;
@@ -197,19 +195,13 @@ export type SabhaConfig = {
   // media fetches. Only set this in corporate / split-horizon DNS setups
   // that legitimately need to fetch from RFC1918 addresses.
   allowPrivateAttachmentHosts?: boolean;
-  // Multi-bot-account support. Each entry is a per-bot override layered
-  // over the base fields above. Omitting this block keeps the legacy
-  // single-bot-config behavior.
+  // Multi-bot-account map. Each entry is a per-bot override layered over
+  // the base fields above.
   botAccounts?: Record<string, Partial<Omit<SabhaConfig, "botAccounts" | "defaultBotAccount">>>;
   defaultBotAccount?: string;
 };
 
-// `ResolvedBotAccount` is the canonical runtime shape exported from
-// `./bot-accounts.js`. Re-exported here under the legacy `SabhaAccount`
-// name so existing call sites continue to work. Prefer `ResolvedBotAccount`
-// in new code.
 export type { ResolvedBotAccount } from "./bot-accounts.js";
-export type { ResolvedBotAccount as SabhaAccount } from "./bot-accounts.js";
 
 // --- Delivery payload (from reply pipeline to deliver callback) ---
 

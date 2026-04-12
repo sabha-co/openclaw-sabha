@@ -413,10 +413,7 @@ async function verifyBaseUrlInteractive(
 }
 
 /**
- * Returns `true` if `accountId` refers to the implicit legacy bot account
- * whose config lives in the base `channels.sabha` block (zero-migration for
- * pre-multi-bot configs). Named accounts under `botAccounts.<id>` are stored
- * separately and layered over the base by `mergeBotAccountConfig`.
+ * Returns `true` if `accountId` refers to the default bot account.
  */
 export function isDefaultBotAccount(
   accountId: string | undefined | null,
@@ -471,10 +468,8 @@ export function listConfiguredBotAccountIds(
 }
 
 /**
- * Write setup output for one bot account. The default account continues to
- * write into the base `channels.sabha` block (preserving legacy single-bot
- * configs unchanged); named accounts write into `botAccounts.<id>` so the
- * base config is never clobbered when a second bot is configured.
+ * Write setup output for one bot account. All accounts (including the
+ * default) are written into `botAccounts.<id>`.
  */
 export function setBotAccountConfig(
   cfg: OpenClawConfig,
@@ -484,17 +479,9 @@ export function setBotAccountConfig(
   const channels = (cfg.channels ?? {}) as Record<string, unknown>;
   const existing = (channels.sabha ?? {}) as Record<string, unknown>;
 
-  if (isDefaultBotAccount(accountId)) {
-    return {
-      ...cfg,
-      channels: {
-        ...channels,
-        sabha: { ...existing, ...patch, enabled: true },
-      },
-    };
-  }
-
-  const id = normalizeAccountId(accountId!);
+  const id = isDefaultBotAccount(accountId)
+    ? DEFAULT_ACCOUNT_ID
+    : normalizeAccountId(accountId!);
   const botAccounts = {
     ...((existing.botAccounts as Record<string, Partial<SabhaConfig>>) ?? {}),
   };
@@ -507,8 +494,6 @@ export function setBotAccountConfig(
       ...channels,
       sabha: {
         ...existing,
-        // Base stays enabled so legacy default-account config keeps working
-        // while named accounts layer over it.
         enabled: existing.enabled !== false,
         botAccounts,
       },
@@ -853,23 +838,12 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   dmPolicy: {
     label: "DM policy",
     channel: "sabha",
-    // Legacy-default paths used when no accountId is in play. The SDK
-    // reads these for log-line rendering in the "Configure DM access
-    // policies now?" step; `resolveConfigKeys` below overrides them
-    // per-account so the hints point at the correct config path for
-    // named bots.
-    policyKey: "channels.sabha.dmPolicy",
-    allowFromKey: "channels.sabha.allowFrom",
+    policyKey: "channels.sabha.botAccounts.default.dmPolicy",
+    allowFromKey: "channels.sabha.botAccounts.default.allowFrom",
     resolveConfigKeys: (cfg: OpenClawConfig, accountId?: string) => {
       const id = accountId
         ? normalizeAccountId(accountId)
         : resolveDefaultBotAccountId(cfg);
-      if (id === DEFAULT_ACCOUNT_ID) {
-        return {
-          policyKey: "channels.sabha.dmPolicy",
-          allowFromKey: "channels.sabha.allowFrom",
-        };
-      }
       return {
         policyKey: `channels.sabha.botAccounts.${id}.dmPolicy`,
         allowFromKey: `channels.sabha.botAccounts.${id}.allowFrom`,

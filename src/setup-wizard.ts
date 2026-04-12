@@ -552,26 +552,29 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       return choice.slice("edit:".length);
     }
 
-    const newId = await prompter.text({
-      message: "New bot account id",
-      placeholder: "analyst",
+    const name = await prompter.text({
+      message: "Bot account name",
+      placeholder: "Analyst",
       validate: (value) => {
-        const trimmed = value.trim();
-        if (!trimmed) return "Required";
-        if (!/^[a-z0-9][a-z0-9_-]*$/i.test(trimmed)) {
-          return "Use letters, digits, hyphen, underscore (must start with a letter or digit)";
+        if (!value.trim()) return "Required";
+        const id = normalizeAccountId(value.trim());
+        if (id === DEFAULT_ACCOUNT_ID) {
+          return `"${DEFAULT_ACCOUNT_ID}" is reserved for the primary bot — pick another name`;
         }
-        const normalized = normalizeAccountId(trimmed);
-        if (normalized === DEFAULT_ACCOUNT_ID) {
-          return `"${DEFAULT_ACCOUNT_ID}" is reserved for the primary bot — pick another id`;
-        }
-        if (configured.includes(normalized)) {
-          return "An account with this id already exists — pick Edit instead";
+        if (configured.includes(id)) {
+          return "An account with this name already exists — pick Edit instead";
         }
         return undefined;
       },
     });
-    return normalizeAccountId(newId.trim());
+    const accountId = normalizeAccountId(name.trim());
+    if (name.trim() !== accountId) {
+      await prompter.note(
+        `Account id will be "${accountId}".`,
+        "Sabha account",
+      );
+    }
+    return accountId;
   },
 
   status: {

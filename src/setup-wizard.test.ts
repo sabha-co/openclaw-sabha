@@ -254,7 +254,7 @@ describe("sabhaSetupWizard.resolveAccountIdForConfigure", () => {
         throw new Error("confirm should not be called by resolveAccountIdForConfigure");
       },
       note: async () => {
-        throw new Error("note should not be called by resolveAccountIdForConfigure");
+        recorded.noteCalls = (recorded.noteCalls ?? 0) + 1;
       },
       progress: () => {
         throw new Error("progress should not be called by resolveAccountIdForConfigure");
@@ -317,12 +317,12 @@ describe("sabhaSetupWizard.resolveAccountIdForConfigure", () => {
     expect(recorded.textCalls).toBe(0);
   });
 
-  it("prompts for a new id when the user picks Add new bot", async () => {
+  it("prompts for a name and derives the account id when the user picks Add new bot", async () => {
     const recorded = {
       selectCalls: 0,
       textCalls: 0,
       selectAnswer: "new",
-      textAnswer: "analyst",
+      textAnswer: "Analyst",
     };
     const prompter = stubPrompter(recorded);
     const result = await resolve({
@@ -337,7 +337,27 @@ describe("sabhaSetupWizard.resolveAccountIdForConfigure", () => {
     expect(recorded.textCalls).toBe(1);
   });
 
-  it("rejects reserved and duplicate ids via the text validator", async () => {
+  it("shows a note when the derived id differs from the entered name", async () => {
+    const recorded = {
+      selectCalls: 0,
+      textCalls: 0,
+      noteCalls: 0,
+      selectAnswer: "new",
+      textAnswer: "My Analyst Bot",
+    };
+    const prompter = stubPrompter(recorded);
+    const result = await resolve({
+      cfg: multiCfg,
+      prompter,
+      defaultAccountId: "default",
+      shouldPromptAccountIds: false,
+      listAccountIds,
+    });
+    expect(result).toBe("my-analyst-bot");
+    expect(recorded.noteCalls).toBe(1);
+  });
+
+  it("rejects reserved and duplicate names via the text validator", async () => {
     // Simulate the `default` case — validator must reject.
     const reserved = { selectCalls: 0, textCalls: 0, selectAnswer: "new", textAnswer: "default" };
     await expect(

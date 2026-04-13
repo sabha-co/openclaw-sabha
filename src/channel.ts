@@ -36,6 +36,7 @@ const SabhaBotAccountSchema = z.object({
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
   allowPrivateAttachmentHosts: z.boolean().optional(),
+  replyToMode: z.enum(["off", "first", "all"]).optional(),
 });
 
 const SabhaRoomConfigSchema = z.object({
@@ -97,6 +98,10 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       label: "Allow private attachment hosts",
       advanced: true,
       help: "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups.",
+    },
+    replyToMode: {
+      label: "Reply threading mode",
+      help: '"off" = inline, "first" = thread on first reply, "all" = always thread',
     },
   },
 });
@@ -310,7 +315,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
   },
 
   threading: {
-    topLevelReplyToMode: "thread",
+    resolveReplyToMode: ({ cfg }) => {
+      const section = (cfg.channels as Record<string, unknown>)?.sabha as
+        | { replyToMode?: string }
+        | undefined;
+      return (section?.replyToMode as "off" | "first" | "all") ?? "first";
+    },
   },
 
   outbound: {

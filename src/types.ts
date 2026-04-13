@@ -201,6 +201,7 @@ export type SabhaConfig = {
   // media fetches. Only set this in corporate / split-horizon DNS setups
   // that legitimately need to fetch from RFC1918 addresses.
   allowPrivateAttachmentHosts?: boolean;
+  replyToMode?: "off" | "first" | "all";
   // Per-room config. Keys are room ids (as strings). Used for
   // per-room system prompts that customize agent behavior.
   rooms?: Record<string, SabhaRoomConfig>;

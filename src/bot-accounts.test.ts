@@ -233,6 +233,23 @@ describe("resolveBotAccount", () => {
     expect(account.dmPolicy).toBe("allowlist");
   });
 
+  it("defaults rooms to an empty map", () => {
+    const account = resolveBotAccount({
+      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    });
+    expect(account.rooms).toEqual({});
+  });
+
+  it("resolves rooms from base config", () => {
+    const account = resolveBotAccount({
+      cfg: cfg({
+        rooms: { "42": { systemPrompt: "Be formal." } },
+        botAccounts: { default: { baseUrl: "x", botKey: "1-a" } },
+      }),
+    });
+    expect(account.rooms).toEqual({ "42": { systemPrompt: "Be formal." } });
+  });
+
   it("does not leak the botAccounts map into the merged config", () => {
     // Regression guard: if we forget to omit `botAccounts` from the base
     // during merge, the field leaks into every resolved account's shape.

@@ -143,6 +143,23 @@ describe("processInboundMessage", () => {
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 
+  it("processes thread replies without a bot mention", async () => {
+    const payload = makePayload({
+      message: {
+        ...makePayload().message,
+        mentionees: [],
+        thread: { id: 99, parent_message_id: 10 },
+      },
+    });
+    await processInboundMessage(payload, {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+    expect(mockDispatch).toHaveBeenCalledOnce();
+  });
+
   it("always processes DM messages regardless of mention", async () => {
     const payload = makePayload({
       room: { ...makePayload().room, type: "Direct" },
@@ -357,6 +374,17 @@ describe("shouldHandleInbound", () => {
     const payload = makePayload({
       room: { ...makePayload().room, type: "Direct" },
       message: { ...makePayload().message, mentionees: [] },
+    });
+    expect(shouldHandleInbound(payload, 42)).toBe(true);
+  });
+
+  it("returns true for thread replies without a bot mention", () => {
+    const payload = makePayload({
+      message: {
+        ...makePayload().message,
+        mentionees: [],
+        thread: { id: 99, parent_message_id: 10 },
+      },
     });
     expect(shouldHandleInbound(payload, 42)).toBe(true);
   });

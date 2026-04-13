@@ -47,9 +47,14 @@ export function shouldHandleInbound(
   // echoes Sabha sends back when the bot edits / deletes its own content
   // through the by-bots controllers (Scout A, hazard #2).
   if (payload.user.id === botId) return false;
-  // In groups, only respond when mentioned (DMs always handled)
+  // In DMs and threads, always handle — no mention required. Threads
+  // the bot created are ongoing conversations; requiring a re-mention
+  // on every reply would break the auto-thread flow.
   const isDm = resolveChatType(payload.room.type) === "direct";
-  if (!isDm && !wasBotMentioned(payload, botId)) return false;
+  const isThread = payload.message.thread != null;
+  if (isDm || isThread) return true;
+  // In top-level group messages, require an @mention.
+  if (!wasBotMentioned(payload, botId)) return false;
   return true;
 }
 
@@ -97,10 +102,11 @@ export async function processInboundMessage(
 
   const chatType = resolveChatType(payload.room.type);
   const isDm = chatType === "direct";
+  const isThread = payload.message.thread != null;
   const mentioned = wasBotMentioned(payload, account.botId);
 
-  // In groups, only respond when mentioned (unless DM)
-  if (!isDm && !mentioned) return;
+  // DMs and threads are always handled. Top-level group messages require mention.
+  if (!isDm && !isThread && !mentioned) return;
 
   const session = resolveSessionFromPayload(payload);
   const accountId = account.accountId ?? "";

@@ -357,7 +357,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 const roomId = Number(replyPayload.to ?? payload.room.id);
                 const text = replyPayload.text ?? replyPayload.body ?? "";
 
-                if (replyPayload.threadId && replyPayload.replyToId) {
+                if (replyPayload.replyToId) {
                   await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
                   return;
                 }

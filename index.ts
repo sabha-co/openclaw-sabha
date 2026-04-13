@@ -165,7 +165,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                 );
                 const text = replyPayload.text ?? replyPayload.body ?? "";
 
-                if (replyPayload.threadId && replyPayload.replyToId) {
+                if (replyPayload.replyToId) {
                   await client.replyInThread(
                     roomId,
                     Number(replyPayload.replyToId),

@@ -334,7 +334,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         const client = getClient(account);
         const roomId = Number(ctx.to);
 
-        if (ctx.threadId != null && ctx.replyToId != null) {
+        if (ctx.replyToId != null) {
           const result = await client.replyInThread(
             roomId,
             Number(ctx.replyToId),

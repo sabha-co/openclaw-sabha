@@ -43,7 +43,7 @@ export function parseJoinUrl(raw: string): {
 }
 
 /**
- * Self-register a bot via Sabha's join code endpoint.
+ * Register a bot via Sabha's bot invite URL endpoint.
  * POST /join/{code} with JSON body → { bot_key, name, websocket_url, ... }
  *
  * Throws a typed error for the common failure codes so the wizard can show
@@ -601,9 +601,8 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   introNote: {
     title: "Sabha Setup",
     lines: [
-      "You'll need a join URL from your Sabha server.",
-      "Get one from your Sabha admin at /account/join_codes,",
-      "or ask an admin to share the link.",
+      "You'll need a bot invite URL from your Sabha server.",
+      "An admin can generate one at /account/bots (click 'Generate').",
       "",
       "The URL looks like: https://chat.example.com/join/mNrP-Nm5q-HCzw",
     ],
@@ -647,8 +646,8 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       options: [
         {
           value: "join",
-          label: "Paste a join URL (recommended)",
-          hint: "Self-registers a bot via your Sabha join code",
+          label: "Paste a bot invite URL (recommended)",
+          hint: "Registers a bot via a one-time invite URL from your admin",
         },
         {
           value: "manual",
@@ -661,13 +660,13 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
 
     if (mode === "join") {
       const joinUrl = await prompter.text({
-        message: "Sabha join URL",
+        message: "Bot invite URL",
         placeholder: "https://sabha.co/1000101/join/Ccnp-m7vD-L3aj",
         validate: (value) => {
           if (!value.trim()) return "Required";
           return parseJoinUrl(value)
             ? undefined
-            : "Invalid join URL. Expected: https://chat.example.com/join/CODE";
+            : "Invalid invite URL. Expected: https://chat.example.com/join/CODE";
         },
       });
 
@@ -697,28 +696,15 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         progress.stop("Registration failed");
 
         if (err instanceof SabhaRegistrationError) {
-          if (err.code === "self_registration_disabled") {
+          if (err.code === "join_code_not_found" || err.status === 404) {
             await prompter.note(
-              [
-                "This Sabha server has bot self-registration disabled.",
-                "",
-                "Ask your admin to either:",
-                "  1. Enable self-registration at /account/bots settings, or",
-                "  2. Create a bot manually and share its bot key with you",
-                "",
-                "Then re-run the setup and choose 'I already have a bot key'.",
-              ].join("\n"),
-              "Self-registration disabled",
-            );
-          } else if (err.code === "join_code_not_found" || err.status === 404) {
-            await prompter.note(
-              `Join code not found. Double-check the URL: ${joinUrl}`,
-              "Invalid join code",
+              `Invite URL not found. Double-check the URL: ${joinUrl}`,
+              "Invalid invite URL",
             );
           } else if (err.code === "join_code_inactive" || err.code === "join_code_expired") {
             await prompter.note(
-              "This join code has expired or been revoked. Ask your admin for a new one.",
-              "Join code expired",
+              "This invite URL has been used or expired. Bot invite URLs are single-use — ask your admin to generate a new one at /account/bots.",
+              "Invite URL expired",
             );
           } else if (err.code === "rate_limited") {
             await prompter.note(

@@ -7,7 +7,7 @@ import {
   resolveMergedAccountConfig,
 } from "openclaw/plugin-sdk/account-core";
 
-import type { SabhaConfig } from "./types.js";
+import type { SabhaConfig, SabhaRoomConfig } from "./types.js";
 import { extractBotId } from "./client.js";
 
 // Sabha calls plugin-level identities "bot accounts" to avoid colliding with
@@ -41,6 +41,8 @@ export type ResolvedBotAccount = {
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
   allowPrivateAttachmentHosts: boolean;
+  // Shallow-replaced by per-bot override if present, not deep-merged.
+  rooms: Record<string, SabhaRoomConfig>;
 };
 
 // Fields we must NOT propagate from the base section into a per-bot merged
@@ -148,6 +150,7 @@ export function resolveBotAccount(
     dmPolicy: merged.dmPolicy ?? "open",
     allowFrom: merged.allowFrom ?? [],
     allowPrivateAttachmentHosts: merged.allowPrivateAttachmentHosts === true,
+    rooms: merged.rooms ?? {},
   };
 }
 

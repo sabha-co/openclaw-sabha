@@ -58,14 +58,19 @@ function makeChannelRuntime(): PluginRuntime["channel"] {
 
 const baseAccount: ResolvedBotAccount = {
   accountId: "default",
+  enabled: true,
   baseUrl: "https://sabha.co/1000006",
   botKey: "42-AbCdEfGhIjKl",
   botId: 42,
+  botName: "OpenClaw",
   webhookPort: 8787,
   connectionMode: "websocket",
   websocketUrl: "",
+  typingEnabled: true,
   dmPolicy: "open",
   allowFrom: [],
+  allowPrivateAttachmentHosts: false,
+  rooms: {},
 };
 
 const baseCfg = { channels: { sabha: {} } } as unknown as OpenClawConfig;
@@ -249,6 +254,69 @@ describe("processInboundMessage", () => {
       replyOptions?: { onPartialReply?: unknown };
     };
     expect(call.replyOptions?.onPartialReply).toBe(onPartialReply);
+  });
+
+  it("sets GroupSystemPrompt from per-room config", async () => {
+    const account = {
+      ...baseAccount,
+      rooms: { "5": { systemPrompt: "Be formal in this room." } },
+    };
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as { ctxPayload: Record<string, unknown> }).ctxPayload;
+    expect(ctx.GroupSystemPrompt).toBe("Be formal in this room.");
+  });
+
+  it("omits GroupSystemPrompt when no room config exists", async () => {
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as { ctxPayload: Record<string, unknown> }).ctxPayload;
+    expect(ctx.GroupSystemPrompt).toBeUndefined();
+  });
+
+  it("omits GroupSystemPrompt for DMs even when room config exists", async () => {
+    const account = {
+      ...baseAccount,
+      rooms: { "5": { systemPrompt: "Should not appear in DMs." } },
+    };
+    const payload = makePayload({
+      room: { ...makePayload().room, type: "Direct" },
+    });
+    await processInboundMessage(payload, {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as { ctxPayload: Record<string, unknown> }).ctxPayload;
+    expect(ctx.GroupSystemPrompt).toBeUndefined();
+  });
+
+  it("treats whitespace-only systemPrompt as absent", async () => {
+    const account = {
+      ...baseAccount,
+      rooms: { "5": { systemPrompt: "   " } },
+    };
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as { ctxPayload: Record<string, unknown> }).ctxPayload;
+    expect(ctx.GroupSystemPrompt).toBeUndefined();
   });
 
   it("omits replyOptions entirely when onPartialReply is not provided", async () => {

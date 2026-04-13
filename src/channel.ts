@@ -38,7 +38,12 @@ const SabhaBotAccountSchema = z.object({
   allowPrivateAttachmentHosts: z.boolean().optional(),
 });
 
+const SabhaRoomConfigSchema = z.object({
+  systemPrompt: z.string().optional(),
+});
+
 const SabhaConfigSchema = SabhaBotAccountSchema.extend({
+  rooms: z.record(z.string(), SabhaRoomConfigSchema).optional(),
   botAccounts: z.record(z.string(), SabhaBotAccountSchema.partial()).optional(),
   defaultBotAccount: z.string().optional(),
 });
@@ -167,10 +172,30 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       }),
     },
     agentPrompt: {
+      inboundFormattingHints: () => ({
+        text_markup: "markdown",
+        rules: [
+          "Write standard Markdown. Sabha converts it to rich text automatically.",
+          "Headings, bold, italic, code blocks, and bullet lists all work.",
+          "Pipe tables are not supported — use a code block or plain list instead.",
+        ],
+      }),
+      reactionGuidance: () => ({
+        level: "minimal" as const,
+        channelLabel: "Sabha",
+      }),
       messageToolHints: (params: { cfg: OpenClawConfig }) => {
         const account = resolveBotAccount({ cfg: params.cfg });
         const hints = [
-          `This Sabha server is at ${account.baseUrl}. You can manage rooms, members, search messages, and react using the sabha_* tools.`,
+          // Platform context — gives the agent a working mental model of
+          // Sabha's structure even when the /skill endpoint is unreachable.
+          "SABHA PLATFORM CONTEXT: Sabha is a team chat platform. " +
+            "Conversations happen in rooms (Open — anyone can join, or Closed — invite-only), " +
+            "direct messages (1-on-1), and threads (nested replies within a room). " +
+            "Users have roles: administrator, moderator, member, or bot. " +
+            "Messages support rich text (Markdown), file attachments, emoji reactions, and @mentions. " +
+            `You are connected as the bot "${account.botName}" on ${account.baseUrl}. ` +
+            "Use the sabha_* tools to manage rooms, members, search messages, and more.",
           // Sabha mention syntax is deliberately NOT the same as Discord /
           // Slack. Without this reinforcement, agents default to `<@id>`
           // (Discord prior) or `@username` (Slack/plain text) and

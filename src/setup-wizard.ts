@@ -744,7 +744,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     // user can hit enter through prompts they don't want to change.
     let pendingBaseUrl = view.baseUrl ?? "";
     let pendingBotKey = view.botKey ?? "";
-    let pendingBotName = botDisplayName || view.botName || "OpenClaw";
+    const pendingBotName = botDisplayName || view.botName || "OpenClaw";
     let baseUrlAccepted = false;
     let botKeyAccepted = false;
 

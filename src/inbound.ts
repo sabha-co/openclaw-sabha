@@ -176,6 +176,12 @@ export async function processInboundMessage(
     body: bodyWithAttachment,
   });
 
+  // Resolve per-room system prompt (operator-defined via config)
+  const roomConfig = account.rooms?.[String(payload.room.id)];
+  const groupSystemPrompt = !isDm
+    ? roomConfig?.systemPrompt?.trim() || undefined
+    : undefined;
+
   // Build the inbound context with PascalCase field names (MsgContext)
   const ctxPayload = channel.reply.finalizeInboundContext({
     Body: envelope,
@@ -193,6 +199,7 @@ export async function processInboundMessage(
     ConversationLabel: payload.room.name,
     Timestamp: new Date(payload.message.created_at).getTime(),
     MessageSid: String(payload.message.id),
+    GroupSystemPrompt: groupSystemPrompt,
     ...(session.threadId ? {
       ReplyToId: session.threadId,
       ParentSessionKey: session.baseConversationId

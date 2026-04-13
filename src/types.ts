@@ -177,6 +177,12 @@ export type SabhaMessageEventPayload =
   | SabhaBoostCreatedPayload
   | SabhaBoostDeletedPayload;
 
+// Per-room config (operator-defined, keyed by room id)
+
+export type SabhaRoomConfig = {
+  systemPrompt?: string;
+};
+
 // Plugin config
 
 export type SabhaConfig = {
@@ -195,6 +201,9 @@ export type SabhaConfig = {
   // media fetches. Only set this in corporate / split-horizon DNS setups
   // that legitimately need to fetch from RFC1918 addresses.
   allowPrivateAttachmentHosts?: boolean;
+  // Per-room config. Keys are room ids (as strings). Used for
+  // per-room system prompts that customize agent behavior.
+  rooms?: Record<string, SabhaRoomConfig>;
   // Multi-bot-account map. Each entry is a per-bot override layered over
   // the base fields above.
   botAccounts?: Record<string, Partial<Omit<SabhaConfig, "botAccounts" | "defaultBotAccount">>>;

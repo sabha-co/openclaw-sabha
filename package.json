@@ -3,6 +3,9 @@
   "version": "0.9.6",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.14.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sabha-co/openclaw-sabha.git"

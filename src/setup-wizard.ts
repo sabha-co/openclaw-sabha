@@ -671,10 +671,19 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       });
 
       const parsed = parseJoinUrl(joinUrl)!;
+
+      const defaultName = botDisplayName || view.botName || "OpenClaw";
+      const botNameInput = await prompter.text({
+        message: "Bot display name",
+        placeholder: "OpenClaw",
+        initialValue: defaultName,
+        validate: (value) => (value.trim() ? undefined : "Required"),
+      });
+      const registrationName = botNameInput.trim();
+
       const progress = prompter.progress("Registering bot with Sabha");
 
       try {
-        const registrationName = botDisplayName || view.botName || "OpenClaw";
         const result = await selfRegisterBot(parsed.baseUrl, parsed.joinCode, {
           name: registrationName,
         });
@@ -804,14 +813,6 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       }
       break;
     }
-
-    const botNameInput = await prompter.text({
-      message: "Bot display name",
-      placeholder: "OpenClaw",
-      initialValue: pendingBotName,
-      validate: (value) => (value.trim() ? undefined : "Required"),
-    });
-    pendingBotName = botNameInput.trim();
 
     // Auto-join open rooms only when *both* probes accepted. If either
     // was a "save-anyway" or couldn't run, hitting the authenticated

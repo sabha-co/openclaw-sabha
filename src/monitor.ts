@@ -356,8 +356,16 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
               deliver: async (replyPayload) => {
                 const roomId = Number(replyPayload.to ?? payload.room.id);
                 const text = replyPayload.text ?? replyPayload.body ?? "";
+                // Sabha models threads as Room subclasses. When the inbound
+                // is already in a thread, `payload.room.id` is the thread's
+                // room id and plain `sendMessage(roomId, ...)` posts into
+                // the thread. Calling `replyInThread` here would try to
+                // create a *nested* thread on the reply target — wrong.
+                // Only call `replyInThread` to CREATE a thread from a
+                // top-level room message.
+                const isInThread = payload.message.thread != null;
 
-                if (replyPayload.replyToId) {
+                if (replyPayload.replyToId && !isInThread) {
                   await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
                   return;
                 }

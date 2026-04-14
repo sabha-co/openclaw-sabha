@@ -194,13 +194,21 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         const hints = [
           // Platform context — gives the agent a working mental model of
           // Sabha's structure even when the /skill endpoint is unreachable.
-          "SABHA PLATFORM CONTEXT: Sabha is a team chat platform. " +
+          // IMPORTANT: Kimi/GPT-style models default to Discord/Slack priors
+          // when they see "thread" or "mention", so this hint explicitly
+          // names the platform and tells the agent what NOT to assume.
+          `YOU ARE ON SABHA — NOT Discord, Slack, Teams, or Telegram. Sabha is a team chat platform (server: ${account.baseUrl}). ` +
+            `You are connected as the bot named "${account.botName}". ` +
             "Conversations happen in rooms (Open — anyone can join, or Closed — invite-only), " +
-            "direct messages (1-on-1), and threads (nested replies within a room). " +
+            "direct messages (1-on-1), and threads (which are nested replies within a room). " +
+            "THREADS IN SABHA: A new thread is created automatically when you reply to someone's message with replyToId set — " +
+            "the Sabha server creates the thread on the first reply. You do NOT have a tool to create a thread explicitly; " +
+            "the channel plugin handles this based on config. If a user asks you to 'create a thread,' tell them " +
+            "that threading happens automatically when you reply to their mention — it's configured by the operator, not by you. " +
             "Users have roles: administrator, moderator, member, or bot. " +
             "Messages support rich text (Markdown), file attachments, emoji reactions, and @mentions. " +
-            `You are connected as the bot "${account.botName}" on ${account.baseUrl}. ` +
-            "Use the sabha_* tools to manage rooms, members, search messages, and more.",
+            "Use the sabha_* tools to manage rooms, members, search messages, and more. " +
+            "Never suggest Discord/Slack/Teams instructions — those platforms don't apply here.",
           // Sabha mention syntax is deliberately NOT the same as Discord /
           // Slack. Without this reinforcement, agents default to `<@id>`
           // (Discord prior) or `@username` (Slack/plain text) and

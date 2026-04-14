@@ -365,6 +365,10 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 // top-level room message.
                 const isInThread = payload.message.thread != null;
 
+                logger?.info?.(
+                  `${logPrefix} deliver: replyToId=${replyPayload.replyToId ?? "none"} isInThread=${isInThread} room=${roomId} willThread=${Boolean(replyPayload.replyToId && !isInThread)}`,
+                );
+
                 if (replyPayload.replyToId && !isInThread) {
                   await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
                   return;

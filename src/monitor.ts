@@ -361,16 +361,29 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 // room id and plain `sendMessage(roomId, ...)` posts into
                 // the thread. Calling `replyInThread` here would try to
                 // create a *nested* thread on the reply target — wrong.
-                // Only call `replyInThread` to CREATE a thread from a
-                // top-level room message.
                 const isInThread = payload.message.thread != null;
+                const isDm = payload.room.type === "Direct";
+
+                // The SDK's internal reply planner doesn't call our plugin's
+                // `threading.resolveReplyToMode` — it reads raw config at a
+                // different code path and often doesn't set `replyToId` even
+                // when mode is "all". So we resolve the mode here directly
+                // and decide whether to create a thread ourselves.
+                //
+                // Sabha's /thread endpoint is idempotent via find_or_create_for:
+                // calling replyInThread(roomId, userMessageId) multiple times
+                // in a turn just appends to the same thread. So "first" and
+                // "all" modes are effectively the same on Sabha — thread the
+                // reply or don't.
+                const replyToMode = account.replyToMode ?? "first";
+                const shouldThread = !isInThread && !isDm && replyToMode !== "off";
 
                 logger?.info?.(
-                  `${logPrefix} deliver: replyToId=${replyPayload.replyToId ?? "none"} isInThread=${isInThread} room=${roomId} willThread=${Boolean(replyPayload.replyToId && !isInThread)}`,
+                  `${logPrefix} deliver: mode=${replyToMode} isInThread=${isInThread} isDm=${isDm} room=${roomId} willThread=${shouldThread}`,
                 );
 
-                if (replyPayload.replyToId && !isInThread) {
-                  await client.replyInThread(roomId, Number(replyPayload.replyToId), text);
+                if (shouldThread) {
+                  await client.replyInThread(roomId, payload.message.id, text);
                   return;
                 }
 

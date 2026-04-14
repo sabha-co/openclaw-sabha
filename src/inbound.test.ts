@@ -70,6 +70,7 @@ const baseAccount: ResolvedBotAccount = {
   dmPolicy: "open",
   allowFrom: [],
   allowPrivateAttachmentHosts: false,
+  replyToMode: "first",
   rooms: {},
 };
 

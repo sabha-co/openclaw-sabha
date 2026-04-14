@@ -41,6 +41,10 @@ export type ResolvedBotAccount = {
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
   allowPrivateAttachmentHosts: boolean;
+  // Plugin-resolved replyToMode. The SDK's internal reply planner bypasses
+  // our threading adapter, so monitor.ts / index.ts deliver callbacks read
+  // this directly to decide whether to thread replies.
+  replyToMode: "off" | "first" | "all";
   // Shallow-replaced by per-bot override if present, not deep-merged.
   rooms: Record<string, SabhaRoomConfig>;
 };
@@ -150,6 +154,7 @@ export function resolveBotAccount(
     dmPolicy: merged.dmPolicy ?? "open",
     allowFrom: merged.allowFrom ?? [],
     allowPrivateAttachmentHosts: merged.allowPrivateAttachmentHosts === true,
+    replyToMode: merged.replyToMode ?? "first",
     rooms: merged.rooms ?? {},
   };
 }

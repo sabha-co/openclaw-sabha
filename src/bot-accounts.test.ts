@@ -233,6 +233,36 @@ describe("resolveBotAccount", () => {
     expect(account.dmPolicy).toBe("allowlist");
   });
 
+  it("defaults replyToMode to first", () => {
+    const account = resolveBotAccount({
+      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    });
+    expect(account.replyToMode).toBe("first");
+  });
+
+  it("respects explicit replyToMode from base config", () => {
+    const account = resolveBotAccount({
+      cfg: cfg({
+        replyToMode: "all",
+        botAccounts: { default: { baseUrl: "x", botKey: "1-a" } },
+      }),
+    });
+    expect(account.replyToMode).toBe("all");
+  });
+
+  it("layers per-bot replyToMode over the base", () => {
+    const account = resolveBotAccount({
+      cfg: cfg({
+        replyToMode: "first",
+        botAccounts: {
+          production: { baseUrl: "y", botKey: "2-b", replyToMode: "off" },
+        },
+      }),
+      botAccountId: "production",
+    });
+    expect(account.replyToMode).toBe("off");
+  });
+
   it("defaults rooms to an empty map", () => {
     const account = resolveBotAccount({
       cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),

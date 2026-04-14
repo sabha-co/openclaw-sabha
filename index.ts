@@ -166,14 +166,17 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                 const text = replyPayload.text ?? replyPayload.body ?? "";
                 // Sabha threads are Room subclasses; when the inbound
                 // is already in a thread, plain sendMessage posts into
-                // the thread. Only call replyInThread to CREATE a
-                // thread from a top-level room message.
+                // the thread. See monitor.ts for the full rationale on
+                // why we resolve replyToMode ourselves.
                 const isInThread = payload.message.thread != null;
+                const isDm = payload.room.type === "Direct";
+                const replyToMode = currentAccount.replyToMode ?? "first";
+                const shouldThread = !isInThread && !isDm && replyToMode !== "off";
 
-                if (replyPayload.replyToId && !isInThread) {
+                if (shouldThread) {
                   await client.replyInThread(
                     roomId,
-                    Number(replyPayload.replyToId),
+                    payload.message.id,
                     text,
                   );
                   return;

@@ -261,6 +261,16 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       // self-echo as a defensive double-check (see src/inbound.ts).
       if (isSelfEchoEvent(payload, account.botId)) return;
 
+      // Diagnostic: log every inbound (non-self-echo) event so we can
+      // see what Sabha is sending us. Temporary — remove once threaded
+      // follow-ups are confirmed working.
+      if ("room" in payload && payload.room && "message" in payload && payload.message) {
+        const msg = payload.message as { id: number; thread?: unknown };
+        logger?.info?.(
+          `${logPrefix} inbound ${payload.event} room=${payload.room.id} type=${payload.room.type} msgId=${msg.id} inThread=${msg.thread != null}`,
+        );
+      }
+
       // Feed every inbound event's user into the mention rewriter so
       // outbound @DisplayName → @{id} rewrites work for every user
       // the bot has seen. Also feed mentionees from message events so

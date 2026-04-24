@@ -122,7 +122,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
           // 2.2 will upgrade `boost_created` to approval routing).
           if (payload.event === "message_created" && pluginRuntime) {
             const client = new SabhaClient(
-              currentAccount.baseUrl,
+              currentAccount.apiBaseUrl,
               currentAccount.botKey,
             );
 
@@ -216,9 +216,10 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               // drain in-flight partial sends first so messageId() is
               // accurate, then bypass the draft stream (it may be
               // stopped) and PATCH the preview directly with a
-              // redacted error string so the bot_key embedded in
-              // `SabhaApiError` URLs never lands in a public room
-              // message.
+              // redacted error string. As of v0.10.0 the bot_key is
+              // no longer embedded in the URL (it rides in the
+              // Authorization header), but the redactor stays as
+              // defense-in-depth for any future leak path.
               if (draftStream) {
                 await draftStream.flush().catch(() => undefined);
               }

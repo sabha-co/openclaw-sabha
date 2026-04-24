@@ -18,6 +18,7 @@ const singleBotCfg: Cfg = {
       botAccounts: {
         default: {
           baseUrl: "https://sabha.example.com",
+          apiBaseUrl: "https://sabha.example.com/api/bots",
           botKey: "42-default",
           botName: "Default Bot",
           dmPolicy: "open",
@@ -31,14 +32,17 @@ const multiCfg: Cfg = {
   channels: {
     sabha: {
       baseUrl: "https://sabha.example.com",
+      apiBaseUrl: "https://sabha.example.com/api/bots",
       botAccounts: {
         default: {
           baseUrl: "https://sabha.example.com",
+          apiBaseUrl: "https://sabha.example.com/api/bots",
           botKey: "42-default",
           botName: "Default Bot",
         },
         staging: {
           baseUrl: "https://staging.sabha.example.com",
+          apiBaseUrl: "https://staging.sabha.example.com/api/bots",
           botKey: "17-staging",
           botName: "Staging Bot",
         },
@@ -211,6 +215,7 @@ describe("listConfiguredBotAccountIds", () => {
       channels: {
         sabha: {
           baseUrl: "https://sabha.example.com",
+          apiBaseUrl: "https://sabha.example.com/api/bots",
           botAccounts: {
             default: { botKey: "42-x" },
             partial: { botName: "Half Baked" }, // no botKey of its own
@@ -218,9 +223,9 @@ describe("listConfiguredBotAccountIds", () => {
         },
       },
     } as unknown as Cfg;
-    // `partial` inherits baseUrl from the base section but has no botKey
-    // (botKey lives in botAccounts.default, not at the base level), so
-    // it does not appear as configured.
+    // `partial` inherits baseUrl + apiBaseUrl from the base section but
+    // has no botKey (botKey lives in botAccounts.default, not at the base
+    // level), so it does not appear as configured.
     expect(listConfiguredBotAccountIds(cfg)).toEqual(["default"]);
   });
 });
@@ -392,6 +397,7 @@ describe("sabhaSetupWizard.dmPolicy", () => {
       channels: {
         sabha: {
           baseUrl: "https://sabha.example.com",
+          apiBaseUrl: "https://sabha.example.com/api/bots",
           botAccounts: {
             default: { botKey: "42-x", dmPolicy: "open" },
             staging: { dmPolicy: "allowlist" },

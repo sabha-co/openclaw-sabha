@@ -3,10 +3,11 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 import { createSabhaTools } from "./tools.js";
 
-// We assert that tools route HTTP traffic to the bot account's baseUrl by
-// intercepting globalThis.fetch and reading the URL host. This is the
-// minimum that proves the Feishu pattern (ctx.agentAccountId + hidden
-// params.accountId override) actually selects the right bot.
+// We assert that tools route HTTP traffic to the bot account's apiBaseUrl
+// by intercepting globalThis.fetch and reading the URL + Authorization
+// header. This is the minimum that proves the Feishu pattern
+// (ctx.agentAccountId + hidden params.accountId override) actually
+// selects the right bot.
 
 type FetchMock = ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
 
@@ -27,6 +28,16 @@ function withMockedFetch(body: unknown = []) {
   };
 }
 
+function authHeader(call: Parameters<typeof globalThis.fetch>): string | null {
+  const init = call[1];
+  if (!init?.headers) return null;
+  const h =
+    init.headers instanceof Headers
+      ? init.headers
+      : new Headers(init.headers as HeadersInit);
+  return h.get("Authorization");
+}
+
 function cfg(sabha: Record<string, unknown>): OpenClawConfig {
   return { channels: { sabha } } as unknown as OpenClawConfig;
 }
@@ -34,14 +45,17 @@ function cfg(sabha: Record<string, unknown>): OpenClawConfig {
 const multiBotCfg = () =>
   cfg({
     baseUrl: "https://sabha.example/base",
+    apiBaseUrl: "https://sabha.example/base/api/bots",
     botKey: "1-BaseKey",
     botAccounts: {
       production: {
         baseUrl: "https://sabha.example/prod",
+        apiBaseUrl: "https://sabha.example/prod/api/bots",
         botKey: "10-ProdKey",
       },
       staging: {
         baseUrl: "https://sabha.example/staging",
+        apiBaseUrl: "https://sabha.example/staging/api/bots",
         botKey: "20-StagingKey",
       },
     },
@@ -88,9 +102,10 @@ describe("createSabhaTools — account routing", () => {
     await tool.execute("id", {});
 
     expect(mock.fetch).toHaveBeenCalledOnce();
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("https://sabha.example/prod");
-    expect(url).toContain("10-ProdKey");
+    const call = mock.fetch.mock.calls[0];
+    const url = String(call[0]);
+    expect(url).toContain("https://sabha.example/prod/api/bots");
+    expect(authHeader(call)).toBe("Bearer 10-ProdKey");
   });
 
   it("routes to the account in ctx.agentAccountId when supplied", async () => {
@@ -101,9 +116,9 @@ describe("createSabhaTools — account routing", () => {
     const tool = factory({ agentAccountId: "staging" });
     await tool.execute("id", {});
 
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("https://sabha.example/staging");
-    expect(url).toContain("20-StagingKey");
+    const call = mock.fetch.mock.calls[0];
+    expect(String(call[0])).toContain("https://sabha.example/staging/api/bots");
+    expect(authHeader(call)).toBe("Bearer 20-StagingKey");
   });
 
   it("respects params.accountId override even though it is schema-hidden", async () => {
@@ -115,8 +130,9 @@ describe("createSabhaTools — account routing", () => {
     const tool = factory({ agentAccountId: "production" });
     await tool.execute("id", { accountId: "staging" });
 
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("https://sabha.example/staging");
+    const call = mock.fetch.mock.calls[0];
+    expect(String(call[0])).toContain("https://sabha.example/staging/api/bots");
+    expect(authHeader(call)).toBe("Bearer 20-StagingKey");
   });
 
   it("works with a single-bot config", async () => {
@@ -126,16 +142,20 @@ describe("createSabhaTools — account routing", () => {
     const factory = buildListRoomsTool(() =>
       cfg({
         botAccounts: {
-          default: { baseUrl: "https://sabha.example/solo", botKey: "7-SoloKey" },
+          default: {
+            baseUrl: "https://sabha.example/solo",
+            apiBaseUrl: "https://sabha.example/solo/api/bots",
+            botKey: "7-SoloKey",
+          },
         },
       }),
     );
     const tool = factory({ agentAccountId: undefined });
     await tool.execute("id", {});
 
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("https://sabha.example/solo");
-    expect(url).toContain("7-SoloKey");
+    const call = mock.fetch.mock.calls[0];
+    expect(String(call[0])).toContain("https://sabha.example/solo/api/bots");
+    expect(authHeader(call)).toBe("Bearer 7-SoloKey");
   });
 
   it("returns a text + details result shape", async () => {

@@ -18,7 +18,9 @@ function stubBotAccount(
     accountId: "default",
     enabled: true,
     baseUrl: "http://localhost:3000",
+    apiBaseUrl: "http://localhost:3000/api/bots",
     botKey: "42-abc",
+    webhookSecret: "whsec_test",
     botId: 42,
     botName: "TestBot",
     webhookPort: 8787,
@@ -28,6 +30,8 @@ function stubBotAccount(
     dmPolicy: "open",
     allowFrom: [],
     allowPrivateAttachmentHosts: false,
+    replyToMode: "first",
+    rooms: {},
     ...overrides,
   };
 }
@@ -230,7 +234,7 @@ describe("runDoctor — API check", () => {
     expect(api.message).toMatch(/401.*bot key likely invalid/);
   });
 
-  it("surfaces a hint on 404 (baseUrl likely wrong)", async () => {
+  it("surfaces a hint on 404 (apiBaseUrl likely wrong)", async () => {
     restore = withMockedFetch(
       () => new Response("not found", { status: 404 }),
     );
@@ -239,7 +243,7 @@ describe("runDoctor — API check", () => {
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
-    expect(api.message).toMatch(/404.*baseUrl.*workspace/);
+    expect(api.message).toMatch(/404.*apiBaseUrl.*workspace/);
   });
 
   it("reports a network error with the underlying message", async () => {

@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { extractBotId } from "./client.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { SabhaClient, extractBotId } from "./client.js";
 import { parseWebhookPayload, wasBotMentioned, resolveChatType } from "./webhook.js";
 import { resolveSessionFromPayload, resolveSessionConversation } from "./session.js";
 import { parseJoinUrl } from "./setup-wizard.js";
@@ -28,7 +28,7 @@ const basePayload = {
     type: "Open",
     members: 12,
     has_bot: true,
-    messages_url: "https://chat.example.com/rooms/5/42-AbCdEfGhIjKl/messages",
+    messages_url: "https://chat.example.com/api/bots/rooms/5/messages",
   },
   message: {
     id: 10,
@@ -253,5 +253,139 @@ describe("parseJoinUrl", () => {
 
   it("returns null for empty string", () => {
     expect(parseJoinUrl("")).toBeNull();
+  });
+});
+
+describe("SabhaClient — bearer auth + URL shape", () => {
+  const API = "https://sabha.example.com/1000006/api/bots";
+  const BOT_KEY = "42-AbCdEfGhIjKl";
+
+  let restore: (() => void) | null = null;
+  let fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
+
+  function mockFetch(
+    build: (url: string) => Response | Promise<Response> = () =>
+      new Response("[]", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          Location: "/rooms/5/messages/123",
+        },
+      }),
+  ) {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      return build(String(input));
+    }) as unknown as ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+  }
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  function lastCall(): {
+    url: string;
+    init: RequestInit;
+    auth: string | null;
+  } {
+    const call = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]!;
+    const url = String(call[0]);
+    const init = (call[1] ?? {}) as RequestInit;
+    const headers =
+      init.headers instanceof Headers
+        ? init.headers
+        : new Headers((init.headers ?? {}) as HeadersInit);
+    return { url, init, auth: headers.get("Authorization") };
+  }
+
+  it("sends Authorization: Bearer <botKey> on every request", async () => {
+    mockFetch();
+    const client = new SabhaClient(API, BOT_KEY);
+
+    await client.listRooms();
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+
+    await client.sendMessage(5, "hello");
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+
+    await client.editMessage(5, 10, "hi").catch(() => {
+      /* body parsing differs per-mock; auth assertion is what we care about */
+    });
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+
+    await client.search("x").catch(() => {});
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+
+    await client.updateSettings({ name: "x" });
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+
+    // sendAttachment is the one body type where manual Content-Type
+    // handling would show up as a silent 415 in production (FormData
+    // needs `fetch` to auto-populate the multipart boundary).
+    await client.sendAttachment(
+      5,
+      new Blob(["hello"], { type: "text/plain" }),
+      "note.txt",
+    );
+    expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
+  });
+
+  it("never forces Content-Type on sendAttachment (FormData needs fetch-generated boundary)", async () => {
+    mockFetch();
+    const client = new SabhaClient(API, BOT_KEY);
+
+    await client.sendAttachment(
+      5,
+      new Blob(["hello"], { type: "text/plain" }),
+      "note.txt",
+    );
+
+    const call = lastCall();
+    const headers =
+      call.init.headers instanceof Headers
+        ? call.init.headers
+        : new Headers((call.init.headers ?? {}) as HeadersInit);
+    // If the client set Content-Type explicitly, the undici/Node fetch
+    // would skip the multipart/form-data boundary step and the server
+    // would reject the upload. Authorization must be present, but
+    // Content-Type must be left to fetch.
+    expect(headers.get("Authorization")).toBe(`Bearer ${BOT_KEY}`);
+    expect(headers.get("Content-Type")).toBeNull();
+  });
+
+  it("never includes bot_key in the URL path", async () => {
+    mockFetch();
+    const client = new SabhaClient(API, BOT_KEY);
+
+    const calls: string[] = [];
+    for (const run of [
+      () => client.listRooms(),
+      () => client.createRoom("n", "open").catch(() => {}),
+      () => client.sendMessage(5, "hi"),
+      () =>
+        client.sendAttachment(
+          5,
+          new Blob(["x"], { type: "text/plain" }),
+          "x.txt",
+        ),
+      () => client.replyInThread(5, 10, "hi").catch(() => {}),
+      () => client.addReaction(5, 10, "👍").catch(() => {}),
+      () => client.createDm([1, 2]).catch(() => {}),
+      () => client.search("q").catch(() => {}),
+      () => client.updateSettings({ name: "x" }),
+    ]) {
+      await run();
+      calls.push(lastCall().url);
+    }
+
+    for (const url of calls) {
+      expect(url).not.toContain(BOT_KEY);
+      expect(url.startsWith(API)).toBe(true);
+    }
   });
 });

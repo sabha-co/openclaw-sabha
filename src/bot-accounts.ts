@@ -12,26 +12,32 @@ import { extractBotId } from "./client.js";
 
 // Sabha calls plugin-level identities "bot accounts" to avoid colliding with
 // Sabha's own server-side account concept (multi-tenant workspaces, user
-// accounts). A bot account is one `baseUrl + botKey + botName` tuple the
-// plugin monitors and replies as.
+// accounts). A bot account is one `baseUrl + apiBaseUrl + botKey + botName`
+// tuple the plugin monitors and replies as.
 //
 // Config shape:
 //   channels:
 //     sabha:
 //       # shared base fields (inherited by every bot unless overridden):
 //       baseUrl: ...
+//       apiBaseUrl: ...
 //       # per-bot entries:
 //       botAccounts:
-//         default:   { botKey: ... }
-//         staging:   { baseUrl: ..., botKey: ... }
-//         prod-eu:   { baseUrl: ..., botKey: ... }
+//         default:   { botKey: ..., webhookSecret: ... }
+//         staging:   { baseUrl: ..., apiBaseUrl: ..., botKey: ..., webhookSecret: ... }
+//         prod-eu:   { baseUrl: ..., apiBaseUrl: ..., botKey: ..., webhookSecret: ... }
 //       defaultBotAccount: prod-eu   # optional override
 
 export type ResolvedBotAccount = {
   accountId: string;
   enabled: boolean;
   baseUrl: string;
+  apiBaseUrl: string;
   botKey: string;
+  // `undefined` means "not captured yet" — distinct from an empty string
+  // so v0.11 HMAC verification can fail-closed on unregistered bots
+  // without false-accepting a legitimately-empty secret.
+  webhookSecret?: string;
   botId: number;
   botName: string;
   webhookPort: number;
@@ -144,7 +150,13 @@ export function resolveBotAccount(
     accountId: id,
     enabled: baseEnabled && accountEnabled,
     baseUrl: merged.baseUrl ?? "",
+    apiBaseUrl: merged.apiBaseUrl ?? "",
     botKey: merged.botKey ?? "",
+    // No `?? ""` default — empty would be indistinguishable from a
+    // captured empty secret. See the field's doc comment.
+    ...(merged.webhookSecret !== undefined
+      ? { webhookSecret: merged.webhookSecret }
+      : {}),
     botId: extractBotId(merged.botKey ?? ""),
     botName: merged.botName?.trim() || "OpenClaw",
     webhookPort: merged.webhookPort ?? 8787,

@@ -27,7 +27,9 @@ import { fetchGuardedAttachment } from "./ssrf-guard.js";
 const SabhaBotAccountSchema = z.object({
   enabled: z.boolean().optional(),
   baseUrl: z.string().optional(),
+  apiBaseUrl: z.string().optional(),
   botKey: z.string().optional(),
+  webhookSecret: z.string().optional(),
   botName: z.string().optional(),
   connectionMode: z.enum(["websocket", "webhook"]).optional(),
   websocketUrl: z.string().optional(),
@@ -57,11 +59,24 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       placeholder: "https://sabha.co/1000006",
       help: "Sabha server URL (include workspace ID for multi-tenant)",
     },
+    apiBaseUrl: {
+      label: "Bot API base URL",
+      placeholder: "https://sabha.co/1000006/api/bots",
+      advanced: true,
+      help: "Auto-detected from registration; endpoint for bearer-auth HTTP calls",
+    },
     botKey: {
       label: "Bot key",
       placeholder: "42-AbCdEfGhIjKl",
       sensitive: true,
       help: "Bot key from registration via join code",
+    },
+    webhookSecret: {
+      label: "Webhook secret",
+      placeholder: "whsec_…",
+      sensitive: true,
+      advanced: true,
+      help: "Captured at registration. Reserved for webhook HMAC verification in v0.11 — not yet used.",
     },
     botName: {
       label: "Bot display name",
@@ -107,7 +122,7 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
 });
 
 function getClient(account: ResolvedBotAccount): SabhaClient {
-  return new SabhaClient(account.baseUrl, account.botKey);
+  return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
 /**
@@ -153,8 +168,8 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       inspectAccount(cfg: OpenClawConfig, accountId?: string | null) {
         const account = resolveBotAccount({ cfg, botAccountId: accountId });
         return {
-          enabled: Boolean(account.baseUrl && account.botKey),
-          configured: Boolean(account.baseUrl && account.botKey),
+          enabled: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
+          configured: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
           tokenStatus: account.botKey
             ? ("available" as const)
             : ("missing" as const),
@@ -241,8 +256,8 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         buildBaseChannelStatusSummary(snapshot),
       buildAccountSnapshot: ({ account, runtime }) => ({
         accountId: account.accountId,
-        enabled: Boolean(account.baseUrl && account.botKey),
-        configured: Boolean(account.baseUrl && account.botKey),
+        enabled: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
+        configured: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
         running: runtime?.running ?? false,
         connected: runtime?.connected,
         lastStartAt: runtime?.lastStartAt ?? null,
@@ -288,6 +303,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         const shouldMonitor =
           botAccount.connectionMode === "websocket" &&
           botAccount.baseUrl &&
+          botAccount.apiBaseUrl &&
           botAccount.botKey &&
           ctx.channelRuntime;
 

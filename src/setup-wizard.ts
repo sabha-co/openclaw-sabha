@@ -62,11 +62,22 @@ export class SabhaRegistrationError extends Error {
   }
 }
 
+export type SabhaRegistrationResponse = {
+  bot_key: string;
+  webhook_secret: string;
+  name: string;
+  webhook_url: string | null;
+  base_url: string;
+  api_base_url: string;
+  websocket_url: string;
+  rooms?: SabhaRoom[];
+};
+
 export async function selfRegisterBot(
   baseUrl: string,
   joinCode: string,
   params: { name: string; webhook_url?: string },
-): Promise<{ bot_key: string; name: string; websocket_url?: string }> {
+): Promise<SabhaRegistrationResponse> {
   const url = `${baseUrl}/join/${joinCode}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REGISTRATION_TIMEOUT_MS);
@@ -108,7 +119,7 @@ export async function selfRegisterBot(
   }
 
   try {
-    return (await res.json()) as { bot_key: string; name: string; websocket_url?: string };
+    return (await res.json()) as SabhaRegistrationResponse;
   } catch (err) {
     throw new SabhaRegistrationError(
       `Sabha returned an invalid response body: ${err}`,
@@ -126,11 +137,11 @@ export async function selfRegisterBot(
  * invites.
  */
 async function autoJoinOpenRooms(
-  baseUrl: string,
+  apiBaseUrl: string,
   botKey: string,
   prompter: WizardPrompter,
 ): Promise<void> {
-  const client = new SabhaClient(baseUrl, botKey);
+  const client = new SabhaClient(apiBaseUrl, botKey);
 
   let joinable: SabhaRoom[];
   try {
@@ -270,7 +281,12 @@ async function probeBotKey(
   baseUrl: string,
   botKey: string,
 ): Promise<ProbeResult> {
-  const client = new SabhaClient(baseUrl, botKey);
+  // Pre-registration probe: the server-returned `api_base_url` isn't in
+  // hand yet (manual-key flow), so derive it from the conventional
+  // `/api/bots` scope. If a self-hosted Sabha ever mounts the bot API
+  // under a different path, this will false-negative — we can revisit
+  // when that happens.
+  const client = new SabhaClient(`${baseUrl}/api/bots`, botKey);
   try {
     await client.listJoinableRooms();
     return { ok: true };
@@ -458,14 +474,19 @@ export function listConfiguredBotAccountIds(
   const ids: string[] = [];
 
   const defaultView = getBotAccountView(cfg, DEFAULT_ACCOUNT_ID);
-  if (defaultView.baseUrl && defaultView.botKey) {
+  if (defaultView.baseUrl && defaultView.apiBaseUrl && defaultView.botKey) {
     ids.push(DEFAULT_ACCOUNT_ID);
   }
 
   for (const id of listBotAccountIds(cfg)) {
     if (id === DEFAULT_ACCOUNT_ID) continue;
     const view = getBotAccountView(cfg, id);
-    if (view.baseUrl && view.botKey && !ids.includes(id)) {
+    if (
+      view.baseUrl &&
+      view.apiBaseUrl &&
+      view.botKey &&
+      !ids.includes(id)
+    ) {
       ids.push(id);
     }
   }
@@ -594,7 +615,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     unconfiguredHint: "Connect to a Sabha chat server",
     resolveConfigured: ({ cfg, accountId }) => {
       const view = getBotAccountView(cfg, accountId);
-      return Boolean(view.baseUrl && view.botKey);
+      return Boolean(view.baseUrl && view.apiBaseUrl && view.botKey);
     },
   },
 
@@ -689,13 +710,23 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         });
         progress.stop(`Bot "${result.name}" registered`);
 
+        // Prefer server-returned base_url / api_base_url over user-entered
+        // values — the server captures `request.base_url + request.script_name`
+        // which is authoritative, especially under SaaS tenanting where the
+        // workspace prefix matters.
+        const resolvedBaseUrl = result.base_url || parsed.baseUrl;
+        const resolvedApiBaseUrl =
+          result.api_base_url || `${resolvedBaseUrl}/api/bots`;
+
         // Auto-join all open rooms so the bot is immediately discoverable
-        await autoJoinOpenRooms(parsed.baseUrl, result.bot_key, prompter);
+        await autoJoinOpenRooms(resolvedApiBaseUrl, result.bot_key, prompter);
 
         return {
           cfg: setBotAccountConfig(cfg, accountId, {
-            baseUrl: parsed.baseUrl,
+            baseUrl: resolvedBaseUrl,
+            apiBaseUrl: resolvedApiBaseUrl,
             botKey: result.bot_key,
+            webhookSecret: result.webhook_secret,
             botName: result.name,
             websocketUrl: result.websocket_url,
             dmPolicy: view.dmPolicy ?? "open",
@@ -814,17 +845,23 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       break;
     }
 
+    // Manual path has no registration response to pull `api_base_url`
+    // from, so derive it from the conventional `/api/bots` scope. Matches
+    // what `probeBotKey` uses above.
+    const pendingApiBaseUrl = `${pendingBaseUrl}/api/bots`;
+
     // Auto-join open rooms only when *both* probes accepted. If either
     // was a "save-anyway" or couldn't run, hitting the authenticated
     // API again would just re-surface the same error (wrong URL, wrong
     // key, or unreachable server) as a noisy "Auto-join skipped" note.
     if (baseUrlAccepted && botKeyAccepted) {
-      await autoJoinOpenRooms(pendingBaseUrl, pendingBotKey, prompter);
+      await autoJoinOpenRooms(pendingApiBaseUrl, pendingBotKey, prompter);
     }
 
     return {
       cfg: setBotAccountConfig(cfg, accountId, {
         baseUrl: pendingBaseUrl,
+        apiBaseUrl: pendingApiBaseUrl,
         botKey: pendingBotKey,
         botName: pendingBotName,
         dmPolicy: view.dmPolicy ?? "open",

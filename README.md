@@ -67,16 +67,18 @@ Edit `~/.openclaw/openclaw.json`:
   channels: {
     sabha: {
       enabled: true,
-      baseUrl: "https://sabha.co/1000006",
-      apiBaseUrl: "https://sabha.co/1000006/api/bots",
+      baseUrl: "https://sabha.co/1000006",              // site root (used for /skill)
+      apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
       botKey: "42-AbCdEfGhIjKl",
-      webhookSecret: "whsec_..."  // optional — captured at registration
+      webhookSecret: "whsec_..."  // captured at registration; reserved for HMAC verification in v0.11
     }
   }
 }
 ```
 
-> **v0.10.0 breaking change.** Bot API auth moved from path-embedded bot_key to `Authorization: Bearer` and endpoints now live under `/api/bots/*`. Requires a Sabha server with the `bot-api-header-auth` refactor merged. Older plugin versions will not work against new servers and vice versa.
+The join-URL flow auto-populates `apiBaseUrl` and `webhookSecret` from the server's registration response — manual config only needs these when pasting credentials by hand.
+
+> **v0.10.0 is a breaking change.** Bot API auth moved from path-embedded `bot_key` to `Authorization: Bearer`, and endpoints now live under `/api/bots/*`. Plugin ≥ 0.10.0 requires a Sabha server that includes the bearer-auth refactor; plugin ≤ 0.9.x will not work against newer servers. Outbound webhooks are HMAC-signed by the server (headers `X-Sabha-Signature`, `X-Sabha-Timestamp`, `X-Sabha-Event`, `X-Sabha-Delivery`); the plugin captures the per-bot `webhook_secret` at registration time but defers signature verification to v0.11.
 
 Then restart the gateway:
 

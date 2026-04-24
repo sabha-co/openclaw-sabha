@@ -132,9 +132,9 @@ export function isSelfEchoEvent(
 
 export type MonitorSabhaOpts = {
   /**
-   * The bot account this monitor runs as. Provides baseUrl, botKey,
-   * botId, typingEnabled, and the resolved account id used in log
-   * prefixes and session routing.
+   * The bot account this monitor runs as. Provides baseUrl, apiBaseUrl,
+   * botKey, botId, typingEnabled, and the resolved account id used in
+   * log prefixes and session routing.
    */
   botAccount: ResolvedBotAccount;
   config: OpenClawConfig;
@@ -183,7 +183,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
   // tokens get deterministically rewritten to @{id} for format_mentions.
   // Populated from every inbound event's user.id + user.name + mentionees.
   const mentionRewriter = new MentionRewriter();
-  const client = new SabhaClient(account.baseUrl, account.botKey, {
+  const client = new SabhaClient(account.apiBaseUrl, account.botKey, {
     abortSignal,
     mentionRewriter: (text) => mentionRewriter.rewrite(text),
   });
@@ -589,7 +589,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
     if (fatalReason && !abortSignal?.aborted) {
       logger?.error?.(
-        `${logPrefix} Fatal Sabha error (${fatalReason}) — parking this account until gateway restart. Fix the bot_key / baseUrl and run \`openclaw gateway restart\`.`,
+        `${logPrefix} Fatal Sabha error (${fatalReason}) — parking this account until gateway restart. Fix the bot_key / apiBaseUrl and run \`openclaw gateway restart\`.`,
       );
       statusSink?.({ lastError: `fatal: ${fatalReason}` });
       await waitForAbort(abortSignal);

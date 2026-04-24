@@ -10,7 +10,9 @@ function account(
     accountId: "default",
     enabled: true,
     baseUrl: "https://sabha.example.com",
+    apiBaseUrl: "https://sabha.example.com/api/bots",
     botKey: "1-test",
+    webhookSecret: "whsec_test",
     botId: 1,
     botName: "Test",
     webhookPort: 8787,
@@ -20,6 +22,8 @@ function account(
     dmPolicy: "open",
     allowFrom: [],
     allowPrivateAttachmentHosts: false,
+    replyToMode: "first",
+    rooms: {},
     ...overrides,
   };
 }

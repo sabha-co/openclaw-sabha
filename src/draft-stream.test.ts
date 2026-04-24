@@ -375,15 +375,15 @@ describe("formatStreamError", () => {
   });
 
   it("redacts bot keys from SabhaApiError messages", () => {
-    // This is the core P0 fix: `SabhaApiError`'s super constructor
-    // interpolates the fetch URL into the error message, and
-    // `SabhaClient` embeds the bot_key in the URL path. Without
-    // redaction, a failing request would leak the bot_key into any
-    // user-visible error surface (Q12 error-replace in particular).
+    // Defense-in-depth. As of v0.10.0 the bot_key is carried in the
+    // Authorization header, not the URL path, so `SabhaApiError.url`
+    // no longer interpolates the key — but the redactor stays as a
+    // belt-and-suspenders guard for any future leak vector (operator
+    // logs, manually-constructed errors, third-party code paths).
     const err = new SabhaApiError(
       500,
       "internal",
-      "https://sabha.example.com/rooms/5/42-AbCdEfGhIjKlMnOp/messages",
+      "https://sabha.example.com/api/bots/rooms/5/messages 42-AbCdEfGhIjKlMnOp",
     );
     const safe = formatStreamError(err);
     expect(safe).not.toContain("42-AbCdEfGhIjKlMnOp");

@@ -9,7 +9,7 @@
 
 Both transports converge on the same inbound pipeline via a typed discriminated-union dispatch keyed on `payload.event`. Outbound replies always go through Sabha's REST Bot API.
 
-Since 0.9.0 the plugin supports **multiple bot accounts per install**: one `channels.sabha` config slot can run several bot identities concurrently (e.g. `production` and `staging`), each with its own `baseUrl + botKey + botName`. The SDK drives the lifecycle — `gateway.startAccount` is called once per enabled bot account and the plugin stays stateless across them.
+Since 0.9.0 the plugin supports **multiple bot accounts per install**: one `channels.sabha` config slot can run several bot identities concurrently (e.g. `production` and `staging`), each with its own `baseUrl + apiBaseUrl + botKey + botName`. The SDK drives the lifecycle — `gateway.startAccount` is called once per enabled bot account and the plugin stays stateless across them.
 
 ```
 Sabha Server                                OpenClaw Gateway
@@ -49,7 +49,7 @@ User sends message / edits / reacts
                                                    v
                                               deliver() callback:
                                                    |
-POST /rooms/{id}/{bot_key}/messages  <─────────────┘  SabhaClient.sendMessage
+POST /api/bots/rooms/{id}/messages   <─────────────┘  SabhaClient.sendMessage
   |                                                   / replyInThread
   |                                                   (through retry runner:
   |                                                    429/5xx + Retry-After)
@@ -93,15 +93,18 @@ src/
                         resolveMergedAccountConfig.
 
   client.ts             Sabha REST Bot API client
-                        All Bot API endpoints, typed responses.
-                        Auth via bot_key embedded in the URL path
-                        (not Authorization headers). Every fetch runs
-                        through the Sabha retry runner (429/5xx +
-                        Retry-After) with per-attempt AbortSignal
-                        rebuild so timeouts don't leak across retries.
-                        SabhaApiError exposes `retryable: boolean` so
-                        callers can branch without re-importing the
-                        predicate. Also exports extractBotId().
+                        All Bot API endpoints under `/api/bots/*`,
+                        typed responses. Auth via
+                        `Authorization: Bearer <bot_key>` header;
+                        `apiBaseUrl` is the full bot-API base URL
+                        returned in the registration response.
+                        Every fetch runs through the Sabha retry
+                        runner (429/5xx + Retry-After) with
+                        per-attempt AbortSignal rebuild so timeouts
+                        don't leak across retries. SabhaApiError
+                        exposes `retryable: boolean` so callers can
+                        branch without re-importing the predicate.
+                        Also exports extractBotId().
 
   retry.ts              Sabha retry runner
                         Thin wrapper around plugin-sdk/retry-runtime's
@@ -251,9 +254,9 @@ Sabha supports returning text in the webhook HTTP response body for simple bots.
 
 Webhook and WebSocket payloads both carry signed attachment URLs that expire after ~1 hour. `processInboundMessage` downloads attachments immediately via `runtime.channel.media.fetchRemoteMedia` + `saveMediaBuffer` before dispatching, and the saved media path is appended to the message body for the LLM. Do not defer this — lazy download will race the signed URL expiry.
 
-### Bot key in URL path, not headers
+### Bearer-header auth, `/api/bots/*` namespace
 
-Sabha authenticates bots by embedding `bot_key` in the URL (e.g., `/rooms/5/42-AbCdEfGhIjKl/messages`). `SabhaClient` handles this; do not add `Authorization` headers on top. The numeric bot ID can be recovered from the key via `extractBotId()`.
+As of v0.10.0 Sabha authenticates bots via `Authorization: Bearer <bot_key>` and every endpoint lives under `/api/bots/*`. `SabhaClient` constructs requests with `apiBaseUrl` (returned in the registration response) and injects the bearer header on every call. The WebSocket connection at `/cable?bot_key=…` still carries the key in the query string — that path is unchanged. The numeric bot ID can still be recovered from the key via `extractBotId()`.
 
 ### Dedup is FIFO, not LRU, and keyed by event+id
 
@@ -303,7 +306,7 @@ The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dange
 
 ### Doctor / health checks
 
-`src/doctor.ts` exposes `runDoctor({ botAccount })` which runs four checks per bot account: config validation (baseUrl, botKey shape, connectionMode), API reachability via `listRooms()`, a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
+`src/doctor.ts` exposes `runDoctor({ botAccount })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms()` (with bearer header), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
 
 The doctor is surfaced as the `openclaw sabha doctor [--account <id>]` CLI subcommand, not as a plugin-object field, because the SDK's `ChannelDoctorAdapter` is config-validation only — there is no runtime-probe hook. The CLI loops over every enabled bot account (or the one specified by `--account`) and exits non-zero if any check fails. `warn` and `skip` statuses do not cause a non-zero exit.
 
@@ -333,7 +336,7 @@ The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. R
 
 ### Inbound, WebSocket path (default)
 
-1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `connectionMode === "websocket"` and both `baseUrl` and `botKey` are set. The log prefix is `[sabha:<botAccountId>]`.
+1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `connectionMode === "websocket"` and `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<botAccountId>]`.
 2. **`monitor.ts`** runs `runWithReconnect` → `createSabhaConnectOnce` (`monitor-websocket.ts`), which opens the `/cable` connection and subscribes to `BotEventsChannel`. Multi-tenant workspaces pass `wid` in the query string (extracted from the numeric path prefix on `baseUrl`).
 3. For each incoming frame:
    - `createDedupCache` drops duplicates by `${event}:${id}` (FIFO, 5 min TTL, 2000 entries).
@@ -387,10 +390,12 @@ Single-bot:
   channels: {
     sabha: {
       enabled: true,
-      baseUrl: "https://sabha.co/1000006",  // shared; include workspace id for multi-tenant SaaS
+      baseUrl: "https://sabha.co/1000006",              // site root; /skill + agent identity
+      apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
       botAccounts: {
         default: {
-          botKey: "42-AbCdEfGhIjKl",          // secret; stored as-is, used in URL path
+          botKey: "42-AbCdEfGhIjKl",          // bearer token
+          webhookSecret: "whsec_...",         // HMAC secret (captured at registration)
           botName: "OpenClaw",                 // shown in typing indicators
           connectionMode: "websocket",         // "websocket" (default) | "webhook"
           dmPolicy: "open",                    // "open" | "allowlist"
@@ -410,6 +415,7 @@ Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset
       enabled: true,
       // Shared base — inherited by every bot unless overridden
       baseUrl: "https://sabha.co/1000006",
+      apiBaseUrl: "https://sabha.co/1000006/api/bots",
       botAccounts: {
         default: {
           botKey: "42-prodkey",
@@ -417,12 +423,13 @@ Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset
         },
         staging: {
           baseUrl: "https://staging.sabha.co/1000006",
+          apiBaseUrl: "https://staging.sabha.co/1000006/api/bots",
           botKey: "17-stagingkey",
           botName: "OpenClaw (staging)",
         },
         "prod-eu": {
           botKey: "23-eukey",
-          // baseUrl / botName inherited from base
+          // baseUrl / apiBaseUrl / botName inherited from base
         },
       },
       defaultBotAccount: "default",  // optional; alphabetic-first otherwise

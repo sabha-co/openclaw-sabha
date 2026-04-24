@@ -68,11 +68,15 @@ Edit `~/.openclaw/openclaw.json`:
     sabha: {
       enabled: true,
       baseUrl: "https://sabha.co/1000006",
-      botKey: "42-AbCdEfGhIjKl"
+      apiBaseUrl: "https://sabha.co/1000006/api/bots",
+      botKey: "42-AbCdEfGhIjKl",
+      webhookSecret: "whsec_..."  // optional — captured at registration
     }
   }
 }
 ```
+
+> **v0.10.0 breaking change.** Bot API auth moved from path-embedded bot_key to `Authorization: Bearer` and endpoints now live under `/api/bots/*`. Requires a Sabha server with the `bot-api-header-auth` refactor merged. Older plugin versions will not work against new servers and vice versa.
 
 Then restart the gateway:
 

@@ -18,12 +18,12 @@ import {
 // a dedicated CLI subcommand instead so operators can run it on demand.
 //
 // Check inventory:
-//   1. Config — baseUrl non-empty, botKey matches `\d+-.+`,
+//   1. Config — baseUrl + apiBaseUrl non-empty, botKey matches `\d+-.+`,
 //      connectionMode is one of the two supported values.
-//   2. API   — `listRooms()` round-trips successfully. This covers
-//      bot_key validity, HTTP reachability, and the retry runner in
-//      one call. (The Sabha server does not expose `GET /bots/:bot_key`,
-//      so this is the cheapest connectivity probe available.)
+//   2. API   — `listRooms()` round-trips successfully against the bearer
+//      auth endpoint. Covers bot_key validity, HTTP reachability, and the
+//      retry runner in one call. (Sabha does not expose a cheaper probe
+//      like `GET /api/bots/profile`, so this is the lightest available.)
 //   3. WS    — (only when connectionMode === "websocket") open a
 //      connection, wait for `welcome`, subscribe to BotEventsChannel,
 //      wait for `confirm_subscription`, close cleanly.
@@ -128,6 +128,7 @@ function finalize(
 function validateConfig(account: ResolvedBotAccount): DoctorCheck {
   const problems: string[] = [];
   if (!account.baseUrl) problems.push("baseUrl is empty");
+  if (!account.apiBaseUrl) problems.push("apiBaseUrl is empty");
   if (!account.botKey) {
     problems.push("botKey is empty");
   } else if (!/^\d+-.+$/.test(account.botKey)) {
@@ -149,7 +150,7 @@ function validateConfig(account: ResolvedBotAccount): DoctorCheck {
   return {
     name: "Config",
     status: "ok",
-    message: `baseUrl=${account.baseUrl}, mode=${account.connectionMode}`,
+    message: `apiBaseUrl=${account.apiBaseUrl}, mode=${account.connectionMode}`,
   };
 }
 
@@ -165,7 +166,7 @@ async function probeApi(
   // the default retry runner with a single-attempt one so a transient 503
   // doesn't cause the probe to silently retry for ~6s before failing.
   // `requestTimeoutMs` is the only deadline — no redundant AbortController.
-  const client = new SabhaClient(account.baseUrl, account.botKey, {
+  const client = new SabhaClient(account.apiBaseUrl, account.botKey, {
     requestTimeoutMs: timeoutMs,
     retryRunner: createSabhaRetryRunner({
       retry: { attempts: 1, minDelayMs: 0, maxDelayMs: 0, jitter: 0 },
@@ -184,7 +185,7 @@ async function probeApi(
         err.status === 401 || err.status === 403
           ? " (bot key likely invalid)"
           : err.status === 404
-            ? " (check baseUrl / workspace prefix)"
+            ? " (check apiBaseUrl / workspace prefix)"
             : "";
       return {
         name: "API reachable",

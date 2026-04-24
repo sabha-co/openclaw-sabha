@@ -60,7 +60,9 @@ const baseAccount: ResolvedBotAccount = {
   accountId: "default",
   enabled: true,
   baseUrl: "https://sabha.co/1000006",
+  apiBaseUrl: "https://sabha.co/1000006/api/bots",
   botKey: "42-AbCdEfGhIjKl",
+  webhookSecret: "whsec_test",
   botId: 42,
   botName: "OpenClaw",
   webhookPort: 8787,
@@ -93,7 +95,7 @@ function makePayload(
       type: "Open",
       members: 12,
       has_bot: true,
-      messages_url: "https://sabha.co/1000006/rooms/5/42-AbCdEfGhIjKl/messages",
+      messages_url: "https://sabha.co/1000006/api/bots/rooms/5/messages",
     },
     message: {
       id: 10,

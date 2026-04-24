@@ -59,9 +59,10 @@ describe("resolveBotAccount", () => {
 });
 
 describe("sabhaPlugin.config", () => {
-  it("inspectAccount returns configured when baseUrl and botKey set", () => {
+  it("inspectAccount returns configured when baseUrl, apiBaseUrl, botKey set", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co/1000006",
+      apiBaseUrl: "https://sabha.co/1000006/api/bots",
       botKey: "42-AbCdEfGhIjKl",
     });
     const result = sabhaPlugin.config.inspectAccount!(cfg);
@@ -81,6 +82,15 @@ describe("sabhaPlugin.config", () => {
     const result = sabhaPlugin.config.inspectAccount!(cfg);
     expect(result.configured).toBe(false);
     expect(result.tokenStatus).toBe("missing");
+  });
+
+  it("inspectAccount reports missing without apiBaseUrl", () => {
+    const cfg = makeCfg({
+      baseUrl: "https://sabha.co",
+      botKey: "42-AbCdEfGhIjKl",
+    });
+    const result = sabhaPlugin.config.inspectAccount!(cfg);
+    expect(result.configured).toBe(false);
   });
 });
 
@@ -230,7 +240,15 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
 describe("sabhaPlugin.status", () => {
   it("buildAccountSnapshot reports configured from account", () => {
     const account = resolveBotAccount({
-      cfg: makeCfg({ botAccounts: { default: { baseUrl: "https://sabha.co", botKey: "1-abc" } } }),
+      cfg: makeCfg({
+        botAccounts: {
+          default: {
+            baseUrl: "https://sabha.co",
+            apiBaseUrl: "https://sabha.co/api/bots",
+            botKey: "1-abc",
+          },
+        },
+      }),
     });
     const snapshot = sabhaPlugin.status!.buildAccountSnapshot!({
       account,

@@ -60,7 +60,9 @@ describe("monitorSabha — logging", () => {
       accountId: "default",
       enabled: true,
       baseUrl: "http://localhost:3000",
+      apiBaseUrl: "http://localhost:3000/api/bots",
       botKey: "42-abc",
+      webhookSecret: "whsec_test",
       botId: 42,
       botName: "TestBot",
       webhookPort: 8787,
@@ -70,6 +72,8 @@ describe("monitorSabha — logging", () => {
       dmPolicy: "open",
       allowFrom: [],
       allowPrivateAttachmentHosts: false,
+      replyToMode: "first",
+      rooms: {},
       ...overrides,
     };
   }

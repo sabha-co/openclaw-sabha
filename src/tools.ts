@@ -54,7 +54,7 @@ function getClientForTool(
     cfg,
     botAccountId: params?.accountId ?? agentAccountId,
   });
-  return new SabhaClient(account.baseUrl, account.botKey);
+  return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
 type ToolCtx = { agentAccountId?: string };

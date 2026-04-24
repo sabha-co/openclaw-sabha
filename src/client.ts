@@ -53,8 +53,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /**
  * HTTP client for Sabha's Bot API.
  *
- * All endpoints authenticate via bot_key in the URL path.
+ * All endpoints authenticate via `Authorization: Bearer <bot_key>`.
  * Bot key format: "{bot_id}-{bot_token}" (e.g., "42-AbCdEfGhIjKl").
+ * `apiBaseUrl` is the full bot-API base (e.g. `https://…/api/bots`) as
+ * returned in the registration response — path templates below are
+ * suffixes appended to it.
  */
 export class SabhaClient {
   private readonly abortSignal?: AbortSignal;
@@ -63,7 +66,7 @@ export class SabhaClient {
   private readonly mentionRewriter?: (text: string) => string;
 
   constructor(
-    private readonly baseUrl: string,
+    private readonly apiBaseUrl: string,
     private readonly botKey: string,
     opts: SabhaClientOpts = {},
   ) {
@@ -96,7 +99,7 @@ export class SabhaClient {
    */
   async sendMessage(roomId: number, text: string): Promise<number | null> {
     const body = this.toRichText(text);
-    const res = await this.fetch(`/rooms/${roomId}/${this.botKey}/messages`, {
+    const res = await this.fetch(`/rooms/${roomId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body,
@@ -113,7 +116,7 @@ export class SabhaClient {
     const form = new FormData();
     form.append("attachment", file, filename);
 
-    const res = await this.fetch(`/rooms/${roomId}/${this.botKey}/messages`, {
+    const res = await this.fetch(`/rooms/${roomId}/messages`, {
       method: "POST",
       body: form,
     });
@@ -141,7 +144,7 @@ export class SabhaClient {
   ): Promise<SabhaMessageBody> {
     const body = this.toRichText(text);
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}`,
+      `/rooms/${roomId}/messages/${messageId}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "text/plain" },
@@ -155,21 +158,21 @@ export class SabhaClient {
 
   async deleteMessage(roomId: number, messageId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}`,
+      `/rooms/${roomId}/messages/${messageId}`,
       { method: "DELETE" },
     );
   }
 
   async getMessage(roomId: number, messageId: number): Promise<SabhaMessage> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}`,
+      `/rooms/${roomId}/messages/${messageId}`,
     );
     return (await res.json()) as SabhaMessage;
   }
 
   async getMessages(roomId: number): Promise<SabhaMessage[]> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages`,
+      `/rooms/${roomId}/messages`,
     );
     return (await res.json()) as SabhaMessage[];
   }
@@ -185,7 +188,7 @@ export class SabhaClient {
   ): Promise<SabhaThreadReply> {
     const body = this.toRichText(text);
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}/thread`,
+      `/rooms/${roomId}/messages/${messageId}/thread`,
       {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -203,7 +206,7 @@ export class SabhaClient {
     emoji: string,
   ): Promise<number> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}/boosts`,
+      `/rooms/${roomId}/messages/${messageId}/boosts`,
       {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -221,7 +224,7 @@ export class SabhaClient {
     boostId: number,
   ): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/messages/${messageId}/boosts/${boostId}`,
+      `/rooms/${roomId}/messages/${messageId}/boosts/${boostId}`,
       { method: "DELETE" },
     );
   }
@@ -229,12 +232,12 @@ export class SabhaClient {
   // --- Rooms ---
 
   async listRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms/${this.botKey}`);
+    const res = await this.fetch(`/rooms`);
     return (await res.json()) as SabhaRoom[];
   }
 
   async listJoinableRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms/${this.botKey}?joinable=true`);
+    const res = await this.fetch(`/rooms?joinable=true`);
     return (await res.json()) as SabhaRoom[];
   }
 
@@ -242,7 +245,7 @@ export class SabhaClient {
     name: string,
     type: "open" | "closed",
   ): Promise<SabhaRoom> {
-    const res = await this.fetch(`/rooms/${this.botKey}`, {
+    const res = await this.fetch(`/rooms`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, type }),
@@ -251,7 +254,7 @@ export class SabhaClient {
   }
 
   async updateRoom(roomId: number, name: string): Promise<SabhaRoom> {
-    const res = await this.fetch(`/rooms/${roomId}/${this.botKey}`, {
+    const res = await this.fetch(`/rooms/${roomId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -260,21 +263,21 @@ export class SabhaClient {
   }
 
   async archiveRoom(roomId: number): Promise<void> {
-    await this.fetch(`/rooms/${roomId}/${this.botKey}`, {
+    await this.fetch(`/rooms/${roomId}`, {
       method: "DELETE",
     });
   }
 
   async joinRoom(roomId: number): Promise<SabhaRoom> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/membership`,
+      `/rooms/${roomId}/membership`,
       { method: "POST" },
     );
     return (await res.json()) as SabhaRoom;
   }
 
   async leaveRoom(roomId: number): Promise<void> {
-    await this.fetch(`/rooms/${roomId}/${this.botKey}/membership`, {
+    await this.fetch(`/rooms/${roomId}/membership`, {
       method: "DELETE",
     });
   }
@@ -283,7 +286,7 @@ export class SabhaClient {
 
   async listMembers(roomId: number): Promise<SabhaMember[]> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/members`,
+      `/rooms/${roomId}/members`,
     );
     return (await res.json()) as SabhaMember[];
   }
@@ -293,7 +296,7 @@ export class SabhaClient {
     userId: number,
   ): Promise<{ id: number; name: string }> {
     const res = await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/members`,
+      `/rooms/${roomId}/members`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -305,7 +308,7 @@ export class SabhaClient {
 
   async removeMember(roomId: number, userId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/${this.botKey}/members/${userId}`,
+      `/rooms/${roomId}/members/${userId}`,
       { method: "DELETE" },
     );
   }
@@ -313,7 +316,7 @@ export class SabhaClient {
   // --- DMs ---
 
   async createDm(userIds: number[]): Promise<{ room: { id: number } }> {
-    const res = await this.fetch(`/rooms/${this.botKey}/directs`, {
+    const res = await this.fetch(`/direct_messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_ids: userIds }),
@@ -325,7 +328,7 @@ export class SabhaClient {
 
   async search(query: string): Promise<SabhaSearchResult[]> {
     const res = await this.fetch(
-      `/${this.botKey}/search?q=${encodeURIComponent(query)}`,
+      `/search?q=${encodeURIComponent(query)}`,
     );
     return (await res.json()) as SabhaSearchResult[];
   }
@@ -336,7 +339,7 @@ export class SabhaClient {
     name?: string;
     webhook_url?: string;
   }): Promise<void> {
-    await this.fetch(`/bots/${this.botKey}`, {
+    await this.fetch(`/profile`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -346,13 +349,15 @@ export class SabhaClient {
   // --- Internal ---
 
   private async fetch(path: string, init?: RequestInit): Promise<Response> {
-    const url = `${this.baseUrl}${path}`;
+    const url = `${this.apiBaseUrl}${path}`;
     const method = init?.method ?? "GET";
     return await this.retryRunner(async () => {
       // Rebuild the combined signal on each attempt so a previous attempt's
       // timeout doesn't leak into the retried request.
       const signal = this.combineSignals(init?.signal ?? undefined);
-      const res = await globalThis.fetch(url, { ...init, signal });
+      const headers = new Headers(init?.headers);
+      headers.set("Authorization", `Bearer ${this.botKey}`);
+      const res = await globalThis.fetch(url, { ...init, headers, signal });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));

@@ -44,6 +44,10 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
           name: "OpenClaw",
         });
 
+        const resolvedBaseUrl = result.base_url || parsed.baseUrl;
+        const resolvedApiBaseUrl =
+          result.api_base_url || `${resolvedBaseUrl}/api/bots`;
+
         const cfg = getConfig();
         const channels = (cfg.channels ?? {}) as Record<string, unknown>;
         const existing = (channels.sabha ?? {}) as Record<string, unknown>;
@@ -54,8 +58,10 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
             sabha: {
               ...existing,
               enabled: true,
-              baseUrl: parsed.baseUrl,
+              baseUrl: resolvedBaseUrl,
+              apiBaseUrl: resolvedApiBaseUrl,
               botKey: result.bot_key,
+              webhookSecret: result.webhook_secret,
               websocketUrl: result.websocket_url,
             },
           },
@@ -64,8 +70,9 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
 
         console.log(`✓ Bot "${result.name}" registered`);
         console.log(`✓ Config saved to channels.sabha`);
-        console.log(`  baseUrl: ${parsed.baseUrl}`);
-        console.log(`  botKey:  ${result.bot_key.replace(/^(\d+-).+$/, "$1***")}`);
+        console.log(`  baseUrl:    ${resolvedBaseUrl}`);
+        console.log(`  apiBaseUrl: ${resolvedApiBaseUrl}`);
+        console.log(`  botKey:     ${result.bot_key.replace(/^(\d+-).+$/, "$1***")}`);
         if (result.websocket_url) {
           console.log(
             `  websocketUrl: ${result.websocket_url.replace(/bot_key=[^&]+/, "bot_key=***")}`,

@@ -1,6 +1,6 @@
-# v0.10.0 — Bearer Auth + `/api/bots` Namespace
+# Bearer Auth + `/api/bots` Namespace (2026.4.25 release)
 
-Implementation plan for the `v0.10.0-bearer-auth` branch. Tracks the plugin-side work that ships lockstep with the Sabha server's `bot-api-header-auth` branch.
+Implementation plan for the `v0.10.0-bearer-auth` branch (historical name; merged as the `2026.4.25` plugin release). Tracks the plugin-side work that shipped lockstep with the Sabha server's `bot-api-header-auth` branch.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Swap `bot_key`-in-URL-path for `Authorization: Bearer` header. Move every HTTP e
 
 ## Non-goals
 
-- **Webhook HMAC signature verification** — deferred to v0.11.0. Plugin captures and stores `webhook_secret` in v0.10.0 but does not verify inbound webhook signatures yet.
+- **Webhook HMAC signature verification** — deferred to a future release. Plugin captures and stores `webhook_secret` in the `2026.4.25` release but does not verify inbound webhook signatures yet.
 - **Config migration** — user wipes `channels.sabha` from `~/.openclaw/openclaw.json` and re-registers via `openclaw configure`. Plugin treats configs missing `apiBaseUrl` as "not configured" (silent, matches today's `baseUrl`-missing behavior).
 - **WebSocket auth change** — `/cable?bot_key=…` query-string auth stays. Out of scope per server plan.
 - **`bot_key` rotation handling** — if admin rotates via UI, plugin sees 401s, monitor parks the account per existing disconnect-classification logic. Admin fixes via `openclaw configure`.
@@ -42,7 +42,7 @@ Registration response from `POST /join/:join_code`:
 - [ ] `src/types.ts:191` — `SabhaConfig` gains `apiBaseUrl?: string` and `webhookSecret?: string`.
 - [ ] `src/bot-accounts.ts:33,146` — `ResolvedBotAccount` gains `apiBaseUrl: string` and `webhookSecret: string`; layering pulls both from merged config.
 - [ ] `src/channel.ts:29,55` — Zod schema adds `apiBaseUrl` + `webhookSecret` (both `z.string().optional()`); config-card `fields` gains entries.
-- [ ] `src/channel.ts:156,157,244,245,290` — `configured`/`enabled` booleans add `&& account.apiBaseUrl`. Do **not** gate on `webhookSecret` — WebSocket-mode bots don't need it for v0.10.0.
+- [ ] `src/channel.ts:156,157,244,245,290` — `configured`/`enabled` booleans add `&& account.apiBaseUrl`. Do **not** gate on `webhookSecret` — WebSocket-mode bots don't need it in this release.
 
 ### 2. HTTP client — `src/client.ts`
 
@@ -113,15 +113,15 @@ Swap `account.baseUrl` → `account.apiBaseUrl`:
 ### 7. Docs
 
 - [ ] `CLAUDE.md` — rewrite "Outbound paths" paragraph on `SabhaClient` auth (header, not URL path); remove "Do not add header auth"; update "Design decisions" wire-fact bullet; soften `formatStreamError` note (primary leak vector closed, redactor stays as defense-in-depth).
-- [ ] `README.md` — example config includes `apiBaseUrl` + `webhookSecret`; note v0.10.0 requires Sabha ≥ `bot-api-header-auth`.
+- [ ] `README.md` — example config includes `apiBaseUrl` + `webhookSecret`; note that the `2026.4.25` release requires Sabha ≥ `bot-api-header-auth`.
 - [ ] `docs/ARCHITECTURE.md` — update URL shape in diagrams if present.
 
 ### 8. Release
 
 - [ ] `npm run build && npm test && npm run lint` all green.
 - [ ] Manual e2e (checklist below).
-- [ ] Bump `package.json` to `0.10.0`.
-- [ ] Tag `v0.10.0` locally (no publish).
+- [ ] Bump `package.json` to `2026.4.25` (CalVer matches first-party OpenClaw plugins).
+- [ ] Tag `2026.4.25` locally (no publish).
 
 ## Files touched
 
@@ -171,4 +171,4 @@ Against a local Sabha checkout on `bot-api-header-auth`:
 - [ ] All tasks above complete.
 - [ ] Build + tests + lint green.
 - [ ] Manual e2e green.
-- [ ] Version bumped, tag `v0.10.0` created.
+- [ ] Version bumped, tag `2026.4.25` created.

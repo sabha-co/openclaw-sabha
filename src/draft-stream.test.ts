@@ -375,11 +375,12 @@ describe("formatStreamError", () => {
   });
 
   it("redacts bot keys from SabhaApiError messages", () => {
-    // Defense-in-depth. As of v0.10.0 the bot_key is carried in the
-    // Authorization header, not the URL path, so `SabhaApiError.url`
-    // no longer interpolates the key — but the redactor stays as a
-    // belt-and-suspenders guard for any future leak vector (operator
-    // logs, manually-constructed errors, third-party code paths).
+    // Defense-in-depth. Since the bearer-auth refactor the bot_key
+    // is carried in the Authorization header, not the URL path, so
+    // `SabhaApiError.url` no longer interpolates the key — but the
+    // redactor stays as a belt-and-suspenders guard for any future
+    // leak vector (operator logs, manually-constructed errors,
+    // third-party code paths).
     const err = new SabhaApiError(
       500,
       "internal",

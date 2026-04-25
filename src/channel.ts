@@ -76,7 +76,7 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       placeholder: "whsec_…",
       sensitive: true,
       advanced: true,
-      help: "Captured at registration. Reserved for webhook HMAC verification in v0.11 — not yet used.",
+      help: "Captured at registration. Reserved for webhook HMAC verification in a future release — not yet used.",
     },
     botName: {
       label: "Bot display name",

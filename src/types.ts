@@ -195,8 +195,9 @@ export type SabhaConfig = {
   // call goes through `apiBaseUrl`.
   apiBaseUrl?: string;
   botKey?: string;
-  // Per-bot webhook HMAC secret returned at registration. Captured in
-  // v0.10.0 for forward-compat; signature verification lands in v0.11.0.
+  // Per-bot webhook HMAC secret returned at registration. Captured
+  // for forward-compat; signature verification lands in a future
+  // release.
   webhookSecret?: string;
   botName?: string;
   webhookPort?: number;

@@ -256,7 +256,7 @@ Webhook and WebSocket payloads both carry signed attachment URLs that expire aft
 
 ### Bearer-header auth, `/api/bots/*` namespace
 
-As of v0.10.0 Sabha authenticates bots via `Authorization: Bearer <bot_key>` and every endpoint lives under `/api/bots/*`. `SabhaClient` constructs requests with `apiBaseUrl` (returned in the registration response) and injects the bearer header on every call. The WebSocket connection at `/cable?bot_key=…` still carries the key in the query string — that path is unchanged. The numeric bot ID can still be recovered from the key via `extractBotId()`.
+Since the bearer-auth refactor (`2026.4.25`), Sabha authenticates bots via `Authorization: Bearer <bot_key>` and every endpoint lives under `/api/bots/*`. `SabhaClient` constructs requests with `apiBaseUrl` (returned in the registration response) and injects the bearer header on every call. The WebSocket connection at `/cable?bot_key=…` still carries the key in the query string — that path is unchanged. The numeric bot ID can still be recovered from the key via `extractBotId()`.
 
 ### Dedup is FIFO, not LRU, and keyed by event+id
 

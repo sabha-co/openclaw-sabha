@@ -35,7 +35,7 @@ export type ResolvedBotAccount = {
   apiBaseUrl: string;
   botKey: string;
   // `undefined` means "not captured yet" — distinct from an empty string
-  // so v0.11 HMAC verification can fail-closed on unregistered bots
+  // so future HMAC verification can fail-closed on unregistered bots
   // without false-accepting a legitimately-empty secret.
   webhookSecret?: string;
   botId: number;

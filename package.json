@@ -52,6 +52,7 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.41",
     "ws": "^8.0.0"
   },
   "devDependencies": {

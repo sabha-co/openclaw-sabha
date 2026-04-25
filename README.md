@@ -154,7 +154,7 @@ Install from source for local development or debugging:
 ```bash
 git clone https://github.com/sabha-co/openclaw-sabha.git
 cd openclaw-sabha
-npm install
+npm install --omit=dev
 openclaw plugins install -l .
 ```
 

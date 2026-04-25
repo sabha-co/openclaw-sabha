@@ -24,11 +24,19 @@
           },
           "baseUrl": {
             "type": "string",
-            "description": "Sabha server URL including workspace ID for multi-tenant (e.g. https://sabha.co/1000006)."
+            "description": "Sabha server URL (site root) including workspace ID for multi-tenant (e.g. https://sabha.co/1000006). Used for /skill fetch and agent-identity prompts."
+          },
+          "apiBaseUrl": {
+            "type": "string",
+            "description": "Bot API base URL (e.g. https://sabha.co/1000006/api/bots). Auto-populated from the registration response; bearer-auth HTTP calls go here."
           },
           "botKey": {
             "type": "string",
             "description": "Bot key from registration via join code (e.g. 42-AbCdEfGhIjKl)."
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "Per-bot HMAC secret returned at registration. Reserved for webhook signature verification in a future release."
           },
           "botName": {
             "type": "string",
@@ -69,6 +77,24 @@
             "type": "boolean",
             "description": "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups."
           },
+          "replyToMode": {
+            "type": "string",
+            "enum": ["off", "first", "all"],
+            "default": "first",
+            "description": "Threading mode. 'off' = inline replies; 'first' = thread on first reply; 'all' = always thread."
+          },
+          "rooms": {
+            "type": "object",
+            "description": "Per-room overrides keyed by room id. Used for per-room system prompts.",
+            "propertyNames": { "type": "string" },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "systemPrompt": { "type": "string" }
+              }
+            }
+          },
           "botAccounts": {
             "type": "object",
             "description": "Named bot accounts layered over the base config for multi-bot setups.",
@@ -79,7 +105,9 @@
               "properties": {
                 "enabled": { "type": "boolean" },
                 "baseUrl": { "type": "string" },
+                "apiBaseUrl": { "type": "string" },
                 "botKey": { "type": "string" },
+                "webhookSecret": { "type": "string" },
                 "botName": { "type": "string" },
                 "connectionMode": {
                   "type": "string",
@@ -96,7 +124,11 @@
                   "type": "array",
                   "items": { "type": "string" }
                 },
-                "allowPrivateAttachmentHosts": { "type": "boolean" }
+                "allowPrivateAttachmentHosts": { "type": "boolean" },
+                "replyToMode": {
+                  "type": "string",
+                  "enum": ["off", "first", "all"]
+                }
               }
             }
           },
@@ -111,10 +143,21 @@
           "label": "Server URL",
           "placeholder": "https://sabha.co/1000006"
         },
+        "apiBaseUrl": {
+          "label": "Bot API base URL",
+          "placeholder": "https://sabha.co/1000006/api/bots",
+          "advanced": true
+        },
         "botKey": {
           "label": "Bot key",
           "placeholder": "42-AbCdEfGhIjKl",
           "sensitive": true
+        },
+        "webhookSecret": {
+          "label": "Webhook secret",
+          "placeholder": "whsec_…",
+          "sensitive": true,
+          "advanced": true
         },
         "connectionMode": {
           "label": "Connection mode"
@@ -132,6 +175,10 @@
         },
         "allowFrom": {
           "label": "Allow list",
+          "advanced": true
+        },
+        "replyToMode": {
+          "label": "Reply threading mode",
           "advanced": true
         }
       }

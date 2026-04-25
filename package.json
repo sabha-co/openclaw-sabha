@@ -24,6 +24,11 @@
     "channel": {
       "id": "sabha",
       "label": "Sabha",
+      "selectionLabel": "Sabha (Bot API)",
+      "detailLabel": "Sabha Bot",
+      "docsPath": "/channels/sabha",
+      "docsLabel": "sabha",
+      "systemImage": "bubble.left.and.bubble.right",
       "blurb": "Connect OpenClaw to a Sabha chat server.",
       "markdownCapable": true
     },

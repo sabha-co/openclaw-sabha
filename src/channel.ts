@@ -145,8 +145,11 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
     meta: {
       id: "sabha",
       label: "Sabha",
-      selectionLabel: "Sabha",
-      docsPath: "/plugins/sabha",
+      selectionLabel: "Sabha (Bot API)",
+      detailLabel: "Sabha Bot",
+      docsPath: "/channels/sabha",
+      docsLabel: "sabha",
+      systemImage: "bubble.left.and.bubble.right",
       blurb: "Connect OpenClaw to a Sabha chat server.",
     },
     configSchema: sabhaConfigSchema,

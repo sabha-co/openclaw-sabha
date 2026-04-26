@@ -59,29 +59,44 @@ describe("resolveBotAccount", () => {
 });
 
 describe("sabhaPlugin.config", () => {
+  // The full inspector shape is exercised in src/account-inspect.test.ts.
+  // These tests confirm the plugin object's `inspectAccount` slot is wired
+  // through to the same module and surfaces the SDK-contract fields the
+  // audit layer reads (`enabled`, `configured`, tri-state credential status).
+
   it("inspectAccount returns configured when baseUrl, apiBaseUrl, botKey set", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
       botKey: "42-AbCdEfGhIjKl",
     });
-    const result = sabhaPlugin.config.inspectAccount!(cfg);
+    const result = sabhaPlugin.config.inspectAccount!(cfg) as {
+      configured: boolean;
+      enabled: boolean;
+      botKeyStatus: string;
+    };
     expect(result.configured).toBe(true);
     expect(result.enabled).toBe(true);
-    expect(result.tokenStatus).toBe("available");
+    expect(result.botKeyStatus).toBe("available");
   });
 
   it("inspectAccount reports missing when unconfigured", () => {
-    const result = sabhaPlugin.config.inspectAccount!(makeCfg());
+    const result = sabhaPlugin.config.inspectAccount!(makeCfg()) as {
+      configured: boolean;
+      botKeyStatus: string;
+    };
     expect(result.configured).toBe(false);
-    expect(result.tokenStatus).toBe("missing");
+    expect(result.botKeyStatus).toBe("missing");
   });
 
   it("inspectAccount reports missing without botKey", () => {
     const cfg = makeCfg({ baseUrl: "https://sabha.co" });
-    const result = sabhaPlugin.config.inspectAccount!(cfg);
+    const result = sabhaPlugin.config.inspectAccount!(cfg) as {
+      configured: boolean;
+      botKeyStatus: string;
+    };
     expect(result.configured).toBe(false);
-    expect(result.tokenStatus).toBe("missing");
+    expect(result.botKeyStatus).toBe("missing");
   });
 
   it("inspectAccount reports missing without apiBaseUrl", () => {
@@ -89,8 +104,12 @@ describe("sabhaPlugin.config", () => {
       baseUrl: "https://sabha.co",
       botKey: "42-AbCdEfGhIjKl",
     });
-    const result = sabhaPlugin.config.inspectAccount!(cfg);
+    const result = sabhaPlugin.config.inspectAccount!(cfg) as {
+      configured: boolean;
+      apiBaseUrlStatus: string;
+    };
     expect(result.configured).toBe(false);
+    expect(result.apiBaseUrlStatus).toBe("missing");
   });
 });
 

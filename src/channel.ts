@@ -17,6 +17,7 @@ import {
   resolveBotAccountForSdk,
   resolveDefaultBotAccountId,
 } from "./bot-accounts.js";
+import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
@@ -167,16 +168,13 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       resolveAccount: resolveBotAccountForSdk,
       listAccountIds: listBotAccountIds,
       defaultAccountId: resolveDefaultBotAccountId,
-      inspectAccount(cfg: OpenClawConfig, accountId?: string | null) {
-        const account = resolveBotAccount({ cfg, botAccountId: accountId });
-        return {
-          enabled: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
-          configured: Boolean(account.baseUrl && account.apiBaseUrl && account.botKey),
-          tokenStatus: account.botKey
-            ? ("available" as const)
-            : ("missing" as const),
-        };
-      },
+      // Per-account read-only snapshot for the OpenClaw doctor / audit-channel
+      // layer. Returns the tri-state credential status and full merged config
+      // shape that peers (Slack/Discord/Telegram) ship — see `src/account-inspect.ts`
+      // for the Sabha-tailored shape and the rationale for the omitted bits
+      // (no env-var path, no tokenFile indirection).
+      inspectAccount: (cfg: OpenClawConfig, accountId?: string | null) =>
+        inspectSabhaAccount({ cfg, accountId }),
     },
     actions: {
       describeMessageTool: () => ({

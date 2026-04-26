@@ -200,7 +200,7 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 
 1. **Webhook + multi‑bot interaction**. Either route per‑bot at `/sabha/webhook/:botAccountId` or fail loudly at config load. (Already noted as v1.1.)
 2. **12 separate tools vs. one dispatcher**. Not urgent. Inflection point is when the tool count doubles.
-3. **No `accountInspect` contract**. Slack and Mattermost expose this for `openclaw doctor`‑style health checks. Sabha doesn't. Where the ecosystem is heading.
+3. ~~**No `accountInspect` contract**.~~ **Resolved (2026.4.27 follow-on).** Original framing was wrong on two counts: (a) the peers exposing rich inspectors are **Slack, Discord, Telegram** — Mattermost has none; (b) Sabha already had the `inspectAccount` slot wired but with a 5-line stub returning only `{ enabled, configured, tokenStatus }`. Brought up to peer parity in `src/account-inspect.ts`: tri-state credential status (`available` / `configured_unavailable` / `missing`) for `botKey` / `baseUrl` / `apiBaseUrl` / `webhookSecret`, per-credential `*Source`, `mode` field, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path (no `SABHA_BOT_KEY`-style fallback exists), no `tokenFile` indirection — bot keys live only in `botAccounts.<id>.botKey`.
 4. **Top‑level → new‑thread streaming** (Phase 2 — in‑thread streaming shipped in Phase 1; only the create‑new‑thread case still falls back to non‑streaming).
 5. **`messageToolHints` SDK gating** (already documented in `docs/AGENT-PROMPT-CONTEXT.md`).
 

@@ -34,9 +34,9 @@ Two entry points, three execution paths, one plugin definition.
 
 ### Entry points
 
-- `index.ts` — `defineChannelPluginEntry`. Stores the `PluginRuntime` in a module-scope `pluginRuntime`, registers agent tools, fetches `/skill` from the Sabha server for prompt injection, and registers the `/sabha/webhook` HTTP route (used only in webhook mode). This is the **full** runtime entry.
+- `index.ts` — `defineChannelPluginEntry`. Stores the `PluginRuntime` in a module-scope `pluginRuntime`, registers agent tools, and registers the `/sabha/webhook` HTTP route (used only in webhook mode). This is the **full** runtime entry.
 - `setup-entry.ts` — `defineSetupPluginEntry`. Used only by `openclaw configure` so the setup wizard can load without the whole gateway. Keep it lightweight; do not import monitor/gateway code from here.
-- `src/channel.ts` — `createChatChannelPlugin(...)`. The plugin object itself: capabilities, config schema, DM security policy, outbound adapters (`sendText`/`sendMedia`), the `gateway.startAccount` hook that launches the WebSocket monitor, and `agentPrompt.messageToolHints` that injects the cached `/skill` text.
+- `src/channel.ts` — `createChatChannelPlugin(...)`. The plugin object itself: capabilities, config schema, DM security policy, outbound adapters (`sendText`/`sendMedia`), the `gateway.startAccount` hook that launches the WebSocket monitor, and `agentPrompt` hints (platform identity preamble + mention syntax in `messageToolHints`, markdown rules in `inboundFormattingHints`).
 
 ### Inbound paths
 
@@ -92,9 +92,16 @@ Do **not** gate the fast-path on `draftStream.messageId() !== undefined`. It ret
 
 **Thread replies skip streaming** in 0.9.2. Thread sub-room id discovery would require a first `replyInThread` round-trip before edits can target the thread — the non-streaming path is retained for threads until that's worth the complexity.
 
-### `/skill` prompt injection
+### Agent prompt hints
 
-On startup, `src/skill-prompt.ts` fetches the Sabha server's `/skill` endpoint (an LLM-readable API reference) and caches the text. `channel.ts`'s `agentPrompt.messageToolHints` reads it via `getCachedSkillText()` and appends it to the agent's prompt so the agent "knows" the Sabha API without the plugin hardcoding docs. If you add a new capability, prefer extending agent tools + letting `/skill` describe them over stuffing instructions into the plugin code.
+`src/channel.ts` ships two `agentPrompt` adapters:
+
+- `messageToolHints` — platform identity preamble (`YOU ARE ON SABHA — NOT Discord, Slack, …`) + Sabha mention syntax (`@{user_id}` curly-brace form). **The OpenClaw SDK gates these behind `availableTools.has("message")`** — they vanish from the system prompt on profiles that don't include the `message` tool (e.g. `coding`). Operators on non-`messaging` profiles need `tools.alsoAllow: ["message"]` in `~/.openclaw/openclaw.json`.
+- `inboundFormattingHints` — markdown rules (always rendered, except in fast-reply mode).
+
+The plugin previously fetched `/skill` (Sabha's LLM-readable API reference) on startup and injected the 19 KB cached text into `messageToolHints`. That was removed in 2026.4.26 because (a) the SDK gate dropped the entire payload on `coding`-profile gateways, and (b) no other channel plugin in the ecosystem injects platform docs that way — Discord/MSTeams/Feishu/Slack/etc. keep `messageToolHints` to ~3 lines of narrow tool/format hints. The setup wizard still probes `{baseUrl}/skill` to verify a URL points at a Sabha server (response body discarded). See `docs/AGENT-PROMPT-CONTEXT.md` for the full survey + decision record.
+
+If you add a new agent-visible capability, surface it as an agent tool (`src/tools.ts`) — don't try to inject API docs through `messageToolHints`.
 
 ### Design decisions worth knowing before changing things
 
@@ -112,4 +119,5 @@ The user's auto-memory records that `/Users/ashwin/dev/openclaw/extensions` cont
 
 - `docs/ARCHITECTURE.md` — longer-form architecture, including a Sabha↔plugin diagram.
 - `docs/TYPING.md` — whisper protocol, channel lifecycle, future presence-indicator plan.
+- `docs/AGENT-PROMPT-CONTEXT.md` — how channel context reaches the agent system prompt, peer-plugin survey, why the `/skill` injection was removed.
 - `docs/sdk-overview.md`, `sdk-channel-plugins.md`, `sdk-entrypoints.md` — vendored snapshots of the OpenClaw plugin SDK docs. Consult these before guessing at SDK surface; the live SDK types in `node_modules/openclaw/plugin-sdk/*` are authoritative if the two disagree.

@@ -5,7 +5,6 @@ import {
 import { sabhaPlugin } from "./src/channel.js";
 import {
   listBotAccountIds,
-  listEnabledBotAccounts,
   resolveBotAccount,
 } from "./src/bot-accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
@@ -20,7 +19,6 @@ import {
 } from "./src/inbound.js";
 import { SabhaClient } from "./src/client.js";
 import { createSabhaTools } from "./src/tools.js";
-import { fetchSkillPrompt } from "./src/skill-prompt.js";
 import { createSabhaDraftStream, formatStreamError } from "./src/draft-stream.js";
 let pluginRuntime: PluginRuntime | undefined;
 
@@ -84,25 +82,6 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     const toolFactories = createSabhaTools(getConfig);
     for (const factory of toolFactories) {
       api.registerTool(factory);
-    }
-
-    // Fetch /skill on startup for every unique workspace across enabled
-    // bot accounts. `/skill` renders per workspace (template interpolates
-    // `Current.account.name` + `request.base_url`), so bot accounts sharing
-    // a baseUrl share a cache entry while accounts on different workspaces
-    // each get their own.
-    const baseUrls = new Set<string>();
-    for (const botAccount of listEnabledBotAccounts(getConfig())) {
-      if (botAccount.baseUrl) baseUrls.add(botAccount.baseUrl);
-    }
-    for (const baseUrl of baseUrls) {
-      fetchSkillPrompt(baseUrl).then((text) => {
-        if (text) {
-          api.logger.info?.(
-            `[sabha] Loaded /skill prompt for ${baseUrl}`,
-          );
-        }
-      });
     }
 
     // Inbound webhook handler (fallback for connectionMode: "webhook")

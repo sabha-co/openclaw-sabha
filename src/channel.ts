@@ -19,7 +19,6 @@ import {
 } from "./bot-accounts.js";
 import { SabhaClient } from "./client.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
-import { getCachedSkillText } from "./skill-prompt.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import { monitorSabha } from "./monitor.js";
 import { fetchGuardedAttachment } from "./ssrf-guard.js";
@@ -209,12 +208,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       }),
       messageToolHints: (params: { cfg: OpenClawConfig }) => {
         const account = resolveBotAccount({ cfg: params.cfg });
-        const hints = [
+        return [
           // Platform context — gives the agent a working mental model of
-          // Sabha's structure even when the /skill endpoint is unreachable.
-          // IMPORTANT: Kimi/GPT-style models default to Discord/Slack priors
-          // when they see "thread" or "mention", so this hint explicitly
-          // names the platform and tells the agent what NOT to assume.
+          // Sabha's structure. IMPORTANT: Kimi/GPT-style models default to
+          // Discord/Slack priors when they see "thread" or "mention", so
+          // this hint explicitly names the platform and tells the agent
+          // what NOT to assume.
           `YOU ARE ON SABHA — NOT Discord, Slack, Teams, or Telegram. Sabha is a team chat platform (server: ${account.baseUrl}). ` +
             `You are connected as the bot named "${account.botName}". ` +
             "Conversations happen in rooms (Open — anyone can join, or Closed — invite-only), " +
@@ -244,13 +243,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
             "them. For example, if the envelope shows `From: Alice (@{42})`, reply with `Thanks @{42}, on it!` to produce " +
             "a real mention pill.",
         ];
-        const skillText = getCachedSkillText(account.baseUrl);
-        if (skillText) {
-          hints.push(
-            `Here is the full Sabha API reference:\n\n${skillText}`,
-          );
-        }
-        return hints;
       },
     },
     status: {

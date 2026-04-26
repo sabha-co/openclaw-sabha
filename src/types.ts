@@ -190,9 +190,9 @@ export type SabhaConfig = {
   // Shared base fields that per-bot overrides in `botAccounts` layer onto.
   baseUrl?: string;
   // Bot API base (e.g. `https://sabha.co/1000006/api/bots`). Returned by
-  // the server's registration response; `baseUrl` is the site root used for
-  // `/skill` fetch and agent-identity prompts, while every bearer-auth HTTP
-  // call goes through `apiBaseUrl`.
+  // the server's registration response; `baseUrl` is the site root used by
+  // the setup wizard's `/skill` URL-verification probe, while every
+  // bearer-auth HTTP call goes through `apiBaseUrl`.
   apiBaseUrl?: string;
   botKey?: string;
   // Per-bot webhook HMAC secret returned at registration. Captured

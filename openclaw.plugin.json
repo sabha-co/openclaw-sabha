@@ -24,7 +24,7 @@
           },
           "baseUrl": {
             "type": "string",
-            "description": "Sabha server URL (site root) including workspace ID for multi-tenant (e.g. https://sabha.co/1000006). Used for /skill fetch and agent-identity prompts."
+            "description": "Sabha server URL (site root) including workspace ID for multi-tenant (e.g. https://sabha.co/1000006). The setup wizard hits {baseUrl}/skill to verify the URL points at a Sabha server."
           },
           "apiBaseUrl": {
             "type": "string",

@@ -199,9 +199,9 @@ const BASE_URL_PROBE_TIMEOUT_MS = 10_000;
 /**
  * Probe `{baseUrl}/skill` to decide whether `baseUrl` actually points at a
  * Sabha server. `/skill` is the unauthenticated LLM-readable API reference
- * (see `src/skill-prompt.ts`), which lets the wizard separate "wrong URL"
- * from "wrong bot key" — a bad URL fails here, a bad key fails later in
- * `probeBotKey`.
+ * served by every Sabha workspace, which lets the wizard separate "wrong
+ * URL" from "wrong bot key" — a bad URL fails here, a bad key fails later
+ * in `probeBotKey`.
  *
  * Classification:
  * - `invalid` — reached an HTTP server but the response doesn't look like

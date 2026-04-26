@@ -63,9 +63,8 @@ WebSocket typing "stop" whisper fires
 ```
 index.ts                Full-runtime entry — defineChannelPluginEntry
                         Stores PluginRuntime, registers agent tools,
-                        fetches /skill per unique bot-account baseUrl
-                        on startup, registers the /sabha/webhook HTTP
-                        route (webhook mode only) with typed per-event
+                        registers the /sabha/webhook HTTP route
+                        (webhook mode only) with typed per-event
                         dispatch mirroring the WebSocket monitor.
 
 setup-entry.ts          Setup-only entry — defineSetupPluginEntry
@@ -79,9 +78,11 @@ src/
                         DM security policy, threading mode, outbound
                         adapters (sendText/sendMedia), gateway.startAccount
                         (launches a WebSocket monitor per bot account),
-                        agentPrompt hints that inject the per-workspace
-                        /skill text. Wires the bot-account resolver into
-                        the SDK via config.resolveAccount / listAccountIds.
+                        agentPrompt hints (platform identity preamble +
+                        mention syntax in messageToolHints; markdown
+                        rules in inboundFormattingHints). Wires the
+                        bot-account resolver into the SDK via
+                        config.resolveAccount / listAccountIds.
 
   bot-accounts.ts       Multi-bot-account model
                         ResolvedBotAccount type, listBotAccountIds,
@@ -204,17 +205,6 @@ src/
                         client. The bot account id is NOT exposed in
                         tool schemas — the LLM never has to pick one.
 
-  skill-prompt.ts       /skill endpoint fetcher + per-workspace cache
-                        fetchSkillPrompt(baseUrl) and
-                        getCachedSkillText(baseUrl). Cache is a
-                        Map<baseUrl, string> because /skill renders
-                        per workspace (template interpolates
-                        Current.account.name + request.base_url), so
-                        bot accounts sharing a baseUrl share an entry
-                        while accounts on different workspaces each
-                        get their own. index.ts fetches for every
-                        unique baseUrl across listEnabledBotAccounts.
-
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via
                         POST /join/{code}) or a pre-existing bot key.
@@ -266,11 +256,18 @@ Since the bearer-auth refactor (`2026.4.25`), Sabha authenticates bots via `Auth
 
 `TypingManager` subscribes to `TypingNotificationsChannel` per room and emits `whisper` commands on the existing WebSocket. Whispers are routed directly by AnyCable-Go between subscribers with no Rails round-trip — do not attempt to implement this over REST. Gated on the pre-flight `shouldHandleInbound` check so we don't type at our own messages or at messages that won't be handled. See `docs/TYPING.md` for the frame-level protocol and future presence-indicator plan.
 
-### `/skill` prompt injection, cached per workspace
+### Channel context in the agent system prompt
 
-On startup, `index.ts` calls `fetchSkillPrompt(baseUrl)` for every unique `baseUrl` across enabled bot accounts. `agentPrompt.messageToolHints` in `channel.ts` reads the cached text via `getCachedSkillText(account.baseUrl)` and appends it to the agent's prompt. The cache is a `Map<baseUrl, string>` because `/skill` is rendered per workspace (the ActionText template interpolates `Current.account.name` and `request.base_url`): two bot accounts pointing at the same workspace share an entry, while accounts on different workspaces/servers each get their own.
+`src/channel.ts` ships two `agentPrompt` adapters into the SDK:
 
-This lets the agent reason about Sabha API capabilities without the plugin hardcoding documentation — prefer adding agent tools and letting `/skill` describe them over stuffing docs into source.
+- `messageToolHints` — platform identity preamble (`YOU ARE ON SABHA — NOT Discord, Slack, …`) plus Sabha mention syntax (`@{user_id}` curly-brace form). Defends against model priors that default to Discord-style `<@id>` or Slack-style `@username`, both of which Sabha's `format_mentions` regex silently drops.
+- `inboundFormattingHints` — `text_markup: "markdown"` plus three rules. Lands in the per-turn `## Inbound Context` JSON block.
+
+The OpenClaw SDK gates `messageToolHints` behind `availableTools.has("message")` (`openclaw/src/agents/system-prompt.ts:buildMessagingSection`). Operators on tool profiles that don't include `message` (e.g. `coding`) get the inbound formatting rules but not the identity preamble. The README's "Tool profile" section documents `tools.alsoAllow: ["message"]` as the per-operator workaround.
+
+The plugin previously fetched Sabha's `/skill` endpoint (an LLM-readable API reference) on startup and injected the 19 KB cached body into `messageToolHints`. That subsystem was removed in 2026.4.26 — see `docs/AGENT-PROMPT-CONTEXT.md` for the peer-plugin survey and decision record. The `/skill` endpoint is still consumed at setup time by `setup-wizard.ts:probeBaseUrl` to verify a `baseUrl` actually points at a Sabha server (response body discarded after the URL classification check).
+
+If you add a new agent-visible Sabha capability, surface it as an agent tool in `src/tools.ts` rather than expanding the `messageToolHints` payload — peer channel plugins keep that hook to ~3 lines of narrow tool routing.
 
 ### Agent tools for workspace management
 
@@ -302,7 +299,7 @@ Inbound and outbound attachment fetches go through `fetchGuardedAttachment` (`sr
 
 The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dangerous-opt-in escape hatch for corporate or split-horizon DNS setups that legitimately need to fetch from RFC1918 addresses. Labeled as `advanced` in the Zod UI hints and documented as dangerous.
 
-**Scope note:** the guard covers attachment downloads only. Sabha's own Bot API `baseUrl` is operator-configured and trusted by design — the plugin does not (and should not) SSRF-guard calls to it, since an attacker who controls `baseUrl` already controls the bot. If a defense-in-depth pass is ever desired, the places to audit are `client.ts`, `setup-wizard.ts` (`POST /join/<code>`), and `skill-prompt.ts` (`GET /skill`).
+**Scope note:** the guard covers attachment downloads only. Sabha's own Bot API `baseUrl` is operator-configured and trusted by design — the plugin does not (and should not) SSRF-guard calls to it, since an attacker who controls `baseUrl` already controls the bot. If a defense-in-depth pass is ever desired, the places to audit are `client.ts` and `setup-wizard.ts` (the `POST /join/<code>` registration call and the `GET /skill` URL-verification probe).
 
 ### Doctor / health checks
 
@@ -390,7 +387,7 @@ Single-bot:
   channels: {
     sabha: {
       enabled: true,
-      baseUrl: "https://sabha.co/1000006",              // site root; /skill + agent identity
+      baseUrl: "https://sabha.co/1000006",              // site root; setup wizard verifies via /skill
       apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
       botAccounts: {
         default: {

@@ -67,7 +67,7 @@ Edit `~/.openclaw/openclaw.json`:
   channels: {
     sabha: {
       enabled: true,
-      baseUrl: "https://sabha.co/1000006",              // site root (used for /skill)
+      baseUrl: "https://sabha.co/1000006",              // site root (setup wizard verifies via /skill)
       apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
       botAccounts: {
         default: {

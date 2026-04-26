@@ -69,8 +69,12 @@ Edit `~/.openclaw/openclaw.json`:
       enabled: true,
       baseUrl: "https://sabha.co/1000006",              // site root (used for /skill)
       apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
-      botKey: "42-AbCdEfGhIjKl",
-      webhookSecret: "whsec_..."  // captured at registration; reserved for HMAC signature verification in a future release
+      botAccounts: {
+        default: {
+          botKey: "42-AbCdEfGhIjKl",
+          webhookSecret: "whsec_..."  // captured at registration; reserved for HMAC signature verification in a future release
+        }
+      }
     }
   }
 }
@@ -155,8 +159,12 @@ Install from source for local development or debugging:
 git clone https://github.com/sabha-co/openclaw-sabha.git
 cd openclaw-sabha
 npm install --omit=dev
-openclaw plugins install -l .
+openclaw plugins install .
 ```
+
+This copies the plugin into OpenClaw's managed plugin directory, where it surfaces in `openclaw configure --section channels` and the rest of the channel CLI.
+
+For active development with edit-in-place, swap the install line for `openclaw plugins install -l .`. Linked installs go into `plugins.load.paths`, which currently aren't surfaced by the configure menu (upstream OpenClaw catalog-discovery gap); configure sabha by hand-editing `channels.sabha` in `~/.openclaw/openclaw.json` while linked.
 
 Run tests:
 

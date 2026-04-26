@@ -3,7 +3,11 @@ import {
   type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
 import { sabhaPlugin } from "./src/channel.js";
-import { listEnabledBotAccounts, resolveBotAccount } from "./src/bot-accounts.js";
+import {
+  listBotAccountIds,
+  listEnabledBotAccounts,
+  resolveBotAccount,
+} from "./src/bot-accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
 import {
   processInboundMessage,
@@ -58,6 +62,21 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
 
   registerFull(api) {
     const getConfig = () => api.runtime.config.loadConfig();
+
+    // Detect the silent-skip case: `channels.sabha` is set (operator thinks
+    // sabha is configured) but no `botAccounts` entries are declared. The
+    // gateway's start loop iterates `listBotAccountIds`, which would return
+    // [], so no bot would start and the only signal would be the absence of
+    // any `[sabha]` log lines. Hand-edited configs fail invisibly. Warn loudly.
+    const startupCfg = getConfig();
+    if (startupCfg.channels?.sabha && listBotAccountIds(startupCfg).length === 0) {
+      api.logger.warn(
+        "[sabha] channels.sabha is set but has no botAccounts entries — " +
+          "no Sabha bot will start. Move credentials under botAccounts.<id> " +
+          "(e.g. botAccounts.default) or run `openclaw configure --section channels`. " +
+          "See https://github.com/sabha-co/openclaw-sabha#configure for the correct shape.",
+      );
+    }
 
     // Register room/member management agent tools. Each entry is a
     // factory `(ctx) => tool` so the SDK can inject fresh agent context

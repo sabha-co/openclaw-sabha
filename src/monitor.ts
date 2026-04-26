@@ -7,6 +7,7 @@ import { SabhaClient } from "./client.js";
 import {
   processInboundMessage,
   shouldHandleInbound,
+  shouldStreamReply,
   handleMessageUpdated,
   handleMessageDeleted,
   handleBoostCreated,
@@ -321,26 +322,13 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
         // Streaming draft-stream preview. Lives for the duration of one
         // inbound turn and is shared between `onPartialReply` (per-token
-        // updates) and `deliver` (final edit).
-        //
-        // Skip streaming when we're going to thread the reply — streaming
-        // writes partials to the ORIGINAL room id (via client.sendMessage /
-        // editMessage), but the final deliver routes to replyInThread,
-        // which would cause the reply to appear in BOTH the main room
-        // (from streaming partials) AND the thread (from the final). The
-        // two surfaces don't agree, so we pick one: if we'll thread the
-        // final reply, skip streaming for the turn.
-        //
-        // Also skipped when the inbound is already in a thread — Sabha
-        // threads are their own room ids, and streaming into a thread
-        // is a v1.1 feature.
-        const threadContext = payload.message.thread;
-        const willThreadFinalReply =
-          threadContext == null &&
-          payload.room.type !== "Direct" &&
-          (account.replyToMode ?? "first") !== "off";
-        const streaming = threadContext == null && !willThreadFinalReply;
-        const draftStream = streaming
+        // updates) and `deliver` (final edit). The gate (`shouldStreamReply`)
+        // is centralized in `inbound.ts` so the webhook path uses the same
+        // rules; it covers the in-thread, DM, and threading-off cases.
+        // Top-level non-DM with threading on is still skipped (Phase 2 will
+        // add a `firstSend` hook on the draft stream so partials can land
+        // in the new thread instead of orphaned in the parent room).
+        const draftStream = shouldStreamReply(payload, account)
           ? createSabhaDraftStream({
               client,
               roomId: payload.room.id,

@@ -10,6 +10,7 @@ import {
 import { parseWebhookPayload } from "./src/webhook.js";
 import {
   processInboundMessage,
+  shouldStreamReply,
   handleMessageUpdated,
   handleMessageDeleted,
   handleBoostCreated,
@@ -124,15 +125,16 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               currentAccount.botKey,
             );
 
-            // Streaming: non-thread replies get a draft stream that
-            // `onPartialReply` feeds token-by-token. Thread replies
-            // stay on the non-streaming path (see `monitor.ts` for the
-            // same split). The webhook handler has to return 200
-            // immediately, so we still `await processInboundMessage`
-            // below — webhook mode is inherently sync-to-the-runtime.
-            const threadContext = payload.message.thread;
-            const streaming = threadContext == null;
-            const draftStream = streaming
+            // Streaming: gate is centralized in `shouldStreamReply` so the
+            // webhook path uses the same rules as the WS monitor. Covers
+            // in-thread, DM, and threading-off cases. Top-level non-DM
+            // with threading on still skips streaming (Phase 2 will add a
+            // `firstSend` hook so partials can land in the new thread
+            // instead of orphaned in the parent room). The webhook handler
+            // has to return 200 immediately, so we still `await
+            // processInboundMessage` below — webhook mode is inherently
+            // sync-to-the-runtime.
+            const draftStream = shouldStreamReply(payload, currentAccount)
               ? createSabhaDraftStream({
                   client,
                   roomId: payload.room.id,

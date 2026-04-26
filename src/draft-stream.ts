@@ -55,11 +55,18 @@ const DEFAULT_MAX_CHARS = 16_000;
  * and the lifecycle helper throttles the actual `sendMessage` /
  * `editMessage` calls to roughly `throttleMs` apart.
  *
- * **Not used for thread replies in v1.** Streaming a reply into a thread
- * requires a first `replyInThread` to capture the thread sub-room id,
- * then subsequent `editMessage` calls against that sub-room. For Phase 2.1
- * we only stream top-level room replies and fall back to the non-streaming
- * path for threads; thread streaming is a follow-up.
+ * **In-thread inbounds stream directly into the thread room** (Phase 1):
+ * Sabha emits `payload.room.id == payload.message.thread.id` for in-thread
+ * events, so `createSabhaDraftStream({ roomId: payload.room.id })` already
+ * targets the right room. The streaming gate `shouldStreamReply` in
+ * `inbound.ts` enables this path.
+ *
+ * **Top-level replies that create a NEW thread still skip streaming**
+ * (Phase 2 follow-up). Streaming partials would write to the parent room
+ * while the final goes to the new thread, leaving two surfaces that don't
+ * agree. Phase 2 will add a `firstSend` hook so the first partial is sent
+ * via `replyInThread` (capturing the new thread room id), and subsequent
+ * edits target that captured room.
  */
 export type SabhaDraftStream = {
   /** Set the current accumulated text. The loop throttles the actual send. */

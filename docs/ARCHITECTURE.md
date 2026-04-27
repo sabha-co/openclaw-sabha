@@ -226,18 +226,22 @@ src/
                         same reason.
 
   directory.ts          Channel directory adapter helpers
-                        listSabhaDirectoryGroups (rooms) and
-                        listSabhaDirectoryGroupMembers. No listPeers
-                        — Sabha's bot API has no global users
-                        endpoint. Wired into `directory:` slot in
-                        channel.ts via createChannelDirectoryAdapter.
-                        When accountId is null, scopes to the resolved
-                        default account rather than unioning every
-                        enabled account: Sabha can be cross-tenant
-                        (different apiBaseUrls = separate workspaces
-                        with overlapping room id namespaces), so a
-                        union would collide bare ids and hand the
-                        agent rooms it cannot subsequently message.
+                        listSabhaDirectoryGroups (rooms),
+                        listSabhaDirectoryGroupMembers (per-room),
+                        listSabhaDirectoryPeers (bot-reachable users
+                        via GET /api/bots/users — server-side scoped
+                        to users sharing rooms with the bot), and
+                        listSabhaDirectoryPeersLive (autocompletable
+                        variant for autocomplete UX). Wired into
+                        `directory:` slot in channel.ts via
+                        createChannelDirectoryAdapter. When accountId
+                        is null, scopes to the resolved default
+                        account rather than unioning every enabled
+                        account: Sabha can be cross-tenant (different
+                        apiBaseUrls = separate workspaces with
+                        overlapping room id namespaces), so a union
+                        would collide bare ids and hand the agent
+                        rooms it cannot subsequently message.
 
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via
@@ -312,7 +316,7 @@ Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every op
 
 The SDK splits outbound capability into three slots, and Sabha uses all three deliberately:
 
-- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search`. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
+- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info`. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
 - **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms) and `listGroupMembers`. Replaces the old `sabha_list_rooms` / `sabha_list_members` agent tools. No `listPeers` — Sabha's bot API has no global users endpoint.
 - **`api.registerTool(factory)`** (`src/tools.ts`) — 9 agent tools for room/member admin (`sabha_create_room`, archive / join / leave / update_room, `add_member` / `remove_member`, `create_dm`, `list_joinable_rooms`). These are workspace-level operations without cross-channel analogs — Slack/Discord/Mattermost expose **zero** `registerTool` calls because they don't let agents create channels at runtime; Sabha intentionally does, and `registerTool` is the right slot for that.
 

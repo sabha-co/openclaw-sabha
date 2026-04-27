@@ -23,6 +23,8 @@ import { SabhaClient } from "./client.js";
 import {
   listSabhaDirectoryGroupMembers,
   listSabhaDirectoryGroups,
+  listSabhaDirectoryPeers,
+  listSabhaDirectoryPeersLive,
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
@@ -218,15 +220,17 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "react",
           "thread-reply",
           "search",
+          "member-info",
         ],
         capabilities: [],
         schema: [],
       }),
     },
-    // Sabha rooms surface as directory groups; per-room members surface as
-    // directory entries. Sabha's bot API has no global users endpoint, so
-    // `listPeers` is intentionally omitted — agents discover users by
-    // listing members of a known room.
+    // Sabha rooms surface as directory groups; per-room members and
+    // bot-reachable users surface as directory entries. `listPeers` hits
+    // `/api/bots/users` (server-scoped to users sharing rooms with the
+    // bot); `listPeersLive` hits `/autocompletable/users` for the
+    // autocomplete fast path.
     directory: createChannelDirectoryAdapter({
       listGroups: async (params) =>
         await listSabhaDirectoryGroups({
@@ -240,6 +244,20 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           cfg: params.cfg,
           accountId: params.accountId,
           groupId: params.groupId,
+          limit: params.limit,
+        }),
+      listPeers: async (params) =>
+        await listSabhaDirectoryPeers({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          query: params.query,
+          limit: params.limit,
+        }),
+      listPeersLive: async (params) =>
+        await listSabhaDirectoryPeersLive({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          query: params.query,
           limit: params.limit,
         }),
     }),

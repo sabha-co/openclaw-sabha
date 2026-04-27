@@ -5,6 +5,8 @@ import type {
   SabhaSearchResult,
   SabhaThreadReply,
   SabhaMessageBody,
+  SabhaUser,
+  SabhaUserDetail,
 } from "./types.js";
 import { markdownToSabhaRichText } from "./outbound/format.js";
 import {
@@ -311,6 +313,65 @@ export class SabhaClient {
       `/rooms/${roomId}/members/${userId}`,
       { method: "DELETE" },
     );
+  }
+
+  // --- Users (directory) ---
+
+  /**
+   * List users reachable to this bot (i.e. sharing at least one room with it),
+   * paginated. When `roomId` is set, scopes to that room's members. Server
+   * caps `perPage` at 100 and clamps `page` to >= 1; we forward whatever
+   * the caller passes and let the server enforce.
+   *
+   * Server route: `GET /api/bots/users[?room_id=&page=&per_page=]`.
+   */
+  async listUsers(opts?: {
+    roomId?: number;
+    page?: number;
+    perPage?: number;
+  }): Promise<SabhaUser[]> {
+    const params = new URLSearchParams();
+    if (opts?.roomId != null) params.set("room_id", String(opts.roomId));
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.perPage != null) params.set("per_page", String(opts.perPage));
+    const qs = params.toString();
+    const res = await this.fetch(`/users${qs ? `?${qs}` : ""}`);
+    return (await res.json()) as SabhaUser[];
+  }
+
+  /**
+   * Fetch a single user's rich profile (bio + social URLs in addition to
+   * the standard SabhaUser fields). Server-scoped to users sharing a room
+   * with the bot — a 404 is returned if the bot can't reach the user, so
+   * callers should treat that as "not visible" rather than "doesn't exist."
+   *
+   * Server route: `GET /api/bots/users/:id`.
+   */
+  async getUser(userId: number): Promise<SabhaUserDetail> {
+    const res = await this.fetch(`/users/${userId}`);
+    return (await res.json()) as SabhaUserDetail;
+  }
+
+  /**
+   * Autocompletable user search — server-side fast path designed for
+   * autocomplete UX (limit 20). When `query` is set, server runs
+   * `User.matching` (prefix-style match). Otherwise returns recent posters
+   * for the room (when `roomId` set) or the default ordered list.
+   *
+   * Server route: `GET /api/bots/autocompletable/users[?query=&room_id=]`.
+   */
+  async searchUsers(opts?: {
+    query?: string;
+    roomId?: number;
+  }): Promise<SabhaUser[]> {
+    const params = new URLSearchParams();
+    if (opts?.query) params.set("query", opts.query);
+    if (opts?.roomId != null) params.set("room_id", String(opts.roomId));
+    const qs = params.toString();
+    const res = await this.fetch(
+      `/autocompletable/users${qs ? `?${qs}` : ""}`,
+    );
+    return (await res.json()) as SabhaUser[];
   }
 
   // --- DMs ---

@@ -33,6 +33,7 @@ const SUPPORTED_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set([
   "react",
   "thread-reply",
   "search",
+  "member-info",
 ]);
 
 function buildClient(ctx: ChannelMessageActionContext): SabhaClient {
@@ -96,6 +97,19 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       }
       const results = await client.search(query);
       return ok(`Found ${results.length} result(s)`, { results });
+    }
+
+    if (action === "member-info") {
+      // Profile lookup is workspace-scoped (no room required). Server
+      // returns 404 if the bot can't see the user (`visible_users` /
+      // `User.sharing_rooms_with`); the SabhaApiError surfaces back to
+      // the agent unchanged.
+      const userId = readNumber(params, "userId", "user_id", "id", "memberId");
+      if (userId == null) {
+        throw new Error("Sabha member-info requires 'userId'.");
+      }
+      const profile = await client.getUser(userId);
+      return ok(`Profile for ${profile.name} (id ${profile.id})`, { profile });
     }
 
     const roomId = readNumber(params, "to", "room_id", "roomId", "target");

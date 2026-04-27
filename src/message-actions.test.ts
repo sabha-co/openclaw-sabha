@@ -56,7 +56,15 @@ describe("sabhaMessageActions.handleAction", () => {
 
   it("supportsAction returns true for declared actions, false otherwise", () => {
     const supports = sabhaMessageActions.supportsAction!;
-    for (const a of ["send", "edit", "unsend", "react", "thread-reply", "search"]) {
+    for (const a of [
+      "send",
+      "edit",
+      "unsend",
+      "react",
+      "thread-reply",
+      "search",
+      "member-info",
+    ]) {
       expect(
         supports({ action: a as ChannelMessageActionContext["action"] }),
       ).toBe(true);
@@ -150,6 +158,39 @@ describe("sabhaMessageActions.handleAction", () => {
       "https://sabha.example/api/bots/rooms/123/messages/42/thread",
     );
     expect(call[1]?.method).toBe("POST");
+  });
+
+  it("member-info → GET /users/:id and returns the rich profile", async () => {
+    const mock = withMockedFetch(
+      {
+        id: 42,
+        name: "Alice",
+        role: "member",
+        bot: false,
+        url: "/u/42",
+        bio: "Reads books",
+        twitter_url: "https://x.com/alice",
+        linkedin_url: null,
+        personal_url: null,
+      },
+    );
+    restore = mock.restore;
+
+    const result = await sabhaMessageActions.handleAction!(
+      ctx("member-info", { userId: 42 }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toBe("https://sabha.example/api/bots/users/42");
+    const profile = (result.details as { profile: { id: number; bio: string | null } }).profile;
+    expect(profile.id).toBe(42);
+    expect(profile.bio).toBe("Reads books");
+  });
+
+  it("member-info throws when userId is missing", async () => {
+    await expect(
+      sabhaMessageActions.handleAction!(ctx("member-info", {})),
+    ).rejects.toThrow(/userId/);
   });
 
   it("search → GET /search?q=...", async () => {

@@ -1,6 +1,10 @@
 import type { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { parseJoinUrl, selfRegisterBot } from "./setup-wizard.js";
+import {
+  parseJoinUrl,
+  selfRegisterBot,
+  setSabhaAccountConfig,
+} from "./setup-wizard.js";
 import {
   listConfiguredSabhaAccountIds,
   listEnabledSabhaAccounts,
@@ -49,28 +53,24 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
         const resolvedApiBaseUrl =
           result.api_base_url || `${resolvedBaseUrl}/api/bots`;
 
+        // Write into the canonical multi-account shape
+        // (`channels.sabha.accounts.default.*`) via the wizard's setter.
+        // The base block keeps `enabled: true` automatically; the patch
+        // only carries per-account fields. Matches what
+        // `sabhaSetupWizard.finalize` writes during `openclaw configure`,
+        // so the two setup paths stay in lock-step.
         const cfg = getConfig();
-        const channels = (cfg.channels ?? {}) as Record<string, unknown>;
-        const existing = (channels.sabha ?? {}) as Record<string, unknown>;
-        const nextCfg = {
-          ...cfg,
-          channels: {
-            ...channels,
-            sabha: {
-              ...existing,
-              enabled: true,
-              baseUrl: resolvedBaseUrl,
-              apiBaseUrl: resolvedApiBaseUrl,
-              botKey: result.bot_key,
-              webhookSecret: result.webhook_secret,
-              websocketUrl: result.websocket_url,
-            },
-          },
-        };
+        const nextCfg = setSabhaAccountConfig(cfg, undefined, {
+          baseUrl: resolvedBaseUrl,
+          apiBaseUrl: resolvedApiBaseUrl,
+          botKey: result.bot_key,
+          webhookSecret: result.webhook_secret,
+          websocketUrl: result.websocket_url,
+        });
         await writeConfigFile(nextCfg);
 
         console.log(`✓ Bot "${result.name}" registered`);
-        console.log(`✓ Config saved to channels.sabha`);
+        console.log(`✓ Config saved to channels.sabha.accounts.default`);
         console.log(`  baseUrl:    ${resolvedBaseUrl}`);
         console.log(`  apiBaseUrl: ${resolvedApiBaseUrl}`);
         console.log(`  botKey:     ${result.bot_key.replace(/^(\d+-).+$/, "$1***")}`);

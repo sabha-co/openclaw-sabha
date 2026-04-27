@@ -21,6 +21,11 @@ import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
+import {
+  sabhaNamedAccountPromotionKeys,
+  sabhaSetupAdapter,
+  sabhaSingleAccountKeysToMove,
+} from "./setup-contract.js";
 import { monitorSabha } from "./monitor.js";
 import { fetchGuardedAttachment } from "./ssrf-guard.js";
 
@@ -163,6 +168,17 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       media: true,
       groupManagement: true,
       blockStreaming: true,
+    },
+    // Setup-promotion contract for the SDK's
+    // `moveSingleAccountChannelSectionToDefaultAccount` migration shim
+    // (called from `index.ts:registerFull`). Without these arrays, the
+    // shim only promotes keys in the SDK's static common set
+    // (`webhookSecret`, `dmPolicy`, `allowFrom`) — none of which include
+    // Sabha's actual credentials. See `src/setup-contract.ts`.
+    setup: {
+      ...sabhaSetupAdapter,
+      singleAccountKeysToMove: sabhaSingleAccountKeysToMove,
+      namedAccountPromotionKeys: sabhaNamedAccountPromotionKeys,
     },
     config: {
       resolveAccount: resolveSabhaAccountForSdk,

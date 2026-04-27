@@ -67,6 +67,13 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     // can see them. SDK-blessed (matrix/setup-helpers); idempotent — a
     // config that's already in the canonical shape is unchanged.
     //
+    // The set of keys actually moved is the union of the SDK's static
+    // common set (`webhookSecret`, `dmPolicy`, `allowFrom`, …) and the
+    // arrays declared on `sabhaPlugin.setup` — see
+    // `src/setup-contract.ts` for the Sabha-specific creds list. Without
+    // that contract, the shim is a no-op for `botKey` / `baseUrl` /
+    // `apiBaseUrl`, which would defeat the whole point.
+    //
     // Closes the silent-leak footgun where base-level creds would be
     // inherited into every named account that doesn't override them.
     const before = api.runtime.config.loadConfig();

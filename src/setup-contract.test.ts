@@ -35,17 +35,29 @@ describe("sabhaSingleAccountKeysToMove", () => {
     );
   });
 
-  it("includes every per-account behavioral field that lives at the channel root pre-rename", () => {
+  it("includes per-account behavioral fields without schema defaults", () => {
+    // `rooms` and `allowPrivateAttachmentHosts` have no `default:` in
+    // the JSON schema, so they only appear at the base block when an
+    // operator actually wrote them there pre-rename — those are
+    // genuine migration candidates.
     expect(sabhaSingleAccountKeysToMove).toEqual(
-      expect.arrayContaining([
-        "connectionMode",
-        "webhookPort",
-        "typingEnabled",
-        "replyToMode",
-        "rooms",
-        "allowPrivateAttachmentHosts",
-      ]),
+      expect.arrayContaining(["rooms", "allowPrivateAttachmentHosts"]),
     );
+  });
+
+  it("excludes schema-defaulted behavioral keys to avoid a config-rewrite loop", () => {
+    // `connectionMode`, `webhookPort`, `typingEnabled`, and `replyToMode`
+    // all have `default:` values in openclaw.plugin.json. The schema
+    // loader injects them into the in-memory config before the migration
+    // shim runs, so listing them here makes the shim "promote" defaults
+    // that were never on disk. The resulting write touches
+    // `meta.lastTouchedAt`, the file watcher fires SIGUSR1, and the
+    // gateway restarts into the same defaulted state — an infinite boot
+    // loop. Keep these out.
+    expect(sabhaSingleAccountKeysToMove).not.toContain("connectionMode");
+    expect(sabhaSingleAccountKeysToMove).not.toContain("webhookPort");
+    expect(sabhaSingleAccountKeysToMove).not.toContain("typingEnabled");
+    expect(sabhaSingleAccountKeysToMove).not.toContain("replyToMode");
   });
 
   it("does not list channel-level keys that the SDK already filters", () => {

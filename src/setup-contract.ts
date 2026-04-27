@@ -24,17 +24,24 @@ import { setSabhaAccountConfig } from "./setup-wizard.js";
  * Static-set keys (`webhookSecret`, `dmPolicy`, `allowFrom`) are omitted
  * because the SDK already promotes them; listing them again is harmless
  * but adds noise.
+ *
+ * Schema-defaulted keys (`connectionMode`, `webhookPort`, `typingEnabled`,
+ * `replyToMode`) are deliberately NOT listed. The migration helper sees
+ * the post-default in-memory config (not the on-disk file), so listing
+ * them caused a config-rewrite loop on every gateway boot: the helper
+ * "promoted" defaulted-in base-level fields into accounts.default,
+ * touched `meta.lastTouchedAt`, the file watcher fired SIGUSR1, and the
+ * gateway restarted into the same defaulted state. Behavioral defaults
+ * with `default:` in the schema can never legitimately appear at the
+ * base block on disk in a post-rename install — there is nothing to
+ * migrate, only ghosts to chase.
  */
 export const sabhaSingleAccountKeysToMove = [
   "baseUrl",
   "apiBaseUrl",
   "botKey",
   "botName",
-  "connectionMode",
   "websocketUrl",
-  "webhookPort",
-  "typingEnabled",
-  "replyToMode",
   "rooms",
   "allowPrivateAttachmentHosts",
 ] as const;

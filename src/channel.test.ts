@@ -73,30 +73,30 @@ describe("sabhaPlugin.config", () => {
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;
       enabled: boolean;
-      botKeyStatus: string;
+      tokenStatus: string;
     };
     expect(result.configured).toBe(true);
     expect(result.enabled).toBe(true);
-    expect(result.botKeyStatus).toBe("available");
+    expect(result.tokenStatus).toBe("available");
   });
 
   it("inspectAccount reports missing when unconfigured", () => {
     const result = sabhaPlugin.config.inspectAccount!(makeCfg()) as {
       configured: boolean;
-      botKeyStatus: string;
+      tokenStatus: string;
     };
     expect(result.configured).toBe(false);
-    expect(result.botKeyStatus).toBe("missing");
+    expect(result.tokenStatus).toBe("missing");
   });
 
   it("inspectAccount reports missing without botKey", () => {
     const cfg = makeCfg({ baseUrl: "https://sabha.co" });
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;
-      botKeyStatus: string;
+      tokenStatus: string;
     };
     expect(result.configured).toBe(false);
-    expect(result.botKeyStatus).toBe("missing");
+    expect(result.tokenStatus).toBe("missing");
   });
 
   it("inspectAccount reports missing without apiBaseUrl", () => {

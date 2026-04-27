@@ -25,14 +25,14 @@ describe("inspectSabhaAccount", () => {
     expect(result.accountId).toBe("default");
     expect(result.enabled).toBe(true);
     expect(result.mode).toBe("websocket");
-    expect(result.botKeyStatus).toBe("available");
-    expect(result.botKeySource).toBe("config");
+    expect(result.tokenStatus).toBe("available");
+    expect(result.tokenSource).toBe("config");
     expect(result.baseUrlStatus).toBe("available");
     expect(result.apiBaseUrlStatus).toBe("available");
     expect(result.configured).toBe(true);
     // WS mode → no webhookSecret fields surfaced.
-    expect(result.webhookSecretStatus).toBeUndefined();
-    expect(result.webhookSecretSource).toBeUndefined();
+    expect(result.signingSecretStatus).toBeUndefined();
+    expect(result.signingSecretSource).toBeUndefined();
   });
 
   it("reports an empty botKey as missing + not configured", () => {
@@ -49,8 +49,8 @@ describe("inspectSabhaAccount", () => {
     // Empty string = operator set the field but to an empty value, distinct
     // from "never set". Tri-state matters for the audit layer's "configured
     // but unavailable" warnings.
-    expect(result.botKeyStatus).toBe("configured_unavailable");
-    expect(result.botKeySource).toBe("config");
+    expect(result.tokenStatus).toBe("configured_unavailable");
+    expect(result.tokenSource).toBe("config");
     expect(result.configured).toBe(false);
   });
 
@@ -59,8 +59,8 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({ accounts: { default: {} } }),
     });
 
-    expect(result.botKeyStatus).toBe("missing");
-    expect(result.botKeySource).toBe("none");
+    expect(result.tokenStatus).toBe("missing");
+    expect(result.tokenSource).toBe("none");
     expect(result.baseUrlStatus).toBe("missing");
     expect(result.apiBaseUrlStatus).toBe("missing");
     expect(result.configured).toBe(false);
@@ -82,13 +82,13 @@ describe("inspectSabhaAccount", () => {
     });
 
     expect(result.mode).toBe("websocket");
-    expect(result.webhookSecretStatus).toBeUndefined();
-    expect(result.webhookSecretSource).toBeUndefined();
+    expect(result.signingSecretStatus).toBeUndefined();
+    expect(result.signingSecretSource).toBeUndefined();
     // WS mode doesn't require the secret for `configured: true`.
     expect(result.configured).toBe(true);
   });
 
-  it("flags missing webhookSecret in webhook mode (configured: false)", () => {
+  it("surfaces missing webhookSecret in webhook mode without blocking configured", () => {
     const result = inspectSabhaAccount({
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
@@ -103,10 +103,14 @@ describe("inspectSabhaAccount", () => {
     });
 
     expect(result.mode).toBe("webhook");
-    expect(result.webhookSecretStatus).toBe("missing");
-    expect(result.webhookSecretSource).toBe("none");
-    // Audit reads `configured: false` to surface "webhook mode but no signing secret".
-    expect(result.configured).toBe(false);
+    expect(result.signingSecretStatus).toBe("missing");
+    expect(result.signingSecretSource).toBe("none");
+    // `webhookSecret` is captured for forward-compat HMAC verification
+    // but the current runtime accepts webhooks without it (see
+    // channel.ts:79 and types.ts:198: "future release — not yet
+    // used."). Audit/doctor must not falsely flag working webhook
+    // deployments as unconfigured.
+    expect(result.configured).toBe(true);
   });
 
   it("reports webhookSecret available in webhook mode when set", () => {
@@ -124,8 +128,8 @@ describe("inspectSabhaAccount", () => {
       }),
     });
 
-    expect(result.webhookSecretStatus).toBe("available");
-    expect(result.webhookSecretSource).toBe("config");
+    expect(result.signingSecretStatus).toBe("available");
+    expect(result.signingSecretSource).toBe("config");
     expect(result.configured).toBe(true);
   });
 
@@ -260,6 +264,6 @@ describe("inspectAllSabhaAccounts", () => {
     );
 
     expect(results.map((r) => r.accountId).sort()).toEqual(["production", "staging"]);
-    expect(results.every((r) => r.botKeyStatus === "available")).toBe(true);
+    expect(results.every((r) => r.tokenStatus === "available")).toBe(true);
   });
 });

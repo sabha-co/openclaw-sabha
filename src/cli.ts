@@ -102,8 +102,23 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
       // and `enabled` defaults to true, so without this guard the
       // doctor runs against an empty default and surfaces a misleading
       // config-check failure instead of the actionable "nothing is
-      // configured" message.
-      if (!options.account && listConfiguredSabhaAccountIds(cfg).length === 0) {
+      // configured" message. We use `listConfiguredSabhaAccountIds`,
+      // which only counts explicit `accounts.<id>` entries.
+      //
+      // The migration shim in `registerFull` promotes base-level creds
+      // into `accounts.default` at gateway startup, but the CLI is
+      // registered via `registerCliMetadata` and never runs that shim.
+      // So a pre-migration config (`channels.sabha.botKey` at base
+      // level, no `accounts` map) would hit this guard with
+      // `listConfiguredSabhaAccountIds` returning [] even though the
+      // resolver's base→default layering yields a working bot. The
+      // `&& !resolveSabhaAccount({cfg}).botKey` clause covers that
+      // case — same pattern as the startup warning in `index.ts`.
+      if (
+        !options.account &&
+        listConfiguredSabhaAccountIds(cfg).length === 0 &&
+        !resolveSabhaAccount({ cfg }).botKey
+      ) {
         console.log("No Sabha bot accounts configured.");
         return;
       }

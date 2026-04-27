@@ -199,12 +199,45 @@ src/
 
   tools.ts              Agent tools registered via api.registerTool
                         Room CRUD, join/leave, member management,
-                        search, DMs (12 tools total). Tool factories
-                        read `ctx.agentAccountId` at execute time and
-                        route through a shared `getClientForTool`
-                        helper that resolves the right bot account's
-                        client. The bot account id is NOT exposed in
-                        tool schemas — the LLM never has to pick one.
+                        DM-open (9 tools total — all room/member
+                        admin without cross-channel analogs).
+                        `sabha_list_rooms` / `sabha_search` /
+                        `sabha_list_members` were removed in 2026.4.27
+                        and now live behind the directory adapter and
+                        the shared `message` tool's `search` action
+                        respectively. Tool factories read
+                        `ctx.agentAccountId` at execute time and route
+                        through a shared `getClientForTool` helper
+                        that resolves the right bot account's client.
+                        The bot account id is NOT exposed in tool
+                        schemas — the LLM never has to pick one.
+
+  message-actions.ts    ChannelMessageActionAdapter dispatch half
+                        Agent-callable message ops on Sabha via core's
+                        shared `message` tool. handleAction routes
+                        send / edit / unsend / react / thread-reply /
+                        search to existing SabhaClient methods. The
+                        discovery half (describeMessageTool's action
+                        list) lives in channel.ts. `reply` is
+                        intentionally absent — `send` with replyToId
+                        covers implicit, `thread-reply` covers
+                        explicit (and fails closed if messageId is
+                        missing). Mattermost omits `reply` for the
+                        same reason.
+
+  directory.ts          Channel directory adapter helpers
+                        listSabhaDirectoryGroups (rooms) and
+                        listSabhaDirectoryGroupMembers. No listPeers
+                        — Sabha's bot API has no global users
+                        endpoint. Wired into `directory:` slot in
+                        channel.ts via createChannelDirectoryAdapter.
+                        When accountId is null, scopes to the resolved
+                        default account rather than unioning every
+                        enabled account: Sabha can be cross-tenant
+                        (different apiBaseUrls = separate workspaces
+                        with overlapping room id namespaces), so a
+                        union would collide bare ids and hand the
+                        agent rooms it cannot subsequently message.
 
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via
@@ -267,11 +300,21 @@ The OpenClaw SDK gates `messageToolHints` behind `availableTools.has("message")`
 
 The plugin previously fetched Sabha's `/skill` endpoint (an LLM-readable API reference) on startup and injected the 19 KB cached body into `messageToolHints`. That subsystem was removed in 2026.4.26 — see `docs/AGENT-PROMPT-CONTEXT.md` for the peer-plugin survey and decision record. The `/skill` endpoint is still consumed at setup time by `setup-wizard.ts:probeBaseUrl` to verify a `baseUrl` actually points at a Sabha server (response body discarded after the URL classification check).
 
-If you add a new agent-visible Sabha capability, surface it as an agent tool in `src/tools.ts` rather than expanding the `messageToolHints` payload — peer channel plugins keep that hook to ~3 lines of narrow tool routing.
+If you add a new agent-visible Sabha capability, pick the right SDK slot rather than expanding the `messageToolHints` payload (peer channel plugins keep that hook to ~3 lines):
 
-### Agent tools for workspace management
+- **Sending / editing / reacting / fetching messages?** Add it to `SUPPORTED_ACTIONS` + `handleAction` in `src/message-actions.ts`. The shared `message` tool is the canonical surface.
+- **Listing channels or users?** Add it to the directory adapter in `src/directory.ts`. Cross-channel "list conversations" verbs land here uniformly.
+- **Sabha-specific admin without a cross-channel analog?** (e.g. a new room CRUD shape.) Add it as an `api.registerTool` factory in `src/tools.ts`.
 
-Room creation, member management, and search are exposed as 12 agent tools registered via `api.registerTool()`, not as message-tool actions. These are workspace-level operations the agent chooses to perform as part of reasoning — not replies.
+Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every operation falls under the message or directory adapters. Sabha's `registerTool` use is intentional and Sabha-specific (room admin), not a default for all new capabilities.
+
+### Outbound capability split: message actions, directory, agent tools
+
+The SDK splits outbound capability into three slots, and Sabha uses all three deliberately:
+
+- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search`. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
+- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms) and `listGroupMembers`. Replaces the old `sabha_list_rooms` / `sabha_list_members` agent tools. No `listPeers` — Sabha's bot API has no global users endpoint.
+- **`api.registerTool(factory)`** (`src/tools.ts`) — 9 agent tools for room/member admin (`sabha_create_room`, archive / join / leave / update_room, `add_member` / `remove_member`, `create_dm`, `list_joinable_rooms`). These are workspace-level operations without cross-channel analogs — Slack/Discord/Mattermost expose **zero** `registerTool` calls because they don't let agents create channels at runtime; Sabha intentionally does, and `registerTool` is the right slot for that.
 
 Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
 
@@ -362,11 +405,13 @@ The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. R
 
 ### Outbound paths
 
-There are **three** outbound code paths and they all end up in `SabhaClient`. New features that produce outbound messages usually need to touch each one:
+There are **five** outbound code paths and they all end up in `SabhaClient`. New features that produce outbound messages usually need to touch the relevant ones:
 
 - **A. Reply-pipeline `deliver` callback** — the lambda passed into `processInboundMessage` from both `index.ts` (webhook) and `monitor.ts` (WebSocket). Handles automatic replies to inbound events.
-- **B. `outbound.attachedResults.sendText` / `sendMedia`** — plugin-level adapters in `channel.ts` invoked by OpenClaw core's shared `message` tool. `sendMedia` fetches the remote URL into a Blob and calls `client.sendAttachment`.
-- **C. Agent tools** in `tools.ts` — invoked directly by the LLM for workspace operations (`sabha_create_room`, `sabha_add_member`, `sabha_search`, …). These bypass the reply pipeline entirely.
+- **B. `outbound.attachedResults.sendText` / `sendMedia`** — plugin-level adapters in `channel.ts` invoked by OpenClaw core's shared `message` tool when no channel-specific action is selected. `sendMedia` fetches the remote URL into a Blob and calls `client.sendAttachment`.
+- **C. `actions.handleAction`** (`src/message-actions.ts`) — Sabha's contribution to the shared `message` tool. The agent reaches this by selecting `action: "send" | "edit" | "unsend" | "react" | "thread-reply" | "search"` on the canonical message tool. Lets the agent target Sabha messages by id (edit, react, delete) instead of only sending replies.
+- **D. `directory` listings** (`src/directory.ts`) — `listGroups` (rooms) and `listGroupMembers`. Read-only; agents discover rooms/members via core's directory layer rather than channel-specific tools. Replaces `sabha_list_rooms` / `sabha_list_members`.
+- **E. Agent tools** in `tools.ts` — invoked directly by the LLM for workspace admin (`sabha_create_room`, `sabha_add_member`, `sabha_archive_room`, …). These bypass the reply pipeline and the message-action adapter entirely; reserved for room/member admin without cross-channel analogs.
 
 ### Session routing
 

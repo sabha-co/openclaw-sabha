@@ -11,7 +11,7 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | `.ts` files | 39 | 87 | 224 | 328 |
 | Test files (ratio) | 17 (43%) | 37 (43%) | 85 (34%) | 124 (35%) |
 | Inbound event types | 7 | ~10 | ~70 (Events API) | ~40 (gateway, intent‑gated) |
-| Outbound surface | 12 named tools | ~73 actions | ~14 actions (1 dispatcher tool) | ~42 actions (1 dispatcher tool) |
+| Outbound surface | 12 `registerTool` entries; no `ChannelMessageActionAdapter`; no directory adapter | inline | shared `message` tool (10 actions via `ChannelMessageActionAdapter`) + directory adapter | shared `message` tool (~42 actions via `ChannelMessageActionAdapter`) |
 | Connection mode | WS (AnyCable) + webhook | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
 | Thread streaming | in‑thread inbounds: yes; top‑level→new thread: deferred (v1.1) | yes | yes (`thread_ts` injected) | yes (native) |
@@ -46,12 +46,29 @@ Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks i
 
 ### 3. Outbound surface
 
-- **Sabha** — 12 separate agent tools (`sabha_list_rooms`, `sabha_create_room`, …). One `SabhaClient` class per bot account. All tools accept hidden `accountId` override.
-- **Mattermost** — ~73 actions, exposed inline.
-- **Slack** — ~14 actions exposed via **one dispatcher tool** (`{ action: "sendMessage" | … }`). Lazy‑loaded action runtimes via `createLazySlackAction()`.
-- **Discord** — ~42 actions exposed via one dispatcher tool, organized into 4 categories (messaging, guild, moderation, presence) under `src/actions/runtime.*.ts`.
+The SDK splits outbound capability into three slots, and the "tools vs actions" terminology gap maps to which slot a plugin uses. Per `https://docs.openclaw.ai/plugins/sdk-channel-plugins`:
 
-**Sabha verdict: drift, but not urgent.** The single‑dispatcher pattern (one tool with an `action` enum) is what scales — Discord didn't end up with 42 separate tools polluting the LLM's tool list. Sabha's 12 separate tools are fine today; if the surface doubles, the inflection point is reached and the dispatcher pattern becomes the right move.
+> "Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."
+
+The three slots:
+
+1. **`ChannelMessageActionAdapter`** (`describeMessageTool` + `handleAction`) — contributes platform‑specific affordances to the **shared `message` tool that core owns**. This is where send / edit / delete / react / pin / file ops belong.
+2. **`createChannelDirectoryAdapter`** — channel/user listing and search.
+3. **`api.registerTool(factory)`** — agent‑facing capabilities that aren't messaging or directory (e.g. room admin: create / archive / join / add‑member).
+
+Per‑plugin breakdown:
+
+- **Slack** — `ChannelMessageActionAdapter` returning `describeMessageTool` (one shared `message` tool) that dispatches **10 message actions** internally: `sendMessage`, `editMessage`, `deleteMessage`, `react`, `reactions`, `readMessages`, `pinMessage` / `unpinMessage` / `listPins`, `downloadFile`, `uploadFile`. Channel/user listing via `createChannelDirectoryAdapter`. **Zero `api.registerTool` calls.**
+- **Discord** — same shape as Slack: `discordMessageActions: ChannelMessageActionAdapter` with ~42 actions across messaging / guild / moderation / presence categories. Zero `api.registerTool` calls.
+- **Mattermost** — same `ChannelMessageActionAdapter` pattern; ~73 actions inline.
+- **Sabha** — **12 `registerTool` entries** (`sabha_list_rooms`, `sabha_create_room`, archive / join / leave room, room info, add / remove member, DM‑open, search). **No `ChannelMessageActionAdapter` is wired.** Messaging reaches Sabha only via `outbound.attachedResults.sendText` / `outbound.base.sendMedia` (the reply‑pipeline path) — there is no platform‑specific message affordance the agent can target by id. The room/member admin tools `registerTool` use is correct per SDK; the `list_rooms` / `search` tools belong in a directory adapter.
+
+**Sabha verdict: drift, with the right framing now.** The earlier "12 tools vs 1 dispatcher" framing was misleading — most of Sabha's 12 tools are room admin that wouldn't go through `ChannelMessageActionAdapter` on any platform. The actual drift is two separate items:
+
+1. **No `ChannelMessageActionAdapter`.** Sabha forgoes letting the agent edit a specific message by id, react explicitly, pin, etc. Today the agent only "replies" through the pipeline. Closest pattern to copy: Slack's `message-action-dispatch.ts`.
+2. **`sabha_list_rooms` / `sabha_search` should move to `createChannelDirectoryAdapter`.** That's the canonical slot for channel/user listing — Slack `channel.ts:427` is the reference.
+
+The room/member admin tools (`sabha_create_room`, `add_member`, …) stay as `registerTool` factories — that's correct per SDK.
 
 ### 4. Multi‑account / multi‑workspace
 
@@ -171,7 +188,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 
 ## What would a Discord/Slack developer find weird about Sabha
 
-1. **12 separate agent tools** instead of one dispatcher tool with an `action` enum.
+1. **No `ChannelMessageActionAdapter`** — Sabha doesn't contribute platform‑specific message affordances to the shared `message` tool, so the agent can't edit a specific message by id, react explicitly, or pin. All outbound messaging routes through `outbound.attachedResults` / the reply pipeline.
 2. No rich UI primitives at all — coming from Block Kit / Carbon, the message envelope feels bare.
 3. Self‑registration flow vs. OAuth or Dev Portal token paste — easier, but unfamiliar.
 4. Single inbound dispatch file (`inbound.ts`) instead of `monitor/events/<namespace>.ts` per event family.
@@ -184,7 +201,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 | Rich message cards (embeds) | +200–300 LOC, 2–3 files | Discord's `outbound-payload.ts` + schema additions |
 | Buttons / select menus | +500–800 LOC, 4–5 files | **Slack's shorthand** (`[[slack_buttons:Label:value]]`), not Discord's raw component JSON |
 | Slash commands | +200–400 LOC, 2–3 files | Discord's slash‑command + interaction routing |
-| Reactions as first‑class tool | +50 LOC | Mattermost / Slack `react` actions |
+| Reactions / edit‑by‑id / pin as agent‑targetable affordances | +150–250 LOC, 1–2 files | Wire a `ChannelMessageActionAdapter` (Slack `message-action-dispatch.ts`); add `react` / `editMessage` / `pinMessage` actions |
 
 Inflection point for the codebase shape: at one new feature, file structure stays flat. Adding two of the above triggers `monitor/events/<namespace>.ts` reorganization and the action‑dispatcher pattern from Discord/Slack.
 
@@ -199,7 +216,7 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 ## Drift worth tracking
 
 1. **Webhook + multi‑bot interaction**. Either route per‑bot at `/sabha/webhook/:accountId` or fail loudly at config load. (Already noted as v1.1.)
-2. **12 separate tools vs. one dispatcher**. Not urgent. Inflection point is when the tool count doubles.
+2. **No `ChannelMessageActionAdapter`; directory tools registered as agent tools.** SDK explicitly says "channel plugins do not need their own send/edit/react tools — OpenClaw keeps one shared `message` tool in core." Sabha skips that adapter entirely, so platform‑specific message ops (edit‑by‑id, react, pin) aren't agent‑targetable. Separately, `sabha_list_rooms` / `sabha_search` belong behind `createChannelDirectoryAdapter` (Slack `channel.ts:427`) rather than `registerTool`. The remaining tools (`sabha_create_room`, `add_member`, room admin) correctly stay as `registerTool` — they're not message or directory ops.
 3. ~~**No `accountInspect` contract**.~~ **Resolved (2026.4.27 follow-on).** Original framing was wrong on two counts: (a) the peers exposing rich inspectors are **Slack, Discord, Telegram** — Mattermost has none; (b) Sabha already had the `inspectAccount` slot wired but with a 5-line stub returning only `{ enabled, configured, tokenStatus }`. Brought up to peer parity in `src/account-inspect.ts`: tri-state credential status (`available` / `configured_unavailable` / `missing`) for `botKey` / `baseUrl` / `apiBaseUrl` / `webhookSecret`, per-credential `*Source`, `mode` field, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path (no `SABHA_BOT_KEY`-style fallback exists), no `tokenFile` indirection — bot keys live only in `accounts.<id>.botKey`.
 
 4. ~~**Unknown `agentAccountId` falls through to base-only config**~~, ~~**disabled-account tools silently service**~~, ~~**`threading.resolveReplyToMode` ignores per-bot overrides**~~. **All resolved in the 2026.4.27 rename pass.** `getClientForTool` validates against `listSabhaAccountIds(cfg)` and falls back to default; throws on `enabled: false`. `threading.resolveReplyToMode` now reads via `resolveSabhaAccount({ cfg, accountId })`, matching what the deliver callbacks see. The same pass collapsed the hand-rolled multi-account plumbing onto `createAccountListHelpers("sabha")` (canonical SDK keys: `accounts:` / `defaultAccount:`) and added a `moveSingleAccountChannelSectionToDefaultAccount` shim in `index.ts` startup that auto-migrates any remaining base-level credentials into `accounts.default`.

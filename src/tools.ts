@@ -129,14 +129,11 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
   };
 
   return [
-    build<AccountAwareParams>({
-      name: "sabha_list_rooms",
-      label: "List Sabha rooms",
-      description: "List all rooms the bot is a member of in Sabha",
-      parameters: Type.Object({}),
-      execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).listRooms(),
-    }),
+    // Note: room *listing* lives in `src/directory.ts` as a directory adapter,
+    // and message *search* is exposed via the shared `message` tool's `search`
+    // action (see `src/message-actions.ts`). The agent reaches them through
+    // canonical SDK slots, not through `sabha_*` agent tools. Tools below are
+    // room/member admin operations without cross-channel analogs.
     build<AccountAwareParams>({
       name: "sabha_list_joinable_rooms",
       label: "List joinable Sabha rooms",
@@ -216,18 +213,6 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
         return "Left room";
       },
     }),
-    build<AccountAwareParams & { room_id: number }>({
-      name: "sabha_list_members",
-      label: "List Sabha room members",
-      description: "List members of a room in Sabha",
-      parameters: Type.Object({
-        room_id: Type.Number({ description: "Room ID" }),
-      }),
-      execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).listMembers(
-          params.room_id,
-        ),
-    }),
     build<AccountAwareParams & { room_id: number; user_id: number }>({
       name: "sabha_add_member",
       label: "Add Sabha room member",
@@ -257,18 +242,6 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
         );
         return "Member removed";
       },
-    }),
-    build<AccountAwareParams & { query: string }>({
-      name: "sabha_search",
-      label: "Search Sabha messages",
-      description: "Search messages across all rooms the bot is in",
-      parameters: Type.Object({
-        query: Type.String({ description: "Search query" }),
-      }),
-      execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).search(
-          params.query,
-        ),
     }),
     build<AccountAwareParams & { user_id: number }>({
       name: "sabha_create_dm",

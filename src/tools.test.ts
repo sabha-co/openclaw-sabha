@@ -66,8 +66,10 @@ const multiBotCfg = () =>
 
 function buildListRoomsTool(getConfig: () => OpenClawConfig) {
   const tools = createSabhaTools(getConfig);
-  const factory = tools.find((f) => f({ agentAccountId: undefined }).name === "sabha_list_rooms");
-  if (!factory) throw new Error("sabha_list_rooms not registered");
+  const factory = tools.find(
+    (f) => f({ agentAccountId: undefined }).name === "sabha_list_joinable_rooms",
+  );
+  if (!factory) throw new Error("sabha_list_joinable_rooms not registered");
   return factory;
 }
 
@@ -88,7 +90,7 @@ describe("createSabhaTools — account routing", () => {
     const tool = factory({ agentAccountId: undefined });
 
     // Schema is a TypeBox object — its `properties` field should have
-    // zero entries for sabha_list_rooms. The LLM never sees accountId.
+    // zero entries for sabha_list_joinable_rooms. The LLM never sees accountId.
     const schema = tool.parameters as {
       properties?: Record<string, unknown>;
     };

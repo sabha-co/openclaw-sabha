@@ -7,6 +7,7 @@ import {
   createDefaultChannelRuntimeState,
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
+import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
 
@@ -19,6 +20,11 @@ import {
 } from "./accounts.js";
 import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
+import {
+  listSabhaDirectoryGroupMembers,
+  listSabhaDirectoryGroups,
+} from "./directory.js";
+import { sabhaMessageActions } from "./message-actions.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import {
@@ -192,14 +198,24 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       inspectAccount: (cfg: OpenClawConfig, accountId?: string | null) =>
         inspectSabhaAccount({ cfg, accountId }),
     },
+    // Channel-owned action surface for the shared `message` tool.
+    // Discovery half (which actions Sabha supports) lives here; dispatch
+    // half (executing each action against `SabhaClient`) lives in
+    // `src/message-actions.ts`. Together they let the agent target Sabha
+    // messages by id (edit, react, delete, search) instead of only
+    // sending replies through the inbound pipeline.
     actions: {
+      ...sabhaMessageActions,
       describeMessageTool: () => ({
+        // `reply` deliberately omitted: `send` with `replyToId` covers the
+        // implicit-target reply, and `thread-reply` covers the explicit one
+        // (fails closed when `messageId` is missing). See SUPPORTED_ACTIONS
+        // in src/message-actions.ts.
         actions: [
           "send",
           "edit",
           "unsend",
           "react",
-          "reply",
           "thread-reply",
           "search",
         ],
@@ -207,6 +223,26 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
         schema: [],
       }),
     },
+    // Sabha rooms surface as directory groups; per-room members surface as
+    // directory entries. Sabha's bot API has no global users endpoint, so
+    // `listPeers` is intentionally omitted — agents discover users by
+    // listing members of a known room.
+    directory: createChannelDirectoryAdapter({
+      listGroups: async (params) =>
+        await listSabhaDirectoryGroups({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          query: params.query,
+          limit: params.limit,
+        }),
+      listGroupMembers: async (params) =>
+        await listSabhaDirectoryGroupMembers({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          groupId: params.groupId,
+          limit: params.limit,
+        }),
+    }),
     agentPrompt: {
       inboundFormattingHints: () => ({
         text_markup: "markdown",

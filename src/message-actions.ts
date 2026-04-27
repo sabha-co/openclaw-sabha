@@ -20,12 +20,17 @@ import { resolveSabhaAccount } from "./accounts.js";
  * `message` with an explicit `action`.
  */
 
+// `reply` is intentionally absent. `send` with `replyToId` covers the
+// "reply" semantic, and `thread-reply` covers explicit-target replies
+// that fail closed if `messageId` is missing. Exposing `reply` as a
+// separate action would either be redundant with `send` or duplicate
+// `thread-reply` — peers (Mattermost) don't expose it for the same
+// reason.
 const SUPPORTED_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set([
   "send",
   "edit",
   "unsend",
   "react",
-  "reply",
   "thread-reply",
   "search",
 ]);
@@ -98,12 +103,12 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       throw new Error(`Sabha ${action} requires a numeric room target ('to' or 'room_id').`);
     }
 
-    if (action === "send" || action === "reply") {
+    if (action === "send") {
       const text = readString(params, "message", "text", "body");
       if (text == null) {
-        throw new Error(`Sabha ${action} requires 'message' text.`);
+        throw new Error("Sabha send requires 'message' text.");
       }
-      const replyToId = readNumber(params, "replyToId", "replyTo", "messageId", "message_id");
+      const replyToId = readNumber(params, "replyToId", "replyTo");
       if (replyToId != null) {
         const result = await client.replyInThread(roomId, replyToId, text);
         return ok(`Replied to message ${replyToId}`, {

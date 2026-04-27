@@ -47,6 +47,22 @@ function multiBotCfg(): OpenClawConfig {
   } as unknown as OpenClawConfig;
 }
 
+function disabledDefaultCfg(): OpenClawConfig {
+  return {
+    channels: {
+      sabha: {
+        accounts: {
+          a: {
+            enabled: false,
+            apiBaseUrl: "https://sabha.example/a/api/bots",
+            botKey: "1-A",
+          },
+        },
+      },
+    },
+  } as unknown as OpenClawConfig;
+}
+
 describe("listSabhaDirectoryGroups", () => {
   let restore: (() => void) | null = null;
   afterEach(() => {
@@ -54,10 +70,9 @@ describe("listSabhaDirectoryGroups", () => {
     restore = null;
   });
 
-  it("returns rooms from the bot as group entries", async () => {
+  it("returns rooms from the resolved bot as group entries", async () => {
     const mock = withMockedFetch([
       { body: [{ id: 1, name: "general", type: "Open" }, { id: 2, name: "random", type: "Open" }] },
-      { body: [] },
     ]);
     restore = mock.restore;
 
@@ -68,16 +83,33 @@ describe("listSabhaDirectoryGroups", () => {
     expect(entries[1]).toMatchObject({ kind: "group", id: "2", name: "random" });
   });
 
-  it("dedupes rooms visible to multiple bot accounts", async () => {
+  it("scopes to the default account when accountId is null (does NOT union all accounts)", async () => {
+    // Cross-tenant safety: account 'a' and account 'b' may be different
+    // workspaces with overlapping room ids. Listing only the default
+    // account guarantees ids round-trip cleanly to message-action sends.
     const mock = withMockedFetch([
-      { body: [{ id: 1, name: "general", type: "Open" }] },
-      { body: [{ id: 1, name: "general", type: "Open" }, { id: 5, name: "ops", type: "Closed" }] },
+      { body: [{ id: 1, name: "default-only", type: "Open" }] },
     ]);
     restore = mock.restore;
 
     const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
 
-    expect(entries.map((e) => e.id)).toEqual(["1", "5"]);
+    // One fetch only — to the default account 'a', not both.
+    expect(mock.fetch).toHaveBeenCalledOnce();
+    expect(String(mock.fetch.mock.calls[0][0])).toBe(
+      "https://sabha.example/a/api/bots/rooms",
+    );
+    expect(entries.map((e) => e.id)).toEqual(["1"]);
+  });
+
+  it("returns [] when the resolved account is disabled", async () => {
+    const mock = withMockedFetch([{ body: [] }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryGroups({ cfg: disabledDefaultCfg() });
+
+    expect(entries).toEqual([]);
+    expect(mock.fetch).not.toHaveBeenCalled();
   });
 
   it("filters by query (case-insensitive substring on name)", async () => {
@@ -88,7 +120,6 @@ describe("listSabhaDirectoryGroups", () => {
           { id: 2, name: "Random", type: "Open" },
         ],
       },
-      { body: [] },
     ]);
     restore = mock.restore;
 
@@ -109,7 +140,6 @@ describe("listSabhaDirectoryGroups", () => {
           { id: 3, name: "c", type: "Open" },
         ],
       },
-      { body: [] },
     ]);
     restore = mock.restore;
 

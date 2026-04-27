@@ -207,12 +207,15 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     actions: {
       ...sabhaMessageActions,
       describeMessageTool: () => ({
+        // `reply` deliberately omitted: `send` with `replyToId` covers the
+        // implicit-target reply, and `thread-reply` covers the explicit one
+        // (fails closed when `messageId` is missing). See SUPPORTED_ACTIONS
+        // in src/message-actions.ts.
         actions: [
           "send",
           "edit",
           "unsend",
           "react",
-          "reply",
           "thread-reply",
           "search",
         ],

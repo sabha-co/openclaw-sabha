@@ -56,11 +56,15 @@ describe("sabhaMessageActions.handleAction", () => {
 
   it("supportsAction returns true for declared actions, false otherwise", () => {
     const supports = sabhaMessageActions.supportsAction!;
-    for (const a of ["send", "edit", "unsend", "react", "reply", "thread-reply", "search"]) {
+    for (const a of ["send", "edit", "unsend", "react", "thread-reply", "search"]) {
       expect(
         supports({ action: a as ChannelMessageActionContext["action"] }),
       ).toBe(true);
     }
+    // `reply` is intentionally NOT in the supported set — agents should use
+    // `send` with replyToId or `thread-reply` (which fails closed when
+    // messageId is missing).
+    expect(supports({ action: "reply" as ChannelMessageActionContext["action"] })).toBe(false);
     expect(supports({ action: "kick" as ChannelMessageActionContext["action"] })).toBe(false);
   });
 

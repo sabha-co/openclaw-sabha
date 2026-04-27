@@ -1,7 +1,7 @@
 import type { ChannelDirectoryEntry } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { SabhaClient } from "./client.js";
-import { listEnabledSabhaAccounts } from "./accounts.js";
+import { resolveDefaultSabhaAccountId, resolveSabhaAccount } from "./accounts.js";
 
 /**
  * Channel directory adapter — surfaces Sabha rooms (as groups) and per-room
@@ -13,8 +13,15 @@ import { listEnabledSabhaAccounts } from "./accounts.js";
  * Sabha's bot API has no global users endpoint, so `listPeers` is omitted
  * — peers can only be discovered as members of a room the bot is in.
  *
- * Multi-account: scans every enabled account and dedupes by room id so
- * private rooms only one bot is in still surface, mirroring Mattermost.
+ * Multi-account scoping: when `accountId` is null we resolve through the
+ * channel's default account, NOT a union across all enabled accounts.
+ * Sabha can be cross-tenant — different `accounts` entries can have
+ * different `apiBaseUrl`s and therefore separate workspaces with
+ * non-overlapping room id namespaces. Unioning rooms across them would
+ * (a) collide bare numeric ids and (b) hand the agent room ids it cannot
+ * subsequently message because the message-action handler runs against
+ * one specific account. Scoping fixes both: ids are unique within the
+ * resolved workspace and round-trip cleanly to send/edit/react.
  */
 
 type DirectoryParams = {
@@ -24,20 +31,15 @@ type DirectoryParams = {
   limit?: number | null;
 };
 
-function buildClients(cfg: OpenClawConfig, accountId?: string | null): SabhaClient[] {
-  const accounts = listEnabledSabhaAccounts(cfg);
-  const filtered = accountId
-    ? accounts.filter((a) => a.accountId === accountId)
-    : accounts;
-  const seen = new Set<string>();
-  const clients: SabhaClient[] = [];
-  for (const account of filtered) {
-    if (!account.apiBaseUrl || !account.botKey) continue;
-    if (seen.has(account.botKey)) continue;
-    seen.add(account.botKey);
-    clients.push(new SabhaClient(account.apiBaseUrl, account.botKey));
-  }
-  return clients;
+function buildClient(
+  cfg: OpenClawConfig,
+  accountId?: string | null,
+): SabhaClient | null {
+  const resolvedId = accountId ?? resolveDefaultSabhaAccountId(cfg);
+  const account = resolveSabhaAccount({ cfg, accountId: resolvedId });
+  if (!account.enabled) return null;
+  if (!account.apiBaseUrl || !account.botKey) return null;
+  return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
 function lower(s: string | null | undefined): string {
@@ -47,32 +49,26 @@ function lower(s: string | null | undefined): string {
 export async function listSabhaDirectoryGroups(
   params: DirectoryParams,
 ): Promise<ChannelDirectoryEntry[]> {
-  const clients = buildClients(params.cfg, params.accountId);
-  if (!clients.length) return [];
+  const client = buildClient(params.cfg, params.accountId);
+  if (!client) return [];
+
+  let rooms;
+  try {
+    rooms = await client.listRooms();
+  } catch {
+    return [];
+  }
 
   const q = lower(params.query);
-  const seenIds = new Set<number>();
   const entries: ChannelDirectoryEntry[] = [];
-
-  for (const client of clients) {
-    let rooms;
-    try {
-      rooms = await client.listRooms();
-    } catch {
-      // Token may be revoked — try the next account.
-      continue;
-    }
-    for (const room of rooms) {
-      if (seenIds.has(room.id)) continue;
-      if (q && !lower(room.name).includes(q)) continue;
-      seenIds.add(room.id);
-      entries.push({
-        kind: "group" as const,
-        id: String(room.id),
-        name: room.name,
-        handle: room.name,
-      });
-    }
+  for (const room of rooms) {
+    if (q && !lower(room.name).includes(q)) continue;
+    entries.push({
+      kind: "group" as const,
+      id: String(room.id),
+      name: room.name,
+      handle: room.name,
+    });
   }
 
   return params.limit && params.limit > 0
@@ -93,23 +89,23 @@ export async function listSabhaDirectoryGroupMembers(
   const roomId = Number(params.groupId);
   if (!Number.isFinite(roomId)) return [];
 
-  const clients = buildClients(params.cfg, params.accountId);
-  for (const client of clients) {
-    try {
-      const members = await client.listMembers(roomId);
-      const entries = members.map((m) => ({
-        kind: "user" as const,
-        id: String(m.id),
-        name: m.name,
-        handle: m.name,
-      }));
-      return params.limit && params.limit > 0
-        ? entries.slice(0, params.limit)
-        : entries;
-    } catch {
-      // Bot isn't a member of this room — try the next bot account.
-      continue;
-    }
+  const client = buildClient(params.cfg, params.accountId);
+  if (!client) return [];
+
+  let members;
+  try {
+    members = await client.listMembers(roomId);
+  } catch {
+    return [];
   }
-  return [];
+
+  const entries = members.map((m) => ({
+    kind: "user" as const,
+    id: String(m.id),
+    name: m.name,
+    handle: m.name,
+  }));
+  return params.limit && params.limit > 0
+    ? entries.slice(0, params.limit)
+    : entries;
 }

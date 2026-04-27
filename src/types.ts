@@ -31,6 +31,20 @@ export type SabhaUser = {
   url: string;
 };
 
+/**
+ * Rich user profile returned by `GET /api/bots/users/:id` (the `show`
+ * endpoint). Adds bio + three optional social URL fields on top of the
+ * standard SabhaUser shape — see `app/views/api/bots/users/show.json.jbuilder`.
+ * The server treats unset fields as `null`; we keep them nullable here
+ * so the type matches the wire shape directly.
+ */
+export type SabhaUserDetail = SabhaUser & {
+  bio: string | null;
+  twitter_url: string | null;
+  linkedin_url: string | null;
+  personal_url: string | null;
+};
+
 export type SabhaMessageBody = {
   html: string;
   plain: string;

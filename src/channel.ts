@@ -220,6 +220,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "react",
           "thread-reply",
           "search",
+          "member-info",
         ],
         capabilities: [],
         schema: [],

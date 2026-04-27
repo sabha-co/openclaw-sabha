@@ -6,6 +6,7 @@ import type {
   SabhaThreadReply,
   SabhaMessageBody,
   SabhaUser,
+  SabhaUserDetail,
 } from "./types.js";
 import { markdownToSabhaRichText } from "./outbound/format.js";
 import {
@@ -336,6 +337,19 @@ export class SabhaClient {
     const qs = params.toString();
     const res = await this.fetch(`/users${qs ? `?${qs}` : ""}`);
     return (await res.json()) as SabhaUser[];
+  }
+
+  /**
+   * Fetch a single user's rich profile (bio + social URLs in addition to
+   * the standard SabhaUser fields). Server-scoped to users sharing a room
+   * with the bot — a 404 is returned if the bot can't reach the user, so
+   * callers should treat that as "not visible" rather than "doesn't exist."
+   *
+   * Server route: `GET /api/bots/users/:id`.
+   */
+  async getUser(userId: number): Promise<SabhaUserDetail> {
+    const res = await this.fetch(`/users/${userId}`);
+    return (await res.json()) as SabhaUserDetail;
   }
 
   /**

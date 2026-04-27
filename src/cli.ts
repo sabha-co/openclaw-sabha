@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { parseJoinUrl, selfRegisterBot } from "./setup-wizard.js";
 import {
+  listConfiguredSabhaAccountIds,
   listEnabledSabhaAccounts,
   resolveSabhaAccount,
   resolveDefaultSabhaAccountId,
@@ -94,6 +95,18 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
     )
     .action(async (options: { account?: string }) => {
       const cfg = getConfig();
+
+      // Empty-config short-circuit. `listSabhaAccountIds` (used by
+      // `listEnabledSabhaAccounts` below) returns the SDK's implicit
+      // ["default"] fallback even on a wholly-unconfigured install,
+      // and `enabled` defaults to true, so without this guard the
+      // doctor runs against an empty default and surfaces a misleading
+      // config-check failure instead of the actionable "nothing is
+      // configured" message.
+      if (!options.account && listConfiguredSabhaAccountIds(cfg).length === 0) {
+        console.log("No Sabha bot accounts configured.");
+        return;
+      }
 
       // Explicit `--account <id>` stays permissive: operators can probe
       // a disabled account on demand. The default fan-out only iterates

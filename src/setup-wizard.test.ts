@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   getSabhaAccountView,
   isDefaultSabhaAccount,
-  listConfiguredSabhaAccountIds,
+  listSabhaAccountIdsWithCredentials,
   sabhaSetupWizard,
   setSabhaAccountConfig,
 } from "./setup-wizard.js";
@@ -195,17 +195,17 @@ describe("sabhaSetupWizard.status.resolveConfigured", () => {
   });
 });
 
-describe("listConfiguredSabhaAccountIds", () => {
+describe("listSabhaAccountIdsWithCredentials", () => {
   it("returns an empty list when nothing is configured", () => {
-    expect(listConfiguredSabhaAccountIds(emptyCfg)).toEqual([]);
+    expect(listSabhaAccountIdsWithCredentials(emptyCfg)).toEqual([]);
   });
 
   it("returns the default id for a single-bot config", () => {
-    expect(listConfiguredSabhaAccountIds(singleBotCfg)).toEqual(["default"]);
+    expect(listSabhaAccountIdsWithCredentials(singleBotCfg)).toEqual(["default"]);
   });
 
   it("returns every named account plus the default when all have credentials", () => {
-    const ids = listConfiguredSabhaAccountIds(multiCfg);
+    const ids = listSabhaAccountIdsWithCredentials(multiCfg);
     expect(ids).toEqual(expect.arrayContaining(["default", "staging"]));
     expect(ids.length).toBe(2);
   });
@@ -226,7 +226,7 @@ describe("listConfiguredSabhaAccountIds", () => {
     // `partial` inherits baseUrl + apiBaseUrl from the base section but
     // has no botKey (botKey lives in accounts.default, not at the base
     // level), so it does not appear as configured.
-    expect(listConfiguredSabhaAccountIds(cfg)).toEqual(["default"]);
+    expect(listSabhaAccountIdsWithCredentials(cfg)).toEqual(["default"]);
   });
 });
 
@@ -269,8 +269,8 @@ describe("sabhaSetupWizard.resolveAccountIdForConfigure", () => {
 
   // The SDK passes this helper through to resolveAccountIdForConfigure,
   // but our wizard implementation never calls it — we use
-  // `listConfiguredSabhaAccountIds` directly. Return a stub so the typed
-  // signature is happy.
+  // `listSabhaAccountIdsWithCredentials` directly. Return a stub so the
+  // typed signature is happy.
   const listAccountIds = (_cfg: Cfg) => ["default"];
 
   it("honors an explicit accountOverride without prompting", async () => {

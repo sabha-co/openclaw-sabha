@@ -458,10 +458,17 @@ export function getSabhaAccountView(
 }
 
 /**
- * Return every bot account id that currently has both a `baseUrl` and a
- * `botKey` persisted (via its own entry or via the base layered through
- * `mergeSabhaAccountConfig`). Powers the multi-bot selector's Edit list
+ * Return every bot account id that has full credentials persisted —
+ * `baseUrl`, `apiBaseUrl`, and `botKey` all set, either via its own
+ * `accounts.<id>` entry or via the base layered through
+ * `mergeSabhaAccountConfig`. Powers the multi-bot selector's Edit list
  * and the "Keep existing bot?" shortcut in `finalize`.
+ *
+ * Distinct from `accounts.ts`'s `listConfiguredSabhaAccountIds`, which
+ * only checks key presence in the `accounts` map (no credential check,
+ * no base-layer awareness). The wizard needs the richer credential view
+ * because its UX hinges on "is this slot ready to use?", not just "did
+ * the operator type something here?".
  *
  * `listSabhaAccountIds` includes the SDK's implicit `default` fallback
  * even when no explicit `accounts` map exists, so on a multi-bot config
@@ -469,7 +476,7 @@ export function getSabhaAccountView(
  * (its credentials may live at the channel root, layered in via the
  * base block).
  */
-export function listConfiguredSabhaAccountIds(
+export function listSabhaAccountIdsWithCredentials(
   cfg: OpenClawConfig,
 ): string[] {
   const ids: string[] = [];
@@ -557,7 +564,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const override = accountOverride?.trim();
     if (override) return normalizeAccountId(override);
 
-    const configured = listConfiguredSabhaAccountIds(cfg);
+    const configured = listSabhaAccountIdsWithCredentials(cfg);
     if (configured.length === 0) return defaultAccountId;
 
     const choice = await prompter.select<string>({
@@ -651,7 +658,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     // trigger a misleading shortcut against a bot that hasn't been
     // configured yet.
     const isAlreadyConfigured =
-      listConfiguredSabhaAccountIds(cfg).includes(
+      listSabhaAccountIdsWithCredentials(cfg).includes(
         accountId ? normalizeAccountId(accountId) : DEFAULT_ACCOUNT_ID,
       );
 

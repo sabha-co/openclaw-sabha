@@ -69,27 +69,28 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     //
     // Closes the silent-leak footgun where base-level creds would be
     // inherited into every named account that doesn't override them.
-    {
-      const before = api.runtime.config.loadConfig();
-      const after = moveSingleAccountChannelSectionToDefaultAccount({
-        cfg: before,
-        channelKey: "sabha",
-      });
-      if (after !== before) {
-        api.logger.info?.(
-          "[sabha] Migrated base-level credentials into channels.sabha.accounts.default",
+    const before = api.runtime.config.loadConfig();
+    const migratedCfg = moveSingleAccountChannelSectionToDefaultAccount({
+      cfg: before,
+      channelKey: "sabha",
+    });
+    if (migratedCfg !== before) {
+      api.logger.info?.(
+        "[sabha] Migrated base-level credentials into channels.sabha.accounts.default",
+      );
+      // Fire-and-forget persistence. We don't await because `registerFull`
+      // is invoked synchronously by the SDK loader (no await), so blocking
+      // here can't actually delay gateway startup — and the in-process
+      // checks below use `migratedCfg` directly instead of round-tripping
+      // through `loadConfig()`, so they don't depend on the write
+      // completing. If the write fails (read-only mount?) the operator
+      // sees the error in logs; the resolver's base→default layering
+      // means runtime behavior is correct from either shape.
+      void api.runtime.config.writeConfigFile(migratedCfg).catch((err) => {
+        api.logger.error?.(
+          `[sabha] Failed to persist migrated config: ${err}`,
         );
-        // Fire-and-forget: the file write is async but the rest of
-        // startup reads from runtime config, which the SDK refreshes
-        // on its own loop. If the write fails (read-only mount?) the
-        // operator sees the error in logs and falls back to the
-        // pre-migration shape, which is still valid.
-        void api.runtime.config.writeConfigFile(after).catch((err) => {
-          api.logger.error?.(
-            `[sabha] Failed to persist migrated config: ${err}`,
-          );
-        });
-      }
+      });
     }
 
     const getConfig = () => api.runtime.config.loadConfig();
@@ -99,11 +100,13 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
     // base block has no credentials either. The SDK's listAccountIds returns
     // ["default"] as a fallback, so we can't use that for the warning;
     // listConfiguredSabhaAccountIds returns the truly-configured set.
-    const startupCfg = getConfig();
+    //
+    // Uses `migratedCfg` (the in-memory post-migration shape) rather than
+    // re-reading via `loadConfig()` so we don't race the on-disk write.
     if (
-      startupCfg.channels?.sabha &&
-      listConfiguredSabhaAccountIds(startupCfg).length === 0 &&
-      !resolveSabhaAccount({ cfg: startupCfg }).botKey
+      migratedCfg.channels?.sabha &&
+      listConfiguredSabhaAccountIds(migratedCfg).length === 0 &&
+      !resolveSabhaAccount({ cfg: migratedCfg }).botKey
     ) {
       api.logger.warn(
         "[sabha] channels.sabha is set but has no accounts entries and no base-level botKey — " +

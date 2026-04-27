@@ -4,14 +4,20 @@ import { SabhaClient } from "./client.js";
 import { resolveDefaultSabhaAccountId, resolveSabhaAccount } from "./accounts.js";
 
 /**
- * Channel directory adapter — surfaces Sabha rooms (as groups) and per-room
- * members to OpenClaw's directory layer. Replaces `sabha_list_rooms` and
- * `sabha_list_members` agent tools so the same data flows through the
- * canonical SDK slot peers use (Slack/Mattermost). Cross-channel agent
- * verbs ("list conversations", "members of channel X") work uniformly.
+ * Channel directory adapter — surfaces Sabha rooms (as groups), per-room
+ * members, and reachable users (peers) to OpenClaw's directory layer.
+ * Replaces `sabha_list_rooms` / `sabha_list_members` agent tools and
+ * routes through the canonical SDK slot peers use (Slack/Mattermost).
+ * Cross-channel agent verbs ("list conversations", "members of channel X",
+ * "find user named …") work uniformly.
  *
- * Sabha's bot API has no global users endpoint, so `listPeers` is omitted
- * — peers can only be discovered as members of a room the bot is in.
+ * `listPeers` hits `GET /api/bots/users` (server-side scoped to "users
+ * sharing rooms with the bot" via `User.sharing_rooms_with`). That's
+ * narrower than a workspace user list, but it's the right scope for a
+ * directory: every returned user is reachable, and bots inherit the
+ * server's privacy rule that they don't double as workspace people search.
+ * `listPeersLive` hits the autocompletable variant (`?query=` matching,
+ * limit 20) for autocomplete-style UX where freshness > completeness.
  *
  * Multi-account scoping: when `accountId` is null we resolve through the
  * channel's default account, NOT a union across all enabled accounts.
@@ -70,6 +76,78 @@ export async function listSabhaDirectoryGroups(
       handle: room.name,
     });
   }
+
+  return params.limit && params.limit > 0
+    ? entries.slice(0, params.limit)
+    : entries;
+}
+
+/**
+ * Page size for peer listing. The server caps at 100; we ask for the cap
+ * so a single round-trip covers most workspaces. Larger workspaces will
+ * show only the first 100 peers — pagination would need a SDK contract
+ * extension and isn't wired here.
+ */
+const PEERS_PAGE_SIZE = 100;
+
+export async function listSabhaDirectoryPeers(
+  params: DirectoryParams,
+): Promise<ChannelDirectoryEntry[]> {
+  const client = buildClient(params.cfg, params.accountId);
+  if (!client) return [];
+
+  let users;
+  try {
+    users = await client.listUsers({ perPage: PEERS_PAGE_SIZE });
+  } catch {
+    return [];
+  }
+
+  const q = lower(params.query);
+  const entries: ChannelDirectoryEntry[] = [];
+  for (const user of users) {
+    if (user.bot) continue;
+    if (q && !lower(user.name).includes(q)) continue;
+    entries.push({
+      kind: "user" as const,
+      id: String(user.id),
+      name: user.name,
+      handle: user.name,
+    });
+  }
+
+  return params.limit && params.limit > 0
+    ? entries.slice(0, params.limit)
+    : entries;
+}
+
+/**
+ * Live peer search via the autocompletable endpoint. Faster path with the
+ * server's prefix matcher; default cap is the server's limit (20).
+ */
+export async function listSabhaDirectoryPeersLive(
+  params: DirectoryParams,
+): Promise<ChannelDirectoryEntry[]> {
+  const client = buildClient(params.cfg, params.accountId);
+  if (!client) return [];
+
+  let users;
+  try {
+    users = await client.searchUsers({
+      query: params.query?.trim() || undefined,
+    });
+  } catch {
+    return [];
+  }
+
+  const entries = users
+    .filter((u) => !u.bot)
+    .map((u) => ({
+      kind: "user" as const,
+      id: String(u.id),
+      name: u.name,
+      handle: u.name,
+    }));
 
   return params.limit && params.limit > 0
     ? entries.slice(0, params.limit)

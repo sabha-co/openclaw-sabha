@@ -14,6 +14,23 @@ export type SabhaMember = {
   role: "administrator" | "moderator" | "member" | "bot";
 };
 
+/**
+ * User entry returned by `GET /api/bots/users` and the autocompletable
+ * variant. Server JSON shape (per `app/views/api/bots/users/_user.json.jbuilder`):
+ * `{ id, name, role, bot, url }`. Scoped server-side to "users sharing rooms
+ * with the bot" — narrower than a workspace user list, but the right scope
+ * for an agent-visible directory: rooms the bot can't reach are filtered
+ * out, so every returned user is potentially DM-able or already a peer in
+ * a shared room.
+ */
+export type SabhaUser = {
+  id: number;
+  name: string;
+  role: SabhaMember["role"];
+  bot: boolean;
+  url: string;
+};
+
 export type SabhaMessageBody = {
   html: string;
   plain: string;

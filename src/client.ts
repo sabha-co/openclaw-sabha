@@ -5,6 +5,7 @@ import type {
   SabhaSearchResult,
   SabhaThreadReply,
   SabhaMessageBody,
+  SabhaUser,
 } from "./types.js";
 import { markdownToSabhaRichText } from "./outbound/format.js";
 import {
@@ -311,6 +312,52 @@ export class SabhaClient {
       `/rooms/${roomId}/members/${userId}`,
       { method: "DELETE" },
     );
+  }
+
+  // --- Users (directory) ---
+
+  /**
+   * List users reachable to this bot (i.e. sharing at least one room with it),
+   * paginated. When `roomId` is set, scopes to that room's members. Server
+   * caps `perPage` at 100 and clamps `page` to >= 1; we forward whatever
+   * the caller passes and let the server enforce.
+   *
+   * Server route: `GET /api/bots/users[?room_id=&page=&per_page=]`.
+   */
+  async listUsers(opts?: {
+    roomId?: number;
+    page?: number;
+    perPage?: number;
+  }): Promise<SabhaUser[]> {
+    const params = new URLSearchParams();
+    if (opts?.roomId != null) params.set("room_id", String(opts.roomId));
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.perPage != null) params.set("per_page", String(opts.perPage));
+    const qs = params.toString();
+    const res = await this.fetch(`/users${qs ? `?${qs}` : ""}`);
+    return (await res.json()) as SabhaUser[];
+  }
+
+  /**
+   * Autocompletable user search — server-side fast path designed for
+   * autocomplete UX (limit 20). When `query` is set, server runs
+   * `User.matching` (prefix-style match). Otherwise returns recent posters
+   * for the room (when `roomId` set) or the default ordered list.
+   *
+   * Server route: `GET /api/bots/autocompletable/users[?query=&room_id=]`.
+   */
+  async searchUsers(opts?: {
+    query?: string;
+    roomId?: number;
+  }): Promise<SabhaUser[]> {
+    const params = new URLSearchParams();
+    if (opts?.query) params.set("query", opts.query);
+    if (opts?.roomId != null) params.set("room_id", String(opts.roomId));
+    const qs = params.toString();
+    const res = await this.fetch(
+      `/autocompletable/users${qs ? `?${qs}` : ""}`,
+    );
+    return (await res.json()) as SabhaUser[];
   }
 
   // --- DMs ---

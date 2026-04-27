@@ -226,18 +226,22 @@ src/
                         same reason.
 
   directory.ts          Channel directory adapter helpers
-                        listSabhaDirectoryGroups (rooms) and
-                        listSabhaDirectoryGroupMembers. No listPeers
-                        — Sabha's bot API has no global users
-                        endpoint. Wired into `directory:` slot in
-                        channel.ts via createChannelDirectoryAdapter.
-                        When accountId is null, scopes to the resolved
-                        default account rather than unioning every
-                        enabled account: Sabha can be cross-tenant
-                        (different apiBaseUrls = separate workspaces
-                        with overlapping room id namespaces), so a
-                        union would collide bare ids and hand the
-                        agent rooms it cannot subsequently message.
+                        listSabhaDirectoryGroups (rooms),
+                        listSabhaDirectoryGroupMembers (per-room),
+                        listSabhaDirectoryPeers (bot-reachable users
+                        via GET /api/bots/users — server-side scoped
+                        to users sharing rooms with the bot), and
+                        listSabhaDirectoryPeersLive (autocompletable
+                        variant for autocomplete UX). Wired into
+                        `directory:` slot in channel.ts via
+                        createChannelDirectoryAdapter. When accountId
+                        is null, scopes to the resolved default
+                        account rather than unioning every enabled
+                        account: Sabha can be cross-tenant (different
+                        apiBaseUrls = separate workspaces with
+                        overlapping room id namespaces), so a union
+                        would collide bare ids and hand the agent
+                        rooms it cannot subsequently message.
 
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via

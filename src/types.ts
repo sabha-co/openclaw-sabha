@@ -187,7 +187,7 @@ export type SabhaRoomConfig = {
 
 export type SabhaConfig = {
   enabled?: boolean;
-  // Shared base fields that per-bot overrides in `botAccounts` layer onto.
+  // Shared base fields that per-account overrides in `accounts` layer onto.
   baseUrl?: string;
   // Bot API base (e.g. `https://sabha.co/1000006/api/bots`). Returned by
   // the server's registration response; `baseUrl` is the site root used by
@@ -195,7 +195,7 @@ export type SabhaConfig = {
   // bearer-auth HTTP call goes through `apiBaseUrl`.
   apiBaseUrl?: string;
   botKey?: string;
-  // Per-bot webhook HMAC secret returned at registration. Captured
+  // Per-account webhook HMAC secret returned at registration. Captured
   // for forward-compat; signature verification lands in a future
   // release.
   webhookSecret?: string;
@@ -214,13 +214,14 @@ export type SabhaConfig = {
   // Per-room config. Keys are room ids (as strings). Used for
   // per-room system prompts that customize agent behavior.
   rooms?: Record<string, SabhaRoomConfig>;
-  // Multi-bot-account map. Each entry is a per-bot override layered over
-  // the base fields above.
-  botAccounts?: Record<string, Partial<Omit<SabhaConfig, "botAccounts" | "defaultBotAccount">>>;
-  defaultBotAccount?: string;
+  // Multi-account map. Each entry is a per-account override layered over
+  // the base fields above. Canonical SDK key — matches Feishu / Slack /
+  // Discord.
+  accounts?: Record<string, Partial<Omit<SabhaConfig, "accounts" | "defaultAccount">>>;
+  defaultAccount?: string;
 };
 
-export type { ResolvedBotAccount } from "./bot-accounts.js";
+export type { ResolvedSabhaAccount } from "./accounts.js";
 
 // --- Delivery payload (from reply pipeline to deliver callback) ---
 

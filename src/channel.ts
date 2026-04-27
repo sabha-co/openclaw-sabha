@@ -10,21 +10,26 @@ import {
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
 
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 import {
-  listBotAccountIds,
-  resolveBotAccount,
-  resolveBotAccountForSdk,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listSabhaAccountIds,
+  resolveSabhaAccount,
+  resolveSabhaAccountForSdk,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
+import {
+  sabhaNamedAccountPromotionKeys,
+  sabhaSetupAdapter,
+  sabhaSingleAccountKeysToMove,
+} from "./setup-contract.js";
 import { monitorSabha } from "./monitor.js";
 import { fetchGuardedAttachment } from "./ssrf-guard.js";
 
-const SabhaBotAccountSchema = z.object({
+const SabhaAccountSchema = z.object({
   enabled: z.boolean().optional(),
   baseUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),
@@ -45,10 +50,10 @@ const SabhaRoomConfigSchema = z.object({
   systemPrompt: z.string().optional(),
 });
 
-const SabhaConfigSchema = SabhaBotAccountSchema.extend({
+const SabhaConfigSchema = SabhaAccountSchema.extend({
   rooms: z.record(z.string(), SabhaRoomConfigSchema).optional(),
-  botAccounts: z.record(z.string(), SabhaBotAccountSchema.partial()).optional(),
-  defaultBotAccount: z.string().optional(),
+  accounts: z.record(z.string(), SabhaAccountSchema.partial()).optional(),
+  defaultAccount: z.string().optional(),
 });
 
 const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
@@ -121,7 +126,7 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
   },
 });
 
-function getClient(account: ResolvedBotAccount): SabhaClient {
+function getClient(account: ResolvedSabhaAccount): SabhaClient {
   return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
@@ -138,7 +143,7 @@ function waitForAbort(abortSignal: AbortSignal): Promise<void> {
   });
 }
 
-export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
+export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
   base: {
     id: "sabha",
     setupWizard: sabhaSetupWizard,
@@ -164,10 +169,21 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
       groupManagement: true,
       blockStreaming: true,
     },
+    // Setup-promotion contract for the SDK's
+    // `moveSingleAccountChannelSectionToDefaultAccount` migration shim
+    // (called from `index.ts:registerFull`). Without these arrays, the
+    // shim only promotes keys in the SDK's static common set
+    // (`webhookSecret`, `dmPolicy`, `allowFrom`) — none of which include
+    // Sabha's actual credentials. See `src/setup-contract.ts`.
+    setup: {
+      ...sabhaSetupAdapter,
+      singleAccountKeysToMove: sabhaSingleAccountKeysToMove,
+      namedAccountPromotionKeys: sabhaNamedAccountPromotionKeys,
+    },
     config: {
-      resolveAccount: resolveBotAccountForSdk,
-      listAccountIds: listBotAccountIds,
-      defaultAccountId: resolveDefaultBotAccountId,
+      resolveAccount: resolveSabhaAccountForSdk,
+      listAccountIds: listSabhaAccountIds,
+      defaultAccountId: resolveDefaultSabhaAccountId,
       // Per-account read-only snapshot for the OpenClaw doctor / audit-channel
       // layer. Returns the tri-state credential status and full merged config
       // shape that peers (Slack/Discord/Telegram) ship — see `src/account-inspect.ts`
@@ -205,7 +221,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         channelLabel: "Sabha",
       }),
       messageToolHints: (params: { cfg: OpenClawConfig }) => {
-        const account = resolveBotAccount({ cfg: params.cfg });
+        const account = resolveSabhaAccount({ cfg: params.cfg });
         return [
           // Platform context — gives the agent a working mental model of
           // Sabha's structure. IMPORTANT: Kimi/GPT-style models default to
@@ -261,15 +277,15 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
     },
     gateway: {
       startAccount: async (ctx) => {
-        const botAccount = ctx.account;
-        const logPrefix = `[sabha:${botAccount.accountId}]`;
-        const isDefaultAccount = botAccount.accountId === DEFAULT_ACCOUNT_ID;
+        const account = ctx.account;
+        const logPrefix = `[sabha:${account.accountId}]`;
+        const isDefaultAccount = account.accountId === DEFAULT_ACCOUNT_ID;
 
         // Skip disabled accounts entirely — the SDK still calls
         // startAccount for every listed account, not just enabled ones,
         // so we defend here to avoid opening a WebSocket as a disabled
         // bot identity.
-        if (!botAccount.enabled) {
+        if (!account.enabled) {
           ctx.log?.info?.(
             `${logPrefix} Disabled in config — waiting for shutdown`,
           );
@@ -279,12 +295,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
 
         // Webhook mode uses a single plugin-level HTTP route, which
         // cannot disambiguate events for more than one bot account.
-        // Fail-closed for named accounts so a multi-bot config cannot
+        // Fail-closed for named accounts so a multi-account config cannot
         // silently misroute events through the default bot's client
         // (wrong botId for mention detection, wrong credentials for
-        // replies). Multi-bot webhook routing will require a path
+        // replies). Multi-account webhook routing will require a path
         // prefix scheme — deferred to v1.1.
-        if (botAccount.connectionMode === "webhook" && !isDefaultAccount) {
+        if (account.connectionMode === "webhook" && !isDefaultAccount) {
           ctx.log?.error?.(
             `${logPrefix} Webhook mode is only supported for the default bot account. ` +
               `Named accounts must use connectionMode: "websocket". Skipping this account.`,
@@ -294,16 +310,16 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         }
 
         const shouldMonitor =
-          botAccount.connectionMode === "websocket" &&
-          botAccount.baseUrl &&
-          botAccount.apiBaseUrl &&
-          botAccount.botKey &&
+          account.connectionMode === "websocket" &&
+          account.baseUrl &&
+          account.apiBaseUrl &&
+          account.botKey &&
           ctx.channelRuntime;
 
         if (shouldMonitor) {
           ctx.log?.info?.(`${logPrefix} Starting WebSocket monitor`);
           await monitorSabha({
-            botAccount,
+            account,
             config: ctx.cfg,
             runtime: ctx.channelRuntime!,
             abortSignal: ctx.abortSignal,
@@ -314,7 +330,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
           });
         } else {
           ctx.log?.info?.(
-            `${logPrefix} ${botAccount.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
+            `${logPrefix} ${account.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
           );
           await waitForAbort(ctx.abortSignal);
         }
@@ -325,18 +341,20 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
   security: {
     dm: {
       channelKey: "sabha",
-      resolvePolicy: (account: ResolvedBotAccount) => account.dmPolicy,
-      resolveAllowFrom: (account: ResolvedBotAccount) => account.allowFrom,
+      resolvePolicy: (account: ResolvedSabhaAccount) => account.dmPolicy,
+      resolveAllowFrom: (account: ResolvedSabhaAccount) => account.allowFrom,
       defaultPolicy: "open",
     },
   },
 
   threading: {
-    resolveReplyToMode: ({ cfg }) => {
-      const section = (cfg.channels as Record<string, unknown>)?.sabha as
-        | { replyToMode?: string }
-        | undefined;
-      return (section?.replyToMode as "off" | "first" | "all") ?? "first";
+    // Per-account read so the SDK's reply planner sees the same value
+    // as the plugin's deliver callback (monitor.ts / index.ts both
+    // resolve `account.replyToMode` for the same decision). Reading the
+    // base block alone would silently ignore per-account overrides.
+    resolveReplyToMode: ({ cfg, accountId }) => {
+      const account = resolveSabhaAccount({ cfg, accountId });
+      return account.replyToMode;
     },
   },
 
@@ -344,9 +362,9 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
     attachedResults: {
       channel: "sabha",
       async sendText(ctx) {
-        const account = resolveBotAccount({
+        const account = resolveSabhaAccount({
           cfg: ctx.cfg,
-          botAccountId: ctx.accountId,
+          accountId: ctx.accountId,
         });
         const client = getClient(account);
         const roomId = Number(ctx.to);
@@ -364,9 +382,9 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         return { messageId: messageId != null ? String(messageId) : "" };
       },
       async sendMedia(ctx) {
-        const account = resolveBotAccount({
+        const account = resolveSabhaAccount({
           cfg: ctx.cfg,
-          botAccountId: ctx.accountId,
+          accountId: ctx.accountId,
         });
         const client = getClient(account);
         const roomId = Number(ctx.to);
@@ -374,7 +392,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedBotAccount>({
         if (ctx.mediaUrl) {
           const fetched = await fetchGuardedAttachment({
             url: ctx.mediaUrl,
-            botAccount: account,
+            account,
           });
           const blob = new Blob(
             [new Uint8Array(fetched.buffer)],

@@ -1,11 +1,16 @@
 import type { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { parseJoinUrl, selfRegisterBot } from "./setup-wizard.js";
 import {
-  listEnabledBotAccounts,
-  resolveBotAccount,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  parseJoinUrl,
+  selfRegisterBot,
+  setSabhaAccountConfig,
+} from "./setup-wizard.js";
+import {
+  listConfiguredSabhaAccountIds,
+  listEnabledSabhaAccounts,
+  resolveSabhaAccount,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 import { runDoctor, formatDoctorReport } from "./doctor.js";
 
 export type RegisterSabhaCliOpts = {
@@ -48,28 +53,24 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
         const resolvedApiBaseUrl =
           result.api_base_url || `${resolvedBaseUrl}/api/bots`;
 
+        // Write into the canonical multi-account shape
+        // (`channels.sabha.accounts.default.*`) via the wizard's setter.
+        // The base block keeps `enabled: true` automatically; the patch
+        // only carries per-account fields. Matches what
+        // `sabhaSetupWizard.finalize` writes during `openclaw configure`,
+        // so the two setup paths stay in lock-step.
         const cfg = getConfig();
-        const channels = (cfg.channels ?? {}) as Record<string, unknown>;
-        const existing = (channels.sabha ?? {}) as Record<string, unknown>;
-        const nextCfg = {
-          ...cfg,
-          channels: {
-            ...channels,
-            sabha: {
-              ...existing,
-              enabled: true,
-              baseUrl: resolvedBaseUrl,
-              apiBaseUrl: resolvedApiBaseUrl,
-              botKey: result.bot_key,
-              webhookSecret: result.webhook_secret,
-              websocketUrl: result.websocket_url,
-            },
-          },
-        };
+        const nextCfg = setSabhaAccountConfig(cfg, undefined, {
+          baseUrl: resolvedBaseUrl,
+          apiBaseUrl: resolvedApiBaseUrl,
+          botKey: result.bot_key,
+          webhookSecret: result.webhook_secret,
+          websocketUrl: result.websocket_url,
+        });
         await writeConfigFile(nextCfg);
 
         console.log(`✓ Bot "${result.name}" registered`);
-        console.log(`✓ Config saved to channels.sabha`);
+        console.log(`✓ Config saved to channels.sabha.accounts.default`);
         console.log(`  baseUrl:    ${resolvedBaseUrl}`);
         console.log(`  apiBaseUrl: ${resolvedApiBaseUrl}`);
         console.log(`  botKey:     ${result.bot_key.replace(/^(\d+-).+$/, "$1***")}`);
@@ -95,13 +96,40 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
     .action(async (options: { account?: string }) => {
       const cfg = getConfig();
 
+      // Empty-config short-circuit. `listSabhaAccountIds` (used by
+      // `listEnabledSabhaAccounts` below) returns the SDK's implicit
+      // ["default"] fallback even on a wholly-unconfigured install,
+      // and `enabled` defaults to true, so without this guard the
+      // doctor runs against an empty default and surfaces a misleading
+      // config-check failure instead of the actionable "nothing is
+      // configured" message. We use `listConfiguredSabhaAccountIds`,
+      // which only counts explicit `accounts.<id>` entries.
+      //
+      // The migration shim in `registerFull` promotes base-level creds
+      // into `accounts.default` at gateway startup, but the CLI is
+      // registered via `registerCliMetadata` and never runs that shim.
+      // So a pre-migration config (`channels.sabha.botKey` at base
+      // level, no `accounts` map) would hit this guard with
+      // `listConfiguredSabhaAccountIds` returning [] even though the
+      // resolver's base→default layering yields a working bot. The
+      // `&& !resolveSabhaAccount({cfg}).botKey` clause covers that
+      // case — same pattern as the startup warning in `index.ts`.
+      if (
+        !options.account &&
+        listConfiguredSabhaAccountIds(cfg).length === 0 &&
+        !resolveSabhaAccount({ cfg }).botKey
+      ) {
+        console.log("No Sabha bot accounts configured.");
+        return;
+      }
+
       // Explicit `--account <id>` stays permissive: operators can probe
       // a disabled account on demand. The default fan-out only iterates
       // *enabled* accounts so a config with `enabled: false` entries
       // doesn't surface expected failures as health-check noise.
       const targetIds = options.account
         ? [options.account]
-        : listEnabledBotAccounts(cfg).map((a) => a.accountId);
+        : listEnabledSabhaAccounts(cfg).map((a) => a.accountId);
 
       if (!options.account) {
         if (targetIds.length === 0) {
@@ -110,14 +138,14 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
         }
         // Report the default id once so operators can see which config
         // the CLI resolved in the absence of `--account`.
-        const defaultId = resolveDefaultBotAccountId(cfg);
+        const defaultId = resolveDefaultSabhaAccountId(cfg);
         console.log(`(default bot account: ${defaultId})\n`);
       }
 
       let anyFailed = false;
       for (const id of targetIds) {
-        const botAccount = resolveBotAccount({ cfg, botAccountId: id });
-        const report = await runDoctor({ botAccount });
+        const account = resolveSabhaAccount({ cfg, accountId: id });
+        const report = await runDoctor({ account });
         console.log(formatDoctorReport(report));
         console.log("");
         if (!report.allPassed) anyFailed = true;

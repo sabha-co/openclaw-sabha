@@ -18,7 +18,7 @@ import type {
   SabhaBoostDeletedPayload,
   SabhaUserCreatedPayload,
   SabhaUserDeletedPayload,
-  ResolvedBotAccount,
+  ResolvedSabhaAccount,
 } from "./types.js";
 import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 
@@ -57,7 +57,7 @@ function makeChannelRuntime(): PluginRuntime["channel"] {
   } as unknown as PluginRuntime["channel"];
 }
 
-const baseAccount: ResolvedBotAccount = {
+const baseAccount: ResolvedSabhaAccount = {
   accountId: "default",
   enabled: true,
   baseUrl: "https://sabha.co/1000006",

@@ -95,7 +95,7 @@
               }
             }
           },
-          "botAccounts": {
+          "accounts": {
             "type": "object",
             "description": "Named bot accounts layered over the base config for multi-bot setups.",
             "propertyNames": { "type": "string" },
@@ -132,7 +132,7 @@
               }
             }
           },
-          "defaultBotAccount": {
+          "defaultAccount": {
             "type": "string",
             "description": "Bot account id used when no explicit account is passed. Defaults to the alphabetic-first entry."
           }

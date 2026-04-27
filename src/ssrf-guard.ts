@@ -5,7 +5,7 @@ import {
   type FetchLike,
 } from "openclaw/plugin-sdk/media-runtime";
 
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 
 // Attachment fetches reach arbitrary URLs supplied by agents, Sabha signed
 // URLs, or outbound media payloads. Route them through the SDK guard so
@@ -20,14 +20,14 @@ import type { ResolvedBotAccount } from "./bot-accounts.js";
 // while one split-horizon DNS account opts in.
 
 type AccountPolicyInput = Pick<
-  ResolvedBotAccount,
+  ResolvedSabhaAccount,
   "allowPrivateAttachmentHosts"
 >;
 
 export function resolveAttachmentSsrfPolicy(
-  botAccount: AccountPolicyInput,
+  account: AccountPolicyInput,
 ): SsrFPolicy | undefined {
-  if (botAccount.allowPrivateAttachmentHosts === true) {
+  if (account.allowPrivateAttachmentHosts === true) {
     return ssrfPolicyFromAllowPrivateNetwork(true);
   }
   return undefined;
@@ -35,7 +35,7 @@ export function resolveAttachmentSsrfPolicy(
 
 export type FetchGuardedAttachmentOptions = {
   url: string;
-  botAccount: AccountPolicyInput;
+  account: AccountPolicyInput;
   fetchImpl?: FetchLike;
   maxBytes?: number;
 };
@@ -43,7 +43,7 @@ export type FetchGuardedAttachmentOptions = {
 export async function fetchGuardedAttachment(
   options: FetchGuardedAttachmentOptions,
 ): Promise<{ buffer: Buffer; contentType?: string; fileName?: string }> {
-  const ssrfPolicy = resolveAttachmentSsrfPolicy(options.botAccount);
+  const ssrfPolicy = resolveAttachmentSsrfPolicy(options.account);
   return await fetchRemoteMedia({
     url: options.url,
     fetchImpl: options.fetchImpl,

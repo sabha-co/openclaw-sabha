@@ -1,4 +1,4 @@
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 import { SabhaClient, SabhaApiError } from "./client.js";
 import { createSabhaRetryRunner } from "./retry.js";
 import { buildWebSocketUrl } from "./monitor.js";
@@ -40,13 +40,13 @@ export type DoctorCheck = {
 };
 
 export type DoctorReport = {
-  botAccountId: string;
+  accountId: string;
   checks: DoctorCheck[];
   allPassed: boolean;
 };
 
 export type RunDoctorOpts = {
-  botAccount: ResolvedBotAccount;
+  account: ResolvedSabhaAccount;
   /** Timeout per WebSocket handshake step, in milliseconds. Default 5s. */
   wsTimeoutMs?: number;
   /** Overall timeout for the API probe, in milliseconds. Default 10s. */
@@ -59,11 +59,11 @@ const DEFAULT_WS_TIMEOUT_MS = 5_000;
 const DEFAULT_API_TIMEOUT_MS = 10_000;
 
 export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
-  const { botAccount } = opts;
+  const { account } = opts;
   const checks: DoctorCheck[] = [];
 
   // --- Check 1: Config ---
-  const configCheck = validateConfig(botAccount);
+  const configCheck = validateConfig(account);
   checks.push(configCheck);
 
   // If config is broken the downstream checks can't meaningfully run.
@@ -75,26 +75,26 @@ export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
       status: "skip",
       message: "Skipped: config check failed.",
     });
-    if (botAccount.connectionMode === "websocket") {
+    if (account.connectionMode === "websocket") {
       checks.push({
         name: "WebSocket subscribe",
         status: "skip",
         message: "Skipped: config check failed.",
       });
     }
-    return finalize(botAccount.accountId, checks);
+    return finalize(account.accountId, checks);
   }
 
   // --- Check 2: API reachable ---
   checks.push(
-    await probeApi(botAccount, opts.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS),
+    await probeApi(account, opts.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS),
   );
 
   // --- Check 3 or 4: Transport ---
-  if (botAccount.connectionMode === "websocket") {
+  if (account.connectionMode === "websocket") {
     checks.push(
       await probeWebSocket(
-        botAccount,
+        account,
         opts.wsTimeoutMs ?? DEFAULT_WS_TIMEOUT_MS,
         opts.webSocketFactory ?? defaultWebSocketFactory,
       ),
@@ -108,24 +108,24 @@ export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
     });
   }
 
-  return finalize(botAccount.accountId, checks);
+  return finalize(account.accountId, checks);
 }
 
 function finalize(
-  botAccountId: string,
+  accountId: string,
   checks: DoctorCheck[],
 ): DoctorReport {
   const allPassed = checks.every(
     (c) => c.status === "ok" || c.status === "skip" || c.status === "warn",
   );
-  return { botAccountId, checks, allPassed };
+  return { accountId, checks, allPassed };
 }
 
 // ---------------------------------------------------------------------------
 // Check 1: Config
 // ---------------------------------------------------------------------------
 
-function validateConfig(account: ResolvedBotAccount): DoctorCheck {
+function validateConfig(account: ResolvedSabhaAccount): DoctorCheck {
   const problems: string[] = [];
   if (!account.baseUrl) problems.push("baseUrl is empty");
   if (!account.apiBaseUrl) problems.push("apiBaseUrl is empty");
@@ -159,7 +159,7 @@ function validateConfig(account: ResolvedBotAccount): DoctorCheck {
 // ---------------------------------------------------------------------------
 
 async function probeApi(
-  account: ResolvedBotAccount,
+  account: ResolvedSabhaAccount,
   timeoutMs: number,
 ): Promise<DoctorCheck> {
   // Operator running `sabha doctor` expects immediate feedback. Override
@@ -209,7 +209,7 @@ async function probeApi(
 const BOT_EVENTS_IDENTIFIER = JSON.stringify({ channel: "BotEventsChannel" });
 
 async function probeWebSocket(
-  account: ResolvedBotAccount,
+  account: ResolvedSabhaAccount,
   timeoutMs: number,
   factory: SabhaWebSocketFactory,
 ): Promise<DoctorCheck> {
@@ -355,7 +355,7 @@ const STATUS_SYMBOL: Record<DoctorCheckStatus, string> = {
 };
 
 export function formatDoctorReport(report: DoctorReport): string {
-  const lines = [`Sabha doctor — bot account "${report.botAccountId}"`];
+  const lines = [`Sabha doctor — bot account "${report.accountId}"`];
   for (const check of report.checks) {
     const symbol = STATUS_SYMBOL[check.status];
     const tail = check.message ? `  ${check.message}` : "";

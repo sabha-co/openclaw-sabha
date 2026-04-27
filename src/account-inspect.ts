@@ -1,9 +1,9 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
-  listBotAccountIds,
-  mergeBotAccountConfig,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listSabhaAccountIds,
+  mergeSabhaAccountConfig,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 import type { SabhaConfig } from "./types.js";
 
 export type SabhaCredentialStatus = "available" | "configured_unavailable" | "missing";
@@ -17,7 +17,7 @@ export type SabhaCredentialSource = "config" | "none";
  * Mirrors the shape used by `extensions/{slack,discord,telegram}/src/account-inspect.ts`,
  * Sabha-tailored:
  *   - No env-var resolution path. Sabha bot keys live only in
- *     `botAccounts.<id>.botKey`; there is no `SABHA_BOT_KEY`-style fallback.
+ *     `accounts.<id>.botKey`; there is no `SABHA_BOT_KEY`-style fallback.
  *   - No `tokenFile` indirection. Same reason.
  *   - Bot keys are plain strings, not `SecretRef` objects, so the tri-state
  *     check is a direct undefined/empty/non-empty discriminant on the raw
@@ -25,6 +25,16 @@ export type SabhaCredentialSource = "config" | "none";
  *   - `webhookSecret` is only surfaced when `connectionMode === "webhook"`;
  *     in WS mode the secret is captured but unused, so audit shouldn't flag
  *     its absence.
+ *
+ * **Field naming follows the SDK's canonical credential-status keys**
+ * (`tokenStatus`, `signingSecretStatus`) so the shared runtime helpers in
+ * `openclaw/src/channels/account-snapshot-fields.ts` (closed set:
+ * `tokenStatus`/`botTokenStatus`/`appTokenStatus`/`signingSecretStatus`/`userTokenStatus`)
+ * can pick them up. Using a Sabha-flavored name like `botKeyStatus` would
+ * be invisible to `hasConfiguredUnavailableCredentialStatus`,
+ * `projectCredentialSnapshotFields`, and the audit channel's "configured
+ * but unavailable" warnings. `tokenStatus` reflects `botKey`;
+ * `signingSecretStatus` reflects `webhookSecret`.
  */
 export type InspectedSabhaAccount = {
   accountId: string;
@@ -35,11 +45,16 @@ export type InspectedSabhaAccount = {
   mode: "websocket" | "webhook";
   baseUrl: string;
   apiBaseUrl: string;
-  botKeyStatus: SabhaCredentialStatus;
-  botKeySource: SabhaCredentialSource;
-  /** Only present in webhook mode; in WS mode the secret is captured but unused. */
-  webhookSecretStatus?: SabhaCredentialStatus;
-  webhookSecretSource?: SabhaCredentialSource;
+  /** Status of the `botKey` credential. Canonical SDK key — read by audit/status helpers. */
+  tokenStatus: SabhaCredentialStatus;
+  tokenSource: SabhaCredentialSource;
+  /**
+   * Status of the `webhookSecret`. Only present in webhook mode; in WS
+   * mode the secret is captured but unused, so audit shouldn't flag
+   * its absence. Canonical SDK key — corresponds to `webhookSecret`.
+   */
+  signingSecretStatus?: SabhaCredentialStatus;
+  signingSecretSource?: SabhaCredentialSource;
   baseUrlStatus: SabhaCredentialStatus;
   apiBaseUrlStatus: SabhaCredentialStatus;
   /** True when every credential the runtime needs is `"available"`. Audit reads this. */
@@ -65,7 +80,7 @@ function inspectSabhaAccountPrimary(
   cfg: OpenClawConfig,
   accountId: string,
 ): InspectedSabhaAccount {
-  const merged = mergeBotAccountConfig(cfg, accountId);
+  const merged = mergeSabhaAccountConfig(cfg, accountId);
   const sabhaSection = (cfg.channels as Record<string, unknown> | undefined)?.sabha as
     | SabhaConfig
     | undefined;
@@ -83,11 +98,17 @@ function inspectSabhaAccountPrimary(
 
   const webhookSecret = isWebhookMode ? inspectStringField(merged.webhookSecret) : null;
 
+  // Runtime requirements only — `webhookSecret` is captured at registration
+  // for forward-compat HMAC verification but the current runtime does NOT
+  // require it (see SabhaConfig.webhookSecret in types.ts and the field hint
+  // in channel.ts: "Reserved for webhook HMAC verification in a future
+  // release — not yet used."). Gating `configured` on it would falsely
+  // mark working webhook deployments as unconfigured. The status field
+  // is still surfaced below so audit can show "captured/missing".
   const configured =
     baseUrl.status === "available" &&
     apiBaseUrl.status === "available" &&
-    botKey.status === "available" &&
-    (!isWebhookMode || webhookSecret?.status === "available");
+    botKey.status === "available";
 
   return {
     accountId,
@@ -96,12 +117,12 @@ function inspectSabhaAccountPrimary(
     mode,
     baseUrl: typeof merged.baseUrl === "string" ? merged.baseUrl : "",
     apiBaseUrl: typeof merged.apiBaseUrl === "string" ? merged.apiBaseUrl : "",
-    botKeyStatus: botKey.status,
-    botKeySource: botKey.source,
+    tokenStatus: botKey.status,
+    tokenSource: botKey.source,
     ...(webhookSecret
       ? {
-          webhookSecretStatus: webhookSecret.status,
-          webhookSecretSource: webhookSecret.source,
+          signingSecretStatus: webhookSecret.status,
+          signingSecretSource: webhookSecret.source,
         }
       : {}),
     baseUrlStatus: baseUrl.status,
@@ -113,7 +134,7 @@ function inspectSabhaAccountPrimary(
 
 /**
  * Resolve the inspected account for `accountId`, falling back to the default
- * account id when omitted/nullish. Mirrors `resolveBotAccount`'s fallback
+ * account id when omitted/nullish. Mirrors `resolveSabhaAccount`'s fallback
  * semantics so audit + runtime see the same account selection.
  */
 export function inspectSabhaAccount(params: {
@@ -123,7 +144,7 @@ export function inspectSabhaAccount(params: {
   const accountId =
     params.accountId && params.accountId.length > 0
       ? params.accountId
-      : resolveDefaultBotAccountId(params.cfg);
+      : resolveDefaultSabhaAccountId(params.cfg);
   return inspectSabhaAccountPrimary(params.cfg, accountId);
 }
 
@@ -132,7 +153,7 @@ export function inspectSabhaAccount(params: {
  * surfaces that want a per-account row without knowing the id list up front.
  */
 export function inspectAllSabhaAccounts(cfg: OpenClawConfig): InspectedSabhaAccount[] {
-  return listBotAccountIds(cfg).map((accountId) =>
+  return listSabhaAccountIds(cfg).map((accountId) =>
     inspectSabhaAccountPrimary(cfg, accountId),
   );
 }

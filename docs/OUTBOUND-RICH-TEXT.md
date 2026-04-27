@@ -280,7 +280,7 @@ Net delta:
 - `src/tools.ts` — no changes. Tools that call `SabhaClient.sendMessage` (e.g. `sabha_create_dm` reply bodies) will automatically get the converter because it's client-level. This is the whole point of the client-level placement.
 - `src/draft-stream.ts` — see above. No code changes; behavior changes because the client underneath it is smarter.
 - `src/monitor.ts`, `src/inbound.ts`, `src/webhook.ts` — inbound path is untouched. Inbound messages already come with `{html, plain}` pre-rendered by the server, so there's no conversion step needed on the way in.
-- `src/bot-accounts.ts` — no interaction with outbound formatting.
+- `src/accounts.ts` — no interaction with outbound formatting.
 
 Rough size: ~250 lines added (format.ts + util.ts + mention pass + tests), ~30 lines edited (client.ts + channel.ts).
 

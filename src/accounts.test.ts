@@ -2,23 +2,24 @@ import { describe, it, expect } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 import {
-  listBotAccountIds,
-  listEnabledBotAccounts,
-  resolveBotAccount,
-  resolveBotAccountForSdk,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listSabhaAccountIds,
+  listConfiguredSabhaAccountIds,
+  listEnabledSabhaAccounts,
+  resolveSabhaAccount,
+  resolveSabhaAccountForSdk,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 
 function cfg(sabha: Record<string, unknown>): OpenClawConfig {
   return { channels: { sabha } } as unknown as OpenClawConfig;
 }
 
-describe("listBotAccountIds", () => {
-  it("returns a sorted list when botAccounts is populated", () => {
-    const ids = listBotAccountIds(
+describe("listSabhaAccountIds", () => {
+  it("returns a sorted list when accounts is populated", () => {
+    const ids = listSabhaAccountIds(
       cfg({
         baseUrl: "https://sabha.example",
-        botAccounts: {
+        accounts: {
           staging: { botKey: "2-bbb" },
           production: { botKey: "3-ccc" },
         },
@@ -27,40 +28,61 @@ describe("listBotAccountIds", () => {
     expect(ids).toEqual(["production", "staging"]);
   });
 
-  it("returns an empty list when botAccounts is empty", () => {
-    const ids = listBotAccountIds(
-      cfg({ baseUrl: "x", botAccounts: {} }),
-    );
-    expect(ids).toEqual([]);
+  it("returns the SDK fallback ['default'] when accounts is empty", () => {
+    // Behavior change from the pre-rename helper (which returned []).
+    // Matches Feishu / Slack / Discord — the SDK supplies an implicit
+    // default slot so single-account flat-config mode works without an
+    // explicit `accounts.default` block.
+    const ids = listSabhaAccountIds(cfg({ baseUrl: "x", accounts: {} }));
+    expect(ids).toEqual(["default"]);
   });
 
-  it("returns an empty list when channels.sabha is missing", () => {
-    expect(listBotAccountIds({} as OpenClawConfig)).toEqual([]);
+  it("returns the SDK fallback ['default'] when channels.sabha is missing", () => {
+    expect(listSabhaAccountIds({} as OpenClawConfig)).toEqual(["default"]);
   });
 });
 
-describe("resolveDefaultBotAccountId", () => {
-  it("uses defaultBotAccount override when set and listed", () => {
-    const id = resolveDefaultBotAccountId(
+describe("listConfiguredSabhaAccountIds", () => {
+  it("only includes explicitly-configured account ids", () => {
+    const ids = listConfiguredSabhaAccountIds(
+      cfg({
+        baseUrl: "x",
+        accounts: {
+          staging: { botKey: "2-b" },
+          production: { botKey: "3-c" },
+        },
+      }),
+    );
+    expect(ids.sort()).toEqual(["production", "staging"]);
+  });
+
+  it("returns [] when no explicit accounts entries exist (no SDK fallback)", () => {
+    expect(listConfiguredSabhaAccountIds(cfg({ baseUrl: "x" }))).toEqual([]);
+  });
+});
+
+describe("resolveDefaultSabhaAccountId", () => {
+  it("uses defaultAccount override when set and listed", () => {
+    const id = resolveDefaultSabhaAccountId(
       cfg({
         baseUrl: "x",
         botKey: "1-a",
-        botAccounts: {
+        accounts: {
           production: { botKey: "2-bbb" },
           staging: { botKey: "3-ccc" },
         },
-        defaultBotAccount: "staging",
+        defaultAccount: "staging",
       }),
     );
     expect(id).toBe("staging");
   });
 
   it("falls back to the alphabetic-first account", () => {
-    const id = resolveDefaultBotAccountId(
+    const id = resolveDefaultSabhaAccountId(
       cfg({
         baseUrl: "x",
         botKey: "1-a",
-        botAccounts: {
+        accounts: {
           staging: { botKey: "2-b" },
           production: { botKey: "3-c" },
         },
@@ -71,18 +93,18 @@ describe("resolveDefaultBotAccountId", () => {
 
   it("returns the alphabetic-first when no override and single account", () => {
     expect(
-      resolveDefaultBotAccountId(
-        cfg({ botAccounts: { primary: { baseUrl: "x", botKey: "1-a" } } }),
+      resolveDefaultSabhaAccountId(
+        cfg({ accounts: { primary: { baseUrl: "x", botKey: "1-a" } } }),
       ),
     ).toBe("primary");
   });
 });
 
-describe("resolveBotAccount", () => {
-  it("resolves a bot account from botAccounts map", () => {
-    const account = resolveBotAccount({
+describe("resolveSabhaAccount", () => {
+  it("resolves an account from the accounts map", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
-        botAccounts: {
+        accounts: {
           default: {
             baseUrl: "https://sabha.co/1000006",
             botKey: "42-BaseKey",
@@ -99,14 +121,14 @@ describe("resolveBotAccount", () => {
     expect(account.enabled).toBe(true);
   });
 
-  it("layers per-bot overrides onto the base", () => {
-    const account = resolveBotAccount({
+  it("layers per-account overrides onto the base", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
         baseUrl: "https://sabha.co/base",
         botKey: "1-base",
         botName: "BaseBot",
         typingEnabled: false,
-        botAccounts: {
+        accounts: {
           staging: {
             baseUrl: "https://sabha.co/staging",
             botKey: "99-StagingKey",
@@ -114,7 +136,7 @@ describe("resolveBotAccount", () => {
           },
         },
       }),
-      botAccountId: "staging",
+      accountId: "staging",
     });
     expect(account.accountId).toBe("staging");
     expect(account.baseUrl).toBe("https://sabha.co/staging");
@@ -126,66 +148,66 @@ describe("resolveBotAccount", () => {
   });
 
   it("defaults connectionMode to websocket", () => {
-    const account = resolveBotAccount({
-      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    const account = resolveSabhaAccount({
+      cfg: cfg({ accounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
     });
     expect(account.connectionMode).toBe("websocket");
   });
 
-  it("treats base enabled: false as disabled for every bot account", () => {
-    const account = resolveBotAccount({
+  it("treats base enabled: false as disabled for every account", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
         enabled: false,
         baseUrl: "x",
         botKey: "1-a",
-        botAccounts: {
+        accounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
         },
       }),
-      botAccountId: "staging",
+      accountId: "staging",
     });
     expect(account.enabled).toBe(false);
   });
 
-  it("treats per-bot enabled: false as disabled even when base is enabled", () => {
-    const account = resolveBotAccount({
+  it("treats per-account enabled: false as disabled even when base is enabled", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
         baseUrl: "x",
         botKey: "1-a",
-        botAccounts: {
+        accounts: {
           staging: { enabled: false, baseUrl: "y", botKey: "2-b" },
         },
       }),
-      botAccountId: "staging",
+      accountId: "staging",
     });
     expect(account.enabled).toBe(false);
   });
 
-  it("defaults to the resolved default bot account when id is omitted", () => {
-    const account = resolveBotAccount({
+  it("defaults to the resolved default account when id is omitted", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
-        botAccounts: {
+        accounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },
         },
-        defaultBotAccount: "production",
+        defaultAccount: "production",
       }),
     });
     expect(account.accountId).toBe("production");
     expect(account.baseUrl).toBe("z");
   });
 
-  it("layers per-bot allowFrom over the base (override wins on arrays)", () => {
+  it("layers per-account allowFrom over the base (override wins on arrays)", () => {
     // Arrays are replaced by the override, not merged — this is the
     // SDK's mergeAccountConfig semantics (spread, not deep-merge). It
-    // matters because a production bot may need a stricter allowlist
+    // matters because a production account may need a stricter allowlist
     // than the shared base default.
-    const base = resolveBotAccount({
+    const base = resolveSabhaAccount({
       cfg: cfg({
         baseUrl: "x",
         botKey: "1-a",
         allowFrom: ["100", "101"],
-        botAccounts: {
+        accounts: {
           production: {
             baseUrl: "y",
             botKey: "2-b",
@@ -194,33 +216,33 @@ describe("resolveBotAccount", () => {
           staging: { baseUrl: "z", botKey: "3-c" },
         },
       }),
-      botAccountId: "production",
+      accountId: "production",
     });
     expect(base.allowFrom).toEqual(["999"]);
 
     // Staging has no override — inherits the base allowFrom.
-    const staging = resolveBotAccount({
+    const staging = resolveSabhaAccount({
       cfg: cfg({
         baseUrl: "x",
         botKey: "1-a",
         allowFrom: ["100", "101"],
-        botAccounts: {
+        accounts: {
           production: { baseUrl: "y", botKey: "2-b", allowFrom: ["999"] },
           staging: { baseUrl: "z", botKey: "3-c" },
         },
       }),
-      botAccountId: "staging",
+      accountId: "staging",
     });
     expect(staging.allowFrom).toEqual(["100", "101"]);
   });
 
-  it("layers per-bot dmPolicy over the base", () => {
-    const account = resolveBotAccount({
+  it("layers per-account dmPolicy over the base", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
         baseUrl: "x",
         botKey: "1-a",
         dmPolicy: "open",
-        botAccounts: {
+        accounts: {
           production: {
             baseUrl: "y",
             botKey: "2-b",
@@ -228,78 +250,91 @@ describe("resolveBotAccount", () => {
           },
         },
       }),
-      botAccountId: "production",
+      accountId: "production",
     });
     expect(account.dmPolicy).toBe("allowlist");
   });
 
   it("defaults replyToMode to first", () => {
-    const account = resolveBotAccount({
-      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    const account = resolveSabhaAccount({
+      cfg: cfg({ accounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
     });
     expect(account.replyToMode).toBe("first");
   });
 
   it("respects explicit replyToMode from base config", () => {
-    const account = resolveBotAccount({
+    const account = resolveSabhaAccount({
       cfg: cfg({
         replyToMode: "all",
-        botAccounts: { default: { baseUrl: "x", botKey: "1-a" } },
+        accounts: { default: { baseUrl: "x", botKey: "1-a" } },
       }),
     });
     expect(account.replyToMode).toBe("all");
   });
 
-  it("layers per-bot replyToMode over the base", () => {
-    const account = resolveBotAccount({
+  it("layers per-account replyToMode over the base", () => {
+    const account = resolveSabhaAccount({
       cfg: cfg({
         replyToMode: "first",
-        botAccounts: {
+        accounts: {
           production: { baseUrl: "y", botKey: "2-b", replyToMode: "off" },
         },
       }),
-      botAccountId: "production",
+      accountId: "production",
     });
     expect(account.replyToMode).toBe("off");
   });
 
   it("defaults rooms to an empty map", () => {
-    const account = resolveBotAccount({
-      cfg: cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    const account = resolveSabhaAccount({
+      cfg: cfg({ accounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
     });
     expect(account.rooms).toEqual({});
   });
 
   it("resolves rooms from base config", () => {
-    const account = resolveBotAccount({
+    const account = resolveSabhaAccount({
       cfg: cfg({
         rooms: { "42": { systemPrompt: "Be formal." } },
-        botAccounts: { default: { baseUrl: "x", botKey: "1-a" } },
+        accounts: { default: { baseUrl: "x", botKey: "1-a" } },
       }),
     });
     expect(account.rooms).toEqual({ "42": { systemPrompt: "Be formal." } });
   });
 
-  it("does not leak the botAccounts map into the merged config", () => {
-    // Regression guard: if we forget to omit `botAccounts` from the base
+  it("does not leak the accounts map into the merged config", () => {
+    // Regression guard: if we forget to omit `accounts` from the base
     // during merge, the field leaks into every resolved account's shape.
-    const account = resolveBotAccount({
+    const account = resolveSabhaAccount({
       cfg: cfg({
-        botAccounts: {
+        accounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
         },
       }),
-      botAccountId: "staging",
+      accountId: "staging",
     });
-    expect((account as unknown as { botAccounts?: unknown }).botAccounts).toBeUndefined();
+    expect((account as unknown as { accounts?: unknown }).accounts).toBeUndefined();
+  });
+
+  it("does not leak defaultAccount into the merged config", () => {
+    const account = resolveSabhaAccount({
+      cfg: cfg({
+        accounts: { staging: { baseUrl: "y", botKey: "2-b" } },
+        defaultAccount: "staging",
+      }),
+      accountId: "staging",
+    });
+    expect(
+      (account as unknown as { defaultAccount?: unknown }).defaultAccount,
+    ).toBeUndefined();
   });
 });
 
-describe("resolveBotAccountForSdk", () => {
-  it("forwards accountId through to resolveBotAccount", () => {
-    const account = resolveBotAccountForSdk(
+describe("resolveSabhaAccountForSdk", () => {
+  it("forwards accountId through to resolveSabhaAccount", () => {
+    const account = resolveSabhaAccountForSdk(
       cfg({
-        botAccounts: { staging: { baseUrl: "y", botKey: "2-b" } },
+        accounts: { staging: { baseUrl: "y", botKey: "2-b" } },
       }),
       "staging",
     );
@@ -308,19 +343,19 @@ describe("resolveBotAccountForSdk", () => {
   });
 
   it("handles nullish accountId by resolving the default", () => {
-    const account = resolveBotAccountForSdk(
-      cfg({ botAccounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
+    const account = resolveSabhaAccountForSdk(
+      cfg({ accounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
       null,
     );
     expect(account.accountId).toBe("default");
   });
 });
 
-describe("listEnabledBotAccounts", () => {
-  it("returns every enabled bot account", () => {
-    const accounts = listEnabledBotAccounts(
+describe("listEnabledSabhaAccounts", () => {
+  it("returns every enabled account", () => {
+    const accounts = listEnabledSabhaAccounts(
       cfg({
-        botAccounts: {
+        accounts: {
           staging: { baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },
         },
@@ -332,10 +367,10 @@ describe("listEnabledBotAccounts", () => {
     ]);
   });
 
-  it("filters out disabled bot accounts", () => {
-    const accounts = listEnabledBotAccounts(
+  it("filters out disabled accounts", () => {
+    const accounts = listEnabledSabhaAccounts(
       cfg({
-        botAccounts: {
+        accounts: {
           staging: { enabled: false, baseUrl: "y", botKey: "2-b" },
           production: { baseUrl: "z", botKey: "3-c" },
         },

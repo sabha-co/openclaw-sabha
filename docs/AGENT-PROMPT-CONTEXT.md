@@ -105,7 +105,7 @@ inboundFormattingHints: () => ({
 {
   channels: {
     sabha: {
-      botAccounts: {
+      accounts: {
         default: {
           rooms: {
             "10": { systemPrompt: "You are SabhaClaw, a bot on Sabha…" }

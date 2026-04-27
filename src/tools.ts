@@ -1,7 +1,11 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { SabhaClient } from "./client.js";
-import { resolveBotAccount } from "./bot-accounts.js";
+import {
+  listSabhaAccountIds,
+  resolveDefaultSabhaAccountId,
+  resolveSabhaAccount,
+} from "./accounts.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -28,7 +32,7 @@ function toolError(err: unknown): ToolResult {
  * read at execute time but NOT advertised in the tool's JSON schema. The
  * LLM therefore never sees a bot-account picker; routing flows implicitly
  * through `ctx.agentAccountId` (supplied by the SDK per invocation) with a
- * final fallback to `resolveDefaultBotAccountId`. This mirrors the Feishu
+ * final fallback to `resolveDefaultSabhaAccountId`. This mirrors the Feishu
  * plugin's pattern — which was verified as the canonical multi-account
  * tool registration shape by the v1 scout work.
  */
@@ -42,18 +46,38 @@ type AccountAwareParams = { accountId?: string };
  *      readable at execute time). Used by internal routing and tests.
  *   2. `ctx.agentAccountId` — supplied by the OpenClaw SDK based on the
  *      agent's current session / routing context.
- *   3. `resolveDefaultBotAccountId(cfg)` — fallback when neither is set
- *      (applied inside `resolveBotAccount` when `botAccountId` is nullish).
+ *   3. `resolveDefaultSabhaAccountId(cfg)` — fallback when neither is set
+ *      (applied inside `resolveSabhaAccount` when `accountId` is nullish).
+ *
+ * Two safety guards on top of the precedence:
+ *   - **Unknown id falls back to default.** If the resolved id is not a
+ *     real Sabha account (e.g. a Slack workspace id reaching us via
+ *     `agentAccountId` from a different channel's routing), we fall back
+ *     to the configured default instead of returning a degenerate
+ *     base-only config. Mirrors Feishu's `tool-account-routing.test.ts`
+ *     behavior.
+ *   - **Disabled accounts throw.** A bot account marked
+ *     `enabled: false` should not silently service tool calls; surface
+ *     that as an explicit error so operators can tell why a tool failed.
  */
 function getClientForTool(
   cfg: OpenClawConfig,
   params: AccountAwareParams | undefined,
   agentAccountId: string | undefined,
 ): SabhaClient {
-  const account = resolveBotAccount({
-    cfg,
-    botAccountId: params?.accountId ?? agentAccountId,
-  });
+  const requestedId = params?.accountId ?? agentAccountId;
+  const knownIds = listSabhaAccountIds(cfg);
+  const resolvedId =
+    requestedId && knownIds.includes(requestedId)
+      ? requestedId
+      : resolveDefaultSabhaAccountId(cfg);
+  const account = resolveSabhaAccount({ cfg, accountId: resolvedId });
+  if (!account.enabled) {
+    throw new Error(
+      `Sabha bot account "${account.accountId}" is disabled (channels.sabha.accounts.${account.accountId}.enabled === false). ` +
+        `Re-enable it or pick a different accountId.`,
+    );
+  }
   return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 

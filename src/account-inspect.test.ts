@@ -16,7 +16,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl" },
         },
       }),
@@ -25,14 +25,14 @@ describe("inspectSabhaAccount", () => {
     expect(result.accountId).toBe("default");
     expect(result.enabled).toBe(true);
     expect(result.mode).toBe("websocket");
-    expect(result.botKeyStatus).toBe("available");
-    expect(result.botKeySource).toBe("config");
+    expect(result.tokenStatus).toBe("available");
+    expect(result.tokenSource).toBe("config");
     expect(result.baseUrlStatus).toBe("available");
     expect(result.apiBaseUrlStatus).toBe("available");
     expect(result.configured).toBe(true);
     // WS mode → no webhookSecret fields surfaced.
-    expect(result.webhookSecretStatus).toBeUndefined();
-    expect(result.webhookSecretSource).toBeUndefined();
+    expect(result.signingSecretStatus).toBeUndefined();
+    expect(result.signingSecretSource).toBeUndefined();
   });
 
   it("reports an empty botKey as missing + not configured", () => {
@@ -40,7 +40,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "" },
         },
       }),
@@ -49,18 +49,18 @@ describe("inspectSabhaAccount", () => {
     // Empty string = operator set the field but to an empty value, distinct
     // from "never set". Tri-state matters for the audit layer's "configured
     // but unavailable" warnings.
-    expect(result.botKeyStatus).toBe("configured_unavailable");
-    expect(result.botKeySource).toBe("config");
+    expect(result.tokenStatus).toBe("configured_unavailable");
+    expect(result.tokenSource).toBe("config");
     expect(result.configured).toBe(false);
   });
 
   it("reports a wholly-unconfigured account as missing on every field", () => {
     const result = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: {} } }),
+      cfg: cfg({ accounts: { default: {} } }),
     });
 
-    expect(result.botKeyStatus).toBe("missing");
-    expect(result.botKeySource).toBe("none");
+    expect(result.tokenStatus).toBe("missing");
+    expect(result.tokenSource).toBe("none");
     expect(result.baseUrlStatus).toBe("missing");
     expect(result.apiBaseUrlStatus).toBe("missing");
     expect(result.configured).toBe(false);
@@ -71,7 +71,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             webhookSecret: "whsec_abc",
@@ -82,18 +82,18 @@ describe("inspectSabhaAccount", () => {
     });
 
     expect(result.mode).toBe("websocket");
-    expect(result.webhookSecretStatus).toBeUndefined();
-    expect(result.webhookSecretSource).toBeUndefined();
+    expect(result.signingSecretStatus).toBeUndefined();
+    expect(result.signingSecretSource).toBeUndefined();
     // WS mode doesn't require the secret for `configured: true`.
     expect(result.configured).toBe(true);
   });
 
-  it("flags missing webhookSecret in webhook mode (configured: false)", () => {
+  it("surfaces missing webhookSecret in webhook mode without blocking configured", () => {
     const result = inspectSabhaAccount({
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             connectionMode: "webhook",
@@ -103,10 +103,14 @@ describe("inspectSabhaAccount", () => {
     });
 
     expect(result.mode).toBe("webhook");
-    expect(result.webhookSecretStatus).toBe("missing");
-    expect(result.webhookSecretSource).toBe("none");
-    // Audit reads `configured: false` to surface "webhook mode but no signing secret".
-    expect(result.configured).toBe(false);
+    expect(result.signingSecretStatus).toBe("missing");
+    expect(result.signingSecretSource).toBe("none");
+    // `webhookSecret` is captured for forward-compat HMAC verification
+    // but the current runtime accepts webhooks without it (see
+    // channel.ts:79 and types.ts:198: "future release — not yet
+    // used."). Audit/doctor must not falsely flag working webhook
+    // deployments as unconfigured.
+    expect(result.configured).toBe(true);
   });
 
   it("reports webhookSecret available in webhook mode when set", () => {
@@ -114,7 +118,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             webhookSecret: "whsec_abc",
@@ -124,8 +128,8 @@ describe("inspectSabhaAccount", () => {
       }),
     });
 
-    expect(result.webhookSecretStatus).toBe("available");
-    expect(result.webhookSecretSource).toBe("config");
+    expect(result.signingSecretStatus).toBe("available");
+    expect(result.signingSecretSource).toBe("config");
     expect(result.configured).toBe(true);
   });
 
@@ -135,7 +139,7 @@ describe("inspectSabhaAccount", () => {
         enabled: false,
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl" },
         },
       }),
@@ -151,7 +155,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl", enabled: false },
         },
       }),
@@ -163,13 +167,13 @@ describe("inspectSabhaAccount", () => {
   it("uses botName when set, falls back to OpenClaw when not", () => {
     const named = inspectSabhaAccount({
       cfg: cfg({
-        botAccounts: { default: { botKey: "42-x", botName: "ApprovalBot" } },
+        accounts: { default: { botKey: "42-x", botName: "ApprovalBot" } },
       }),
     });
     expect(named.name).toBe("ApprovalBot");
 
     const unnamed = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: { botKey: "42-x" } } }),
+      cfg: cfg({ accounts: { default: { botKey: "42-x" } } }),
     });
     expect(unnamed.name).toBe("OpenClaw");
   });
@@ -178,7 +182,7 @@ describe("inspectSabhaAccount", () => {
     const config = cfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botAccounts: {
+      accounts: {
         production: { botKey: "1-prod" },
         staging: { botKey: "2-staging" },
       },
@@ -198,11 +202,11 @@ describe("inspectSabhaAccount", () => {
     const config = cfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botAccounts: {
+      accounts: {
         production: { botKey: "1-prod" },
         staging: { botKey: "2-staging" },
       },
-      defaultBotAccount: "staging",
+      defaultAccount: "staging",
     });
 
     expect(inspectSabhaAccount({ cfg: config }).accountId).toBe("staging");
@@ -212,13 +216,13 @@ describe("inspectSabhaAccount", () => {
 
   it("returns a mode field that reflects connectionMode override", () => {
     const ws = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: { botKey: "42-x" } } }),
+      cfg: cfg({ accounts: { default: { botKey: "42-x" } } }),
     });
     expect(ws.mode).toBe("websocket");
 
     const wh = inspectSabhaAccount({
       cfg: cfg({
-        botAccounts: { default: { botKey: "42-x", connectionMode: "webhook" } },
+        accounts: { default: { botKey: "42-x", connectionMode: "webhook" } },
       }),
     });
     expect(wh.mode).toBe("webhook");
@@ -229,7 +233,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-x",
             replyToMode: "all",
@@ -252,7 +256,7 @@ describe("inspectAllSabhaAccounts", () => {
       cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           production: { botKey: "1-prod" },
           staging: { botKey: "2-staging" },
         },
@@ -260,6 +264,6 @@ describe("inspectAllSabhaAccounts", () => {
     );
 
     expect(results.map((r) => r.accountId).sort()).toEqual(["production", "staging"]);
-    expect(results.every((r) => r.botKeyStatus === "available")).toBe(true);
+    expect(results.every((r) => r.tokenStatus === "available")).toBe(true);
   });
 });

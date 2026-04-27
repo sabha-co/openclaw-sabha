@@ -212,7 +212,7 @@ describe("listSabhaDirectoryPeers", () => {
     restore = null;
   });
 
-  it("returns reachable users from /api/bots/users with perPage=100", async () => {
+  it("returns reachable users from /api/bots/users with page=1 perPage=100", async () => {
     const mock = withMockedFetch([
       {
         body: [
@@ -226,11 +226,83 @@ describe("listSabhaDirectoryPeers", () => {
     const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
 
     expect(mock.fetch).toHaveBeenCalledOnce();
+    // Short page (2 < 100) signals last page — no extra round-trip.
     expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/users?per_page=100",
+      "https://sabha.example/a/api/bots/users?page=1&per_page=100",
     );
     expect(entries).toHaveLength(2);
     expect(entries[0]).toMatchObject({ kind: "user", id: "100", name: "Alice" });
+  });
+
+  it("paginates through multiple pages until a short page signals the last", async () => {
+    // Page 1: 100 users (full page → fetch more); page 2: 50 users (short → stop).
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `U${i + 1}`,
+      role: "member",
+      bot: false,
+      url: `/u/${i + 1}`,
+    }));
+    const page2 = Array.from({ length: 50 }, (_, i) => ({
+      id: 101 + i,
+      name: `U${101 + i}`,
+      role: "member",
+      bot: false,
+      url: `/u/${101 + i}`,
+    }));
+    const mock = withMockedFetch([{ body: page1 }, { body: page2 }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
+
+    expect(mock.fetch).toHaveBeenCalledTimes(2);
+    expect(String(mock.fetch.mock.calls[0][0])).toContain("page=1");
+    expect(String(mock.fetch.mock.calls[1][0])).toContain("page=2");
+    expect(entries).toHaveLength(150);
+    expect(entries[0].id).toBe("1");
+    expect(entries[149].id).toBe("150");
+  });
+
+  it("stops paginating early when caller's limit is reached mid-page", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `U${i + 1}`,
+      role: "member",
+      bot: false,
+      url: `/u/${i + 1}`,
+    }));
+    const mock = withMockedFetch([{ body: page1 }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryPeers({
+      cfg: multiBotCfg(),
+      limit: 5,
+    });
+
+    // Only one fetch — the limit is satisfied within page 1, so we never
+    // request page 2. (Workspace might have thousands of users; we stop.)
+    expect(mock.fetch).toHaveBeenCalledOnce();
+    expect(entries).toHaveLength(5);
+    expect(entries.map((e) => e.id)).toEqual(["1", "2", "3", "4", "5"]);
+  });
+
+  it("returns partial results on a mid-stream fetch failure", async () => {
+    // Page 1 succeeds with a full page; page 2 errors. Adapter returns
+    // the page-1 entries it already has rather than throwing or wiping.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `U${i + 1}`,
+      role: "member",
+      bot: false,
+      url: `/u/${i + 1}`,
+    }));
+    const mock = withMockedFetch([{ body: page1 }, { body: "boom", status: 500 }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
+
+    expect(entries).toHaveLength(100);
+    expect(entries[0].id).toBe("1");
   });
 
   it("filters out bot users so agents don't see other bots in the directory", async () => {

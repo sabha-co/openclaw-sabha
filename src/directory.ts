@@ -83,12 +83,20 @@ export async function listSabhaDirectoryGroups(
 }
 
 /**
- * Page size for peer listing. The server caps at 100; we ask for the cap
- * so a single round-trip covers most workspaces. Larger workspaces will
- * show only the first 100 peers — pagination would need a SDK contract
- * extension and isn't wired here.
+ * Page size for peer listing. The server clamps `per_page` to [1, 100];
+ * we ask for the cap so a workspace under that size resolves in a single
+ * round-trip. Larger workspaces are paginated transparently below.
  */
 const PEERS_PAGE_SIZE = 100;
+
+/**
+ * Hard ceiling on pagination loops as a server-misbehavior guard. With
+ * `PEERS_PAGE_SIZE = 100`, this caps total fetched users at 10,000 —
+ * well above any realistic Sabha workspace, while preventing a runaway
+ * loop if the server ever stops respecting the "short page = last page"
+ * convention.
+ */
+const PEERS_MAX_PAGES = 100;
 
 export async function listSabhaDirectoryPeers(
   params: DirectoryParams,
@@ -96,29 +104,41 @@ export async function listSabhaDirectoryPeers(
   const client = buildClient(params.cfg, params.accountId);
   if (!client) return [];
 
-  let users;
-  try {
-    users = await client.listUsers({ perPage: PEERS_PAGE_SIZE });
-  } catch {
-    return [];
-  }
-
   const q = lower(params.query);
+  const cap =
+    params.limit && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
   const entries: ChannelDirectoryEntry[] = [];
-  for (const user of users) {
-    if (user.bot) continue;
-    if (q && !lower(user.name).includes(q)) continue;
-    entries.push({
-      kind: "user" as const,
-      id: String(user.id),
-      name: user.name,
-      handle: user.name,
-    });
+
+  for (let page = 1; page <= PEERS_MAX_PAGES; page++) {
+    let users;
+    try {
+      users = await client.listUsers({ page, perPage: PEERS_PAGE_SIZE });
+    } catch {
+      // Mid-stream failure (token expired, transient network, …): return
+      // whatever we've accumulated rather than wiping a partially-good
+      // result. Page 1 failing produces an empty array same as before.
+      break;
+    }
+    if (users.length === 0) break;
+
+    for (const user of users) {
+      if (user.bot) continue;
+      if (q && !lower(user.name).includes(q)) continue;
+      entries.push({
+        kind: "user" as const,
+        id: String(user.id),
+        name: user.name,
+        handle: user.name,
+      });
+      if (entries.length >= cap) return entries;
+    }
+
+    // Server returns < perPage when on the last page. Avoids one extra
+    // empty-page round-trip per call.
+    if (users.length < PEERS_PAGE_SIZE) break;
   }
 
-  return params.limit && params.limit > 0
-    ? entries.slice(0, params.limit)
-    : entries;
+  return entries;
 }
 
 /**

@@ -286,13 +286,6 @@ export class SabhaClient {
 
   // --- Members ---
 
-  async listMembers(roomId: number): Promise<SabhaMember[]> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/members`,
-    );
-    return (await res.json()) as SabhaMember[];
-  }
-
   async addMember(
     roomId: number,
     userId: number,

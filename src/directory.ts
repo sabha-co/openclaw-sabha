@@ -174,36 +174,3 @@ export async function listSabhaDirectoryPeersLive(
     : entries;
 }
 
-type GroupMembersParams = {
-  cfg: OpenClawConfig;
-  accountId?: string | null;
-  groupId: string;
-  limit?: number | null;
-};
-
-export async function listSabhaDirectoryGroupMembers(
-  params: GroupMembersParams,
-): Promise<ChannelDirectoryEntry[]> {
-  const roomId = Number(params.groupId);
-  if (!Number.isFinite(roomId)) return [];
-
-  const client = buildClient(params.cfg, params.accountId);
-  if (!client) return [];
-
-  let members;
-  try {
-    members = await client.listMembers(roomId);
-  } catch {
-    return [];
-  }
-
-  const entries = members.map((m) => ({
-    kind: "user" as const,
-    id: String(m.id),
-    name: m.name,
-    handle: m.name,
-  }));
-  return params.limit && params.limit > 0
-    ? entries.slice(0, params.limit)
-    : entries;
-}

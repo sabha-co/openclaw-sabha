@@ -21,7 +21,6 @@ import {
 import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
 import {
-  listSabhaDirectoryGroupMembers,
   listSabhaDirectoryGroups,
   listSabhaDirectoryPeers,
   listSabhaDirectoryPeersLive,
@@ -237,13 +236,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           cfg: params.cfg,
           accountId: params.accountId,
           query: params.query,
-          limit: params.limit,
-        }),
-      listGroupMembers: async (params) =>
-        await listSabhaDirectoryGroupMembers({
-          cfg: params.cfg,
-          accountId: params.accountId,
-          groupId: params.groupId,
           limit: params.limit,
         }),
       listPeers: async (params) =>

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 import {
-  listSabhaDirectoryGroupMembers,
   listSabhaDirectoryGroups,
   listSabhaDirectoryPeers,
   listSabhaDirectoryPeersLive,
@@ -163,45 +162,6 @@ describe("listSabhaDirectoryGroups", () => {
     expect(mock.fetch).toHaveBeenCalledOnce();
     expect(String(mock.fetch.mock.calls[0][0])).toBe("https://sabha.example/a/api/bots/rooms");
     expect(entries).toHaveLength(1);
-  });
-});
-
-describe("listSabhaDirectoryGroupMembers", () => {
-  let restore: (() => void) | null = null;
-  afterEach(() => {
-    restore?.();
-    restore = null;
-  });
-
-  it("returns members of the named room as user entries", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 100, name: "Alice", role: "member" },
-          { id: 200, name: "Bob", role: "moderator" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroupMembers({
-      cfg: multiBotCfg(),
-      groupId: "42",
-    });
-
-    expect(entries).toHaveLength(2);
-    expect(entries[0]).toMatchObject({ kind: "user", id: "100", name: "Alice" });
-    expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/rooms/42/members",
-    );
-  });
-
-  it("returns [] for a non-numeric groupId", async () => {
-    const entries = await listSabhaDirectoryGroupMembers({
-      cfg: multiBotCfg(),
-      groupId: "not-a-number",
-    });
-    expect(entries).toEqual([]);
   });
 });
 

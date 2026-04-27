@@ -227,16 +227,19 @@ src/
 
   directory.ts          Channel directory adapter helpers
                         listSabhaDirectoryGroups (rooms),
-                        listSabhaDirectoryGroupMembers (per-room),
                         listSabhaDirectoryPeers (bot-reachable users
                         via GET /api/bots/users — server-side scoped
                         to users sharing rooms with the bot), and
                         listSabhaDirectoryPeersLive (autocompletable
                         variant for autocomplete UX). Wired into
                         `directory:` slot in channel.ts via
-                        createChannelDirectoryAdapter. When accountId
-                        is null, scopes to the resolved default
-                        account rather than unioning every enabled
+                        createChannelDirectoryAdapter.
+                        listGroupMembers is intentionally NOT wired —
+                        peers (Slack/Discord/Mattermost) don't wire it
+                        either; full-room roster dumps don't scale.
+                        When accountId is null, scopes to the resolved
+                        default account rather than unioning every
+                        enabled
                         account: Sabha can be cross-tenant (different
                         apiBaseUrls = separate workspaces with
                         overlapping room id namespaces), so a union
@@ -317,7 +320,7 @@ Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every op
 The SDK splits outbound capability into three slots, and Sabha uses all three deliberately:
 
 - **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info`. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
-- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms) and `listGroupMembers`. Replaces the old `sabha_list_rooms` / `sabha_list_members` agent tools. No `listPeers` — Sabha's bot API has no global users endpoint.
+- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms), `listPeers` (bot-reachable users via `GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocompletable variant trimmed to ≤20). Replaces the old `sabha_list_rooms` / `sabha_search` agent tools. **`listGroupMembers` is intentionally NOT wired** — peers (Slack/Discord/Mattermost) don't wire it either; a full-room roster dump can't scale (a 100k-member room can't be paginated through a single agent call). Agents that need user-in-room context use `member-info` for individual lookups, read mention metadata from inbound payloads, or use `listPeers` at the workspace level.
 - **`api.registerTool(factory)`** (`src/tools.ts`) — 9 agent tools for room/member admin (`sabha_create_room`, archive / join / leave / update_room, `add_member` / `remove_member`, `create_dm`, `list_joinable_rooms`). These are workspace-level operations without cross-channel analogs — Slack/Discord/Mattermost expose **zero** `registerTool` calls because they don't let agents create channels at runtime; Sabha intentionally does, and `registerTool` is the right slot for that.
 
 Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
@@ -413,8 +416,8 @@ There are **five** outbound code paths and they all end up in `SabhaClient`. New
 
 - **A. Reply-pipeline `deliver` callback** — the lambda passed into `processInboundMessage` from both `index.ts` (webhook) and `monitor.ts` (WebSocket). Handles automatic replies to inbound events.
 - **B. `outbound.attachedResults.sendText` / `sendMedia`** — plugin-level adapters in `channel.ts` invoked by OpenClaw core's shared `message` tool when no channel-specific action is selected. `sendMedia` fetches the remote URL into a Blob and calls `client.sendAttachment`.
-- **C. `actions.handleAction`** (`src/message-actions.ts`) — Sabha's contribution to the shared `message` tool. The agent reaches this by selecting `action: "send" | "edit" | "unsend" | "react" | "thread-reply" | "search"` on the canonical message tool. Lets the agent target Sabha messages by id (edit, react, delete) instead of only sending replies.
-- **D. `directory` listings** (`src/directory.ts`) — `listGroups` (rooms) and `listGroupMembers`. Read-only; agents discover rooms/members via core's directory layer rather than channel-specific tools. Replaces `sabha_list_rooms` / `sabha_list_members`.
+- **C. `actions.handleAction`** (`src/message-actions.ts`) — Sabha's contribution to the shared `message` tool. The agent reaches this by selecting `action: "send" | "edit" | "unsend" | "react" | "thread-reply" | "search" | "member-info"` on the canonical message tool. Lets the agent target Sabha messages by id (edit, react, delete) and look up individual user profiles instead of only sending replies.
+- **D. `directory` listings** (`src/directory.ts`) — `listGroups` (rooms), `listPeers` (bot-reachable users), `listPeersLive` (autocomplete-friendly). Read-only; agents discover rooms/users via core's directory layer rather than channel-specific tools. `listGroupMembers` is deliberately omitted — see the Outbound capability split section.
 - **E. Agent tools** in `tools.ts` — invoked directly by the LLM for workspace admin (`sabha_create_room`, `sabha_add_member`, `sabha_archive_room`, …). These bypass the reply pipeline and the message-action adapter entirely; reserved for room/member admin without cross-channel analogs.
 
 ### Session routing

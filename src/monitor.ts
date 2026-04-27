@@ -2,7 +2,7 @@ import type { PluginRuntime, OpenClawConfig } from "openclaw/plugin-sdk/channel-
 
 type ChannelRuntime = PluginRuntime["channel"];
 import type { SabhaWebhookPayload, ConnectionStatus } from "./types.js";
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 import { SabhaClient } from "./client.js";
 import {
   processInboundMessage,
@@ -137,7 +137,7 @@ export type MonitorSabhaOpts = {
    * botKey, botId, typingEnabled, and the resolved account id used in
    * log prefixes and session routing.
    */
-  botAccount: ResolvedBotAccount;
+  account: ResolvedSabhaAccount;
   config: OpenClawConfig;
   runtime: PluginRuntime | ChannelRuntime;
   abortSignal?: AbortSignal;
@@ -178,7 +178,7 @@ export function buildWebSocketUrl(baseUrl: string, botKey: string, websocketUrl?
  * Reconnects automatically with exponential backoff.
  */
 export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
-  const { botAccount: account, config, runtime, abortSignal, logger, statusSink } = opts;
+  const { account, config, runtime, abortSignal, logger, statusSink } = opts;
   const logPrefix = `[sabha:${account.accountId}]`;
   // Mention rewriter: maps display names → user ids so outbound @Name
   // tokens get deterministically rewritten to @{id} for format_mentions.

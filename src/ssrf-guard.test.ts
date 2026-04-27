@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 
 import { resolveAttachmentSsrfPolicy } from "./ssrf-guard.js";
 
 function account(
-  overrides: Partial<ResolvedBotAccount> = {},
-): ResolvedBotAccount {
+  overrides: Partial<ResolvedSabhaAccount> = {},
+): ResolvedSabhaAccount {
   return {
     accountId: "default",
     enabled: true,

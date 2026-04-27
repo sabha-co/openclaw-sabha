@@ -2,10 +2,10 @@ import type { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { parseJoinUrl, selfRegisterBot } from "./setup-wizard.js";
 import {
-  listEnabledBotAccounts,
-  resolveBotAccount,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listEnabledSabhaAccounts,
+  resolveSabhaAccount,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 import { runDoctor, formatDoctorReport } from "./doctor.js";
 
 export type RegisterSabhaCliOpts = {
@@ -101,7 +101,7 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
       // doesn't surface expected failures as health-check noise.
       const targetIds = options.account
         ? [options.account]
-        : listEnabledBotAccounts(cfg).map((a) => a.accountId);
+        : listEnabledSabhaAccounts(cfg).map((a) => a.accountId);
 
       if (!options.account) {
         if (targetIds.length === 0) {
@@ -110,14 +110,14 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
         }
         // Report the default id once so operators can see which config
         // the CLI resolved in the absence of `--account`.
-        const defaultId = resolveDefaultBotAccountId(cfg);
+        const defaultId = resolveDefaultSabhaAccountId(cfg);
         console.log(`(default bot account: ${defaultId})\n`);
       }
 
       let anyFailed = false;
       for (const id of targetIds) {
-        const botAccount = resolveBotAccount({ cfg, botAccountId: id });
-        const report = await runDoctor({ botAccount });
+        const account = resolveSabhaAccount({ cfg, accountId: id });
+        const report = await runDoctor({ account });
         console.log(formatDoctorReport(report));
         console.log("");
         if (!report.allPassed) anyFailed = true;

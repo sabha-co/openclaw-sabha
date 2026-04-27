@@ -7,10 +7,10 @@ import {
 import type { SabhaConfig, SabhaRoom } from "./types.js";
 import { SabhaClient, SabhaApiError } from "./client.js";
 import {
-  listBotAccountIds,
-  mergeBotAccountConfig,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listSabhaAccountIds,
+  mergeSabhaAccountConfig,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 
 // The prompter is provided by OpenClaw — infer the type from the wizard's finalize param
 type FinalizeParams = Parameters<NonNullable<ChannelSetupWizard["finalize"]>>[0];
@@ -437,7 +437,7 @@ let pendingAccountName: string | undefined;
 /**
  * Returns `true` if `accountId` refers to the default bot account.
  */
-export function isDefaultBotAccount(
+export function isDefaultSabhaAccount(
   accountId: string | undefined | null,
 ): boolean {
   if (!accountId) return true;
@@ -447,40 +447,41 @@ export function isDefaultBotAccount(
 /**
  * Merged view of one bot account's setup-relevant fields. Reads the base
  * `channels.sabha` block for the default account and the named entry under
- * `botAccounts.<id>` for every other account, merged on top of the base.
+ * `accounts.<id>` for every other account, merged on top of the base.
  */
-export function getBotAccountView(
+export function getSabhaAccountView(
   cfg: OpenClawConfig,
   accountId: string | undefined | null,
 ): SabhaConfig {
   const id = accountId ? normalizeAccountId(accountId) : DEFAULT_ACCOUNT_ID;
-  return mergeBotAccountConfig(cfg, id);
+  return mergeSabhaAccountConfig(cfg, id);
 }
 
 /**
  * Return every bot account id that currently has both a `baseUrl` and a
  * `botKey` persisted (via its own entry or via the base layered through
- * `mergeBotAccountConfig`). Powers the multi-bot selector's Edit list
+ * `mergeSabhaAccountConfig`). Powers the multi-bot selector's Edit list
  * and the "Keep existing bot?" shortcut in `finalize`.
  *
- * `listBotAccountIds` from `bot-accounts.ts` only surfaces the default
- * slot via its empty-map fallback, so on a multi-bot config where named
- * accounts exist we have to check the default slot explicitly or it
- * gets hidden from the Edit list.
+ * `listSabhaAccountIds` includes the SDK's implicit `default` fallback
+ * even when no explicit `accounts` map exists, so on a multi-bot config
+ * where named accounts exist we still check the default slot explicitly
+ * (its credentials may live at the channel root, layered in via the
+ * base block).
  */
-export function listConfiguredBotAccountIds(
+export function listConfiguredSabhaAccountIds(
   cfg: OpenClawConfig,
 ): string[] {
   const ids: string[] = [];
 
-  const defaultView = getBotAccountView(cfg, DEFAULT_ACCOUNT_ID);
+  const defaultView = getSabhaAccountView(cfg, DEFAULT_ACCOUNT_ID);
   if (defaultView.baseUrl && defaultView.apiBaseUrl && defaultView.botKey) {
     ids.push(DEFAULT_ACCOUNT_ID);
   }
 
-  for (const id of listBotAccountIds(cfg)) {
+  for (const id of listSabhaAccountIds(cfg)) {
     if (id === DEFAULT_ACCOUNT_ID) continue;
-    const view = getBotAccountView(cfg, id);
+    const view = getSabhaAccountView(cfg, id);
     if (
       view.baseUrl &&
       view.apiBaseUrl &&
@@ -496,9 +497,9 @@ export function listConfiguredBotAccountIds(
 
 /**
  * Write setup output for one bot account. All accounts (including the
- * default) are written into `botAccounts.<id>`.
+ * default) are written into `accounts.<id>`.
  */
-export function setBotAccountConfig(
+export function setSabhaAccountConfig(
   cfg: OpenClawConfig,
   accountId: string | undefined | null,
   patch: Partial<SabhaConfig>,
@@ -506,14 +507,14 @@ export function setBotAccountConfig(
   const channels = (cfg.channels ?? {}) as Record<string, unknown>;
   const existing = (channels.sabha ?? {}) as Record<string, unknown>;
 
-  const id = isDefaultBotAccount(accountId)
+  const id = isDefaultSabhaAccount(accountId)
     ? DEFAULT_ACCOUNT_ID
     : normalizeAccountId(accountId!);
-  const botAccounts = {
-    ...((existing.botAccounts as Record<string, Partial<SabhaConfig>>) ?? {}),
+  const accounts = {
+    ...((existing.accounts as Record<string, Partial<SabhaConfig>>) ?? {}),
   };
-  const existingAccount = botAccounts[id] ?? {};
-  botAccounts[id] = { ...existingAccount, ...patch, enabled: true };
+  const existingAccount = accounts[id] ?? {};
+  accounts[id] = { ...existingAccount, ...patch, enabled: true };
 
   return {
     ...cfg,
@@ -522,7 +523,7 @@ export function setBotAccountConfig(
       sabha: {
         ...existing,
         enabled: existing.enabled !== false,
-        botAccounts,
+        accounts,
       },
     },
   };
@@ -556,7 +557,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const override = accountOverride?.trim();
     if (override) return normalizeAccountId(override);
 
-    const configured = listConfiguredBotAccountIds(cfg);
+    const configured = listConfiguredSabhaAccountIds(cfg);
     if (configured.length === 0) return defaultAccountId;
 
     const choice = await prompter.select<string>({
@@ -572,7 +573,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         {
           value: "new",
           label: "Add a new bot account",
-          hint: "Stored under channels.sabha.botAccounts.<id>",
+          hint: "Stored under channels.sabha.accounts.<id>",
         },
       ],
       initialValue: `edit:${configured[0]}`,
@@ -614,7 +615,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     configuredHint: "Bot is registered and ready",
     unconfiguredHint: "Connect to a Sabha chat server",
     resolveConfigured: ({ cfg, accountId }) => {
-      const view = getBotAccountView(cfg, accountId);
+      const view = getSabhaAccountView(cfg, accountId);
       return Boolean(view.baseUrl && view.apiBaseUrl && view.botKey);
     },
   },
@@ -638,19 +639,19 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     const botDisplayName = pendingAccountName;
     pendingAccountName = undefined;
 
-    const view = getBotAccountView(cfg, accountId);
-    const accountLabel = isDefaultBotAccount(accountId)
+    const view = getSabhaAccountView(cfg, accountId);
+    const accountLabel = isDefaultSabhaAccount(accountId)
       ? ""
       : ` [${normalizeAccountId(accountId!)}]`;
 
     // Only offer "Keep existing" for accounts that actually have their
     // own credentials persisted. For a brand-new named slot picked via
     // the Add-new-bot flow, `view` inherits the default bot's baseUrl /
-    // botKey through `mergeBotAccountConfig`, which would otherwise
+    // botKey through `mergeSabhaAccountConfig`, which would otherwise
     // trigger a misleading shortcut against a bot that hasn't been
     // configured yet.
     const isAlreadyConfigured =
-      listConfiguredBotAccountIds(cfg).includes(
+      listConfiguredSabhaAccountIds(cfg).includes(
         accountId ? normalizeAccountId(accountId) : DEFAULT_ACCOUNT_ID,
       );
 
@@ -722,7 +723,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
         await autoJoinOpenRooms(resolvedApiBaseUrl, result.bot_key, prompter);
 
         return {
-          cfg: setBotAccountConfig(cfg, accountId, {
+          cfg: setSabhaAccountConfig(cfg, accountId, {
             baseUrl: resolvedBaseUrl,
             apiBaseUrl: resolvedApiBaseUrl,
             botKey: result.bot_key,
@@ -859,7 +860,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     }
 
     return {
-      cfg: setBotAccountConfig(cfg, accountId, {
+      cfg: setSabhaAccountConfig(cfg, accountId, {
         baseUrl: pendingBaseUrl,
         apiBaseUrl: pendingApiBaseUrl,
         botKey: pendingBotKey,
@@ -880,24 +881,24 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
   dmPolicy: {
     label: "DM policy",
     channel: "sabha",
-    policyKey: "channels.sabha.botAccounts.default.dmPolicy",
-    allowFromKey: "channels.sabha.botAccounts.default.allowFrom",
+    policyKey: "channels.sabha.accounts.default.dmPolicy",
+    allowFromKey: "channels.sabha.accounts.default.allowFrom",
     resolveConfigKeys: (cfg: OpenClawConfig, accountId?: string) => {
       const id = accountId
         ? normalizeAccountId(accountId)
-        : resolveDefaultBotAccountId(cfg);
+        : resolveDefaultSabhaAccountId(cfg);
       return {
-        policyKey: `channels.sabha.botAccounts.${id}.dmPolicy`,
-        allowFromKey: `channels.sabha.botAccounts.${id}.allowFrom`,
+        policyKey: `channels.sabha.accounts.${id}.dmPolicy`,
+        allowFromKey: `channels.sabha.accounts.${id}.allowFrom`,
       };
     },
     getCurrent: (cfg: OpenClawConfig, accountId?: string) => {
-      const view = getBotAccountView(cfg, accountId);
+      const view = getSabhaAccountView(cfg, accountId);
       return (view.dmPolicy ?? "open") as "open" | "allowlist";
     },
     setPolicy: (cfg: OpenClawConfig, policy: string, accountId?: string) => {
       const dmPolicy = policy === "allowlist" ? "allowlist" : "open";
-      return setBotAccountConfig(cfg, accountId, { dmPolicy });
+      return setSabhaAccountConfig(cfg, accountId, { dmPolicy });
     },
   },
 };

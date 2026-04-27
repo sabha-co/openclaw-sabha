@@ -1,5 +1,5 @@
 import type {
-  ResolvedBotAccount,
+  ResolvedSabhaAccount,
   DeliveryPayload,
   SabhaMessageCreatedPayload,
   SabhaMessageEventPayload,
@@ -89,7 +89,7 @@ export function shouldStreamReply(
 type InboundDeps = {
   runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;
-  account: ResolvedBotAccount;
+  account: ResolvedSabhaAccount;
   deliver: (payload: DeliveryPayload) => Promise<void>;
   logger?: Logger;
   /**
@@ -373,7 +373,7 @@ export async function handleUserCreated(
   deps: UserEventHandlerDeps,
 ): Promise<void> {
   // TODO(v1.1+): optional welcome-DM hook, opted into per bot account
-  // via `channels.sabha.botAccounts.<id>.onUserCreated: "welcome-dm"`.
+  // via `channels.sabha.accounts.<id>.onUserCreated: "welcome-dm"`.
   deps.logger?.debug?.(
     `[sabha] user_created {id=${payload.user.id}, name=${payload.user.name}} — no handler configured`,
   );

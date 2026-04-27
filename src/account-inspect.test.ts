@@ -16,7 +16,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl" },
         },
       }),
@@ -40,7 +40,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "" },
         },
       }),
@@ -56,7 +56,7 @@ describe("inspectSabhaAccount", () => {
 
   it("reports a wholly-unconfigured account as missing on every field", () => {
     const result = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: {} } }),
+      cfg: cfg({ accounts: { default: {} } }),
     });
 
     expect(result.botKeyStatus).toBe("missing");
@@ -71,7 +71,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             webhookSecret: "whsec_abc",
@@ -93,7 +93,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             connectionMode: "webhook",
@@ -114,7 +114,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-AbCdEfGhIjKl",
             webhookSecret: "whsec_abc",
@@ -135,7 +135,7 @@ describe("inspectSabhaAccount", () => {
         enabled: false,
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl" },
         },
       }),
@@ -151,7 +151,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: { botKey: "42-AbCdEfGhIjKl", enabled: false },
         },
       }),
@@ -163,13 +163,13 @@ describe("inspectSabhaAccount", () => {
   it("uses botName when set, falls back to OpenClaw when not", () => {
     const named = inspectSabhaAccount({
       cfg: cfg({
-        botAccounts: { default: { botKey: "42-x", botName: "ApprovalBot" } },
+        accounts: { default: { botKey: "42-x", botName: "ApprovalBot" } },
       }),
     });
     expect(named.name).toBe("ApprovalBot");
 
     const unnamed = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: { botKey: "42-x" } } }),
+      cfg: cfg({ accounts: { default: { botKey: "42-x" } } }),
     });
     expect(unnamed.name).toBe("OpenClaw");
   });
@@ -178,7 +178,7 @@ describe("inspectSabhaAccount", () => {
     const config = cfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botAccounts: {
+      accounts: {
         production: { botKey: "1-prod" },
         staging: { botKey: "2-staging" },
       },
@@ -198,11 +198,11 @@ describe("inspectSabhaAccount", () => {
     const config = cfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botAccounts: {
+      accounts: {
         production: { botKey: "1-prod" },
         staging: { botKey: "2-staging" },
       },
-      defaultBotAccount: "staging",
+      defaultAccount: "staging",
     });
 
     expect(inspectSabhaAccount({ cfg: config }).accountId).toBe("staging");
@@ -212,13 +212,13 @@ describe("inspectSabhaAccount", () => {
 
   it("returns a mode field that reflects connectionMode override", () => {
     const ws = inspectSabhaAccount({
-      cfg: cfg({ botAccounts: { default: { botKey: "42-x" } } }),
+      cfg: cfg({ accounts: { default: { botKey: "42-x" } } }),
     });
     expect(ws.mode).toBe("websocket");
 
     const wh = inspectSabhaAccount({
       cfg: cfg({
-        botAccounts: { default: { botKey: "42-x", connectionMode: "webhook" } },
+        accounts: { default: { botKey: "42-x", connectionMode: "webhook" } },
       }),
     });
     expect(wh.mode).toBe("webhook");
@@ -229,7 +229,7 @@ describe("inspectSabhaAccount", () => {
       cfg: cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           default: {
             botKey: "42-x",
             replyToMode: "all",
@@ -252,7 +252,7 @@ describe("inspectAllSabhaAccounts", () => {
       cfg({
         baseUrl: "https://sabha.co/1000006",
         apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        botAccounts: {
+        accounts: {
           production: { botKey: "1-prod" },
           staging: { botKey: "2-staging" },
         },

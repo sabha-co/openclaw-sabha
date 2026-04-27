@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 
 import { runDoctor, formatDoctorReport, type DoctorReport } from "./doctor.js";
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 import type {
   SabhaWebSocketFactory,
   WebSocketLike,
@@ -11,9 +11,9 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function stubBotAccount(
-  overrides: Partial<ResolvedBotAccount> = {},
-): ResolvedBotAccount {
+function stubAccount(
+  overrides: Partial<ResolvedSabhaAccount> = {},
+): ResolvedSabhaAccount {
   return {
     accountId: "default",
     enabled: true,
@@ -170,7 +170,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("runDoctor — config check", () => {
   it("fails config and skips downstream when baseUrl is empty", async () => {
     const report = await runDoctor({
-      botAccount: stubBotAccount({ baseUrl: "" }),
+      account: stubAccount({ baseUrl: "" }),
       // No factory needed because WS check is skipped
     });
     expect(report.allPassed).toBe(false);
@@ -185,7 +185,7 @@ describe("runDoctor — config check", () => {
 
   it("fails config when botKey does not match the expected shape", async () => {
     const report = await runDoctor({
-      botAccount: stubBotAccount({ botKey: "not-numeric" }),
+      account: stubAccount({ botKey: "not-numeric" }),
     });
     const config = report.checks.find((c) => c.name === "Config")!;
     expect(config.status).toBe("fail");
@@ -213,7 +213,7 @@ describe("runDoctor — API check", () => {
       },
     ]);
     const report = await runDoctor({
-      botAccount: stubBotAccount(),
+      account: stubAccount(),
       webSocketFactory: factory,
       wsTimeoutMs: 500,
     });
@@ -227,7 +227,7 @@ describe("runDoctor — API check", () => {
       () => new Response("unauthorized", { status: 401 }),
     );
     const report = await runDoctor({
-      botAccount: stubBotAccount({ connectionMode: "webhook" }),
+      account: stubAccount({ connectionMode: "webhook" }),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -239,7 +239,7 @@ describe("runDoctor — API check", () => {
       () => new Response("not found", { status: 404 }),
     );
     const report = await runDoctor({
-      botAccount: stubBotAccount({ connectionMode: "webhook" }),
+      account: stubAccount({ connectionMode: "webhook" }),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -251,7 +251,7 @@ describe("runDoctor — API check", () => {
       throw new Error("ECONNREFUSED");
     });
     const report = await runDoctor({
-      botAccount: stubBotAccount({ connectionMode: "webhook" }),
+      account: stubAccount({ connectionMode: "webhook" }),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -269,7 +269,7 @@ describe("runDoctor — API check", () => {
     });
     const start = Date.now();
     const report = await runDoctor({
-      botAccount: stubBotAccount({ connectionMode: "webhook" }),
+      account: stubAccount({ connectionMode: "webhook" }),
     });
     const elapsed = Date.now() - start;
     const api = report.checks.find((c) => c.name === "API reachable")!;
@@ -300,7 +300,7 @@ describe("runDoctor — WebSocket check", () => {
       },
     ]);
     const report = await runDoctor({
-      botAccount: stubBotAccount(),
+      account: stubAccount(),
       webSocketFactory: factory,
       wsTimeoutMs: 500,
     });
@@ -323,7 +323,7 @@ describe("runDoctor — WebSocket check", () => {
       },
     ]);
     const report = await runDoctor({
-      botAccount: stubBotAccount(),
+      account: stubAccount(),
       webSocketFactory: factory,
       wsTimeoutMs: 500,
     });
@@ -339,7 +339,7 @@ describe("runDoctor — WebSocket check", () => {
       { phase: "on-open-error", error: new Error("ECONNRESET") },
     ]);
     const report = await runDoctor({
-      botAccount: stubBotAccount(),
+      account: stubAccount(),
       webSocketFactory: factory,
       wsTimeoutMs: 500,
     });
@@ -356,7 +356,7 @@ describe("runDoctor — WebSocket check", () => {
     const { factory } = scriptedWebSocketFactory([]); // no frames at all
     const start = Date.now();
     const report = await runDoctor({
-      botAccount: stubBotAccount(),
+      account: stubAccount(),
       webSocketFactory: factory,
       wsTimeoutMs: 50, // tight so the test is fast
     });
@@ -370,7 +370,7 @@ describe("runDoctor — WebSocket check", () => {
   it("is skipped entirely in webhook mode with an informational warning", async () => {
     restore = withMockedFetch(() => jsonResponse([]));
     const report = await runDoctor({
-      botAccount: stubBotAccount({ connectionMode: "webhook" }),
+      account: stubAccount({ connectionMode: "webhook" }),
     });
     const ws = report.checks.find((c) => c.name === "WebSocket subscribe");
     expect(ws).toBeUndefined();
@@ -383,7 +383,7 @@ describe("runDoctor — WebSocket check", () => {
 describe("formatDoctorReport", () => {
   it("renders a structured summary with status symbols", () => {
     const report: DoctorReport = {
-      botAccountId: "production",
+      accountId: "production",
       checks: [
         { name: "Config", status: "ok", message: "baseUrl=https://sabha.co" },
         { name: "API reachable", status: "fail", message: "HTTP 401" },
@@ -401,7 +401,7 @@ describe("formatDoctorReport", () => {
 
   it("reports success when every check passed", () => {
     const report: DoctorReport = {
-      botAccountId: "default",
+      accountId: "default",
       checks: [
         { name: "Config", status: "ok" },
         { name: "API reachable", status: "ok" },

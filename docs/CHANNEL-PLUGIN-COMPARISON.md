@@ -15,7 +15,7 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | Connection mode | WS (AnyCable) + webhook | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
 | Thread streaming | in‑thread inbounds: yes; top‑level→new thread: deferred (v1.1) | yes | yes (`thread_ts` injected) | yes (native) |
-| Multi‑account | `botAccounts` map | single bot | per‑workspace OAuth installs | single bot per app |
+| Multi‑account | `accounts` map (canonical SDK keys) | single bot | per‑workspace OAuth installs | single bot per app |
 | Rich UI primitives | none | none | Block Kit (modals, buttons, selects) | Carbon components (17 types, modals) |
 | Setup ceremony | join‑URL POST → bot key | manual token paste | OAuth + dual tokens (bot + app) | manual token + Dev Portal walkthrough |
 | Identity preamble in `messageToolHints` | yes (~245 lines) | no | only Slack mrkdwn rules | only component hints (~2 lines) |
@@ -55,7 +55,7 @@ Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks i
 
 ### 4. Multi‑account / multi‑workspace
 
-- **Sabha** — `botAccounts: Record<id, Partial<SabhaConfig>>` layered over a base block. `resolveBotAccount(cfg, id?)` merges; `gateway.startAccount` spawns one monitor per bot. **Account = bot identity.**
+- **Sabha** — `accounts: Record<id, Partial<SabhaConfig>>` layered over a base block. `resolveSabhaAccount(cfg, id?)` merges; `gateway.startAccount` spawns one monitor per bot. **Account = bot identity.** Uses the canonical SDK helpers (`createAccountListHelpers("sabha")` + `resolveMergedAccountConfig`).
 - **Mattermost / Discord** — single bot per instance; no multi‑account. Discord's model is one app = one token.
 - **Slack** — multi‑workspace via OAuth installs; each install has bot token + app token + (sometimes) user token. **Account = workspace installation.**
 - **Feishu** (cross‑check, not in matrix) — same `accounts: Record<id, ...>` + base override pattern as Sabha. Validates the design.
@@ -69,7 +69,7 @@ Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks i
 - **Slack** — HTTP Events API (default) *or* Socket Mode WS.
 - **Discord** — gateway WS only; no HTTP receive.
 
-**Sabha verdict: justified divergence on the mode itself; drift on the multi‑bot interaction.** The webhook fallback is genuinely useful for restricted networks. But the asymmetry — WS supports per‑bot routing, webhook routes everything to default — is a footgun. Either fix it (per‑bot webhook routes at `/sabha/webhook/:botAccountId`) or fail loudly at config‑load when `botAccounts` has >1 entry and any uses webhook.
+**Sabha verdict: justified divergence on the mode itself; drift on the multi‑bot interaction.** The webhook fallback is genuinely useful for restricted networks. But the asymmetry — WS supports per‑bot routing, webhook routes everything to default — is a footgun. Either fix it (per‑bot webhook routes at `/sabha/webhook/:accountId`) or fail loudly at config‑load when `accounts` has >1 entry and any uses webhook.
 
 ### 6. Session routing
 
@@ -164,7 +164,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 ## What would a Mattermost developer find weird about Sabha
 
 1. Webhook fallback at all (Mattermost is WS‑only).
-2. `botAccounts: Record<id, ...>` instead of one bot per instance.
+2. `accounts: Record<id, ...>` instead of one bot per instance.
 3. The mention‑syntax sermon in `messageToolHints` (Mattermost mentions are `<@id>`, agent priors work).
 4. Per‑bot `allowPrivateAttachmentHosts` (Mattermost has it per‑instance).
 5. Threads not streaming yet.
@@ -198,9 +198,11 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 
 ## Drift worth tracking
 
-1. **Webhook + multi‑bot interaction**. Either route per‑bot at `/sabha/webhook/:botAccountId` or fail loudly at config load. (Already noted as v1.1.)
+1. **Webhook + multi‑bot interaction**. Either route per‑bot at `/sabha/webhook/:accountId` or fail loudly at config load. (Already noted as v1.1.)
 2. **12 separate tools vs. one dispatcher**. Not urgent. Inflection point is when the tool count doubles.
-3. ~~**No `accountInspect` contract**.~~ **Resolved (2026.4.27 follow-on).** Original framing was wrong on two counts: (a) the peers exposing rich inspectors are **Slack, Discord, Telegram** — Mattermost has none; (b) Sabha already had the `inspectAccount` slot wired but with a 5-line stub returning only `{ enabled, configured, tokenStatus }`. Brought up to peer parity in `src/account-inspect.ts`: tri-state credential status (`available` / `configured_unavailable` / `missing`) for `botKey` / `baseUrl` / `apiBaseUrl` / `webhookSecret`, per-credential `*Source`, `mode` field, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path (no `SABHA_BOT_KEY`-style fallback exists), no `tokenFile` indirection — bot keys live only in `botAccounts.<id>.botKey`.
+3. ~~**No `accountInspect` contract**.~~ **Resolved (2026.4.27 follow-on).** Original framing was wrong on two counts: (a) the peers exposing rich inspectors are **Slack, Discord, Telegram** — Mattermost has none; (b) Sabha already had the `inspectAccount` slot wired but with a 5-line stub returning only `{ enabled, configured, tokenStatus }`. Brought up to peer parity in `src/account-inspect.ts`: tri-state credential status (`available` / `configured_unavailable` / `missing`) for `botKey` / `baseUrl` / `apiBaseUrl` / `webhookSecret`, per-credential `*Source`, `mode` field, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path (no `SABHA_BOT_KEY`-style fallback exists), no `tokenFile` indirection — bot keys live only in `accounts.<id>.botKey`.
+
+4. ~~**Unknown `agentAccountId` falls through to base-only config**~~, ~~**disabled-account tools silently service**~~, ~~**`threading.resolveReplyToMode` ignores per-bot overrides**~~. **All resolved in the 2026.4.27 rename pass.** `getClientForTool` validates against `listSabhaAccountIds(cfg)` and falls back to default; throws on `enabled: false`. `threading.resolveReplyToMode` now reads via `resolveSabhaAccount({ cfg, accountId })`, matching what the deliver callbacks see. The same pass collapsed the hand-rolled multi-account plumbing onto `createAccountListHelpers("sabha")` (canonical SDK keys: `accounts:` / `defaultAccount:`) and added a `moveSingleAccountChannelSectionToDefaultAccount` shim in `index.ts` startup that auto-migrates any remaining base-level credentials into `accounts.default`.
 4. **Top‑level → new‑thread streaming** (Phase 2 — in‑thread streaming shipped in Phase 1; only the create‑new‑thread case still falls back to non‑streaming).
 5. **`messageToolHints` SDK gating** (already documented in `docs/AGENT-PROMPT-CONTEXT.md`).
 

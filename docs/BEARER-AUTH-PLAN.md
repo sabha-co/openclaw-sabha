@@ -40,7 +40,7 @@ Registration response from `POST /join/:join_code`:
 ### 1. Config types + schema
 
 - [ ] `src/types.ts:191` — `SabhaConfig` gains `apiBaseUrl?: string` and `webhookSecret?: string`.
-- [ ] `src/bot-accounts.ts:33,146` — `ResolvedBotAccount` gains `apiBaseUrl: string` and `webhookSecret: string`; layering pulls both from merged config.
+- [ ] `src/accounts.ts:33,146` — `ResolvedSabhaAccount` gains `apiBaseUrl: string` and `webhookSecret: string`; layering pulls both from merged config.
 - [ ] `src/channel.ts:29,55` — Zod schema adds `apiBaseUrl` + `webhookSecret` (both `z.string().optional()`); config-card `fields` gains entries.
 - [ ] `src/channel.ts:156,157,244,245,290` — `configured`/`enabled` booleans add `&& account.apiBaseUrl`. Do **not** gate on `webhookSecret` — WebSocket-mode bots don't need it in this release.
 
@@ -129,7 +129,7 @@ Swap `account.baseUrl` → `account.apiBaseUrl`:
 | --- | --- |
 | `src/client.ts` | Auth header, 22 URL paths, constructor field, class comment |
 | `src/types.ts` | `SabhaConfig` fields |
-| `src/bot-accounts.ts` | `ResolvedBotAccount` fields, layering |
+| `src/accounts.ts` | `ResolvedSabhaAccount` fields, layering |
 | `src/channel.ts` | Zod schema, card fields, `configured` checks, outbound client |
 | `src/monitor.ts` | Client construction, error hint |
 | `src/doctor.ts` | Client construction, status line, error hint |

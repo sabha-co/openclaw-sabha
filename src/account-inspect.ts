@@ -1,9 +1,9 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
-  listBotAccountIds,
-  mergeBotAccountConfig,
-  resolveDefaultBotAccountId,
-} from "./bot-accounts.js";
+  listSabhaAccountIds,
+  mergeSabhaAccountConfig,
+  resolveDefaultSabhaAccountId,
+} from "./accounts.js";
 import type { SabhaConfig } from "./types.js";
 
 export type SabhaCredentialStatus = "available" | "configured_unavailable" | "missing";
@@ -17,7 +17,7 @@ export type SabhaCredentialSource = "config" | "none";
  * Mirrors the shape used by `extensions/{slack,discord,telegram}/src/account-inspect.ts`,
  * Sabha-tailored:
  *   - No env-var resolution path. Sabha bot keys live only in
- *     `botAccounts.<id>.botKey`; there is no `SABHA_BOT_KEY`-style fallback.
+ *     `accounts.<id>.botKey`; there is no `SABHA_BOT_KEY`-style fallback.
  *   - No `tokenFile` indirection. Same reason.
  *   - Bot keys are plain strings, not `SecretRef` objects, so the tri-state
  *     check is a direct undefined/empty/non-empty discriminant on the raw
@@ -65,7 +65,7 @@ function inspectSabhaAccountPrimary(
   cfg: OpenClawConfig,
   accountId: string,
 ): InspectedSabhaAccount {
-  const merged = mergeBotAccountConfig(cfg, accountId);
+  const merged = mergeSabhaAccountConfig(cfg, accountId);
   const sabhaSection = (cfg.channels as Record<string, unknown> | undefined)?.sabha as
     | SabhaConfig
     | undefined;
@@ -113,7 +113,7 @@ function inspectSabhaAccountPrimary(
 
 /**
  * Resolve the inspected account for `accountId`, falling back to the default
- * account id when omitted/nullish. Mirrors `resolveBotAccount`'s fallback
+ * account id when omitted/nullish. Mirrors `resolveSabhaAccount`'s fallback
  * semantics so audit + runtime see the same account selection.
  */
 export function inspectSabhaAccount(params: {
@@ -123,7 +123,7 @@ export function inspectSabhaAccount(params: {
   const accountId =
     params.accountId && params.accountId.length > 0
       ? params.accountId
-      : resolveDefaultBotAccountId(params.cfg);
+      : resolveDefaultSabhaAccountId(params.cfg);
   return inspectSabhaAccountPrimary(params.cfg, accountId);
 }
 
@@ -132,7 +132,7 @@ export function inspectSabhaAccount(params: {
  * surfaces that want a per-account row without knowing the id list up front.
  */
 export function inspectAllSabhaAccounts(cfg: OpenClawConfig): InspectedSabhaAccount[] {
-  return listBotAccountIds(cfg).map((accountId) =>
+  return listSabhaAccountIds(cfg).map((accountId) =>
     inspectSabhaAccountPrimary(cfg, accountId),
   );
 }

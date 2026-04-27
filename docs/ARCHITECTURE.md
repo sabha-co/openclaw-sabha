@@ -74,24 +74,25 @@ setup-entry.ts          Setup-only entry — defineSetupPluginEntry
 src/
   channel.ts            Plugin object — createChatChannelPlugin
                         Capabilities, Zod config schema + UI hints
-                        (including botAccounts / defaultBotAccount),
-                        DM security policy, threading mode, outbound
-                        adapters (sendText/sendMedia), gateway.startAccount
+                        (including accounts / defaultAccount),
+                        DM security policy, threading mode (per-account
+                        replyToMode read), outbound adapters
+                        (sendText/sendMedia), gateway.startAccount
                         (launches a WebSocket monitor per bot account),
                         agentPrompt hints (platform identity preamble +
                         mention syntax in messageToolHints; markdown
                         rules in inboundFormattingHints). Wires the
-                        bot-account resolver into the SDK via
+                        account resolver into the SDK via
                         config.resolveAccount / listAccountIds.
 
-  bot-accounts.ts       Multi-bot-account model
-                        ResolvedBotAccount type, listBotAccountIds,
-                        resolveDefaultBotAccountId, mergeBotAccountConfig,
-                        resolveBotAccount, listEnabledBotAccounts,
-                        resolveBotAccountForSdk (SDK-boundary shim).
-                        Layers `botAccounts.<id>` overrides on top of the
+  accounts.ts           Multi-account model
+                        ResolvedSabhaAccount type, listSabhaAccountIds,
+                        resolveDefaultSabhaAccountId, mergeSabhaAccountConfig,
+                        resolveSabhaAccount, listEnabledSabhaAccounts,
+                        resolveSabhaAccountForSdk (SDK-boundary shim).
+                        Layers `accounts.<id>` overrides on top of the
                         base `channels.sabha` block via the SDK's
-                        resolveMergedAccountConfig.
+                        createAccountListHelpers + resolveMergedAccountConfig.
 
   client.ts             Sabha REST Bot API client
                         All Bot API endpoints under `/api/bots/*`,
@@ -129,7 +130,7 @@ src/
                         baseUrl is operator-configured and trusted by
                         design.
 
-  doctor.ts             runDoctor({ botAccount }) — runtime health checks
+  doctor.ts             runDoctor({ account }) — runtime health checks
                         Config validation, listRooms() API probe,
                         fresh /cable WebSocket subscribe handshake
                         (connect → welcome → subscribe → confirmed),
@@ -139,8 +140,8 @@ src/
 
   types.ts              TypeScript types: webhook payloads (discriminated
                         union by `event` — all 7 variants), rooms,
-                        messages, members, config (botAccounts +
-                        defaultBotAccount), delivery payloads,
+                        messages, members, config (accounts +
+                        defaultAccount), delivery payloads,
                         connection status.
 
   webhook.ts            Payload parser + helpers
@@ -173,7 +174,7 @@ src/
                         monitorSabha (dedup, typing, typed event
                         dispatch). All state is scoped per invocation
                         so per-bot-account monitors don't collide.
-                        Log prefix is `[sabha:<botAccountId>]`.
+                        Log prefix is `[sabha:<accountId>]`.
 
   monitor-websocket.ts  Low-level WebSocket lifecycle
                         createSabhaConnectOnce, ping/pong, subscribe
@@ -208,11 +209,10 @@ src/
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via
                         POST /join/{code}) or a pre-existing bot key.
-                        Honors the SDK-provided accountId: the default
-                        account writes into the base channels.sabha
-                        block (zero-migration); named accounts write
-                        into channels.sabha.botAccounts.<id> without
-                        clobbering the base. status.resolveConfigured
+                        Honors the SDK-provided accountId: every account
+                        (including the default) writes into
+                        channels.sabha.accounts.<id> without clobbering
+                        the others. status.resolveConfigured
                         and dmPolicy.{getCurrent,setPolicy} also
                         honor accountId.
 
@@ -273,17 +273,17 @@ If you add a new agent-visible Sabha capability, surface it as an agent tool in 
 
 Room creation, member management, and search are exposed as 12 agent tools registered via `api.registerTool()`, not as message-tool actions. These are workspace-level operations the agent chooses to perform as part of reasoning — not replies.
 
-Tool factories follow the **Feishu pattern**: the bot account id is never in the tool JSON schema — the LLM doesn't see a `bot_account_id` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultBotAccountId(cfg)`. The `params.accountId` override is an undocumented explicit-routing escape hatch readable at execute time but never advertised, matching Feishu's tested pattern.
+Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
 
-### Multi-bot-account model
+### Multi-account model
 
-The plugin supports N bot identities per install. The SDK drives the lifecycle — it calls `gateway.startAccount(ctx)` once per enabled bot account with `ctx.account: ResolvedBotAccount` already resolved. Nothing in the plugin loops over accounts; monitors, outbound adapters, tool routing, the doctor, and the setup wizard all operate on one account at a time and the SDK fans out.
+The plugin supports N bot identities per install. The SDK drives the lifecycle — it calls `gateway.startAccount(ctx)` once per enabled bot account with `ctx.account: ResolvedSabhaAccount` already resolved. Nothing in the plugin loops over accounts; monitors, outbound adapters, tool routing, the doctor, and the setup wizard all operate on one account at a time and the SDK fans out.
 
-**Config key naming — intentional deviation.** Sabha uses `botAccounts:` and `defaultBotAccount:` instead of the ecosystem-canonical `accounts:` and `defaultAccount:`. The rename exists to avoid colliding with Sabha's own server-side domain concept (multi-tenant workspaces and user accounts): an operator reading `channels.sabha.accounts:` could reasonably assume it referred to Sabha user accounts, not plugin-level bot identities. No other reference plugin (Slack, Discord, Feishu, Mattermost) renames the key, so contributors grepping the ecosystem will find `accounts:` everywhere — treat this deliberate deviation as a cost we accept, not a mistake. The SDK boundary still speaks `accountId` (hardcoded in `gateway.startAccount`, `ctx.agentAccountId`, outbound callbacks) and `bot-accounts.ts` translates locally via `resolveBotAccountForSdk`.
+**Config keys are the canonical SDK ones.** `accounts:` and `defaultAccount:` — same as Feishu, Slack, Discord. The plugin uses `createAccountListHelpers("sabha")` directly; the SDK hardcodes those keys, and matching the ecosystem makes contributors' grep instincts work across plugins.
 
-**All bots must be declared under `botAccounts`.** The base `channels.sabha` block holds only shared fields (e.g. `baseUrl`); per-bot overrides in `botAccounts.<id>` layer on top via `mergeBotAccountConfig`. There is no implicit default-account fallback when `botAccounts` is absent.
+**`moveSingleAccountChannelSectionToDefaultAccount`** runs once at `index.ts` startup so any leftover base-level credentials (`channels.sabha.botKey` directly, instead of `channels.sabha.accounts.default.botKey`) get auto-promoted into `accounts.default`. Idempotent — a config already in canonical shape is unchanged. Closes the silent-leak case where base creds would be inherited into every named account that doesn't override them.
 
-**`createAccountListHelpers` is deliberately not used.** The SDK helper hardcodes the config path to `channels.<key>.accounts`, which conflicts with the rename. `bot-accounts.ts` hand-rolls a ~10-line list helper using the lower-level `listCombinedAccountIds` + `resolveListedDefaultAccountId` primitives from `plugin-sdk/account-core`. Everything else — `resolveMergedAccountConfig`, `normalizeAccountId`, `DEFAULT_ACCOUNT_ID` — is generic and reused as-is.
+**`threading.resolveReplyToMode` reads per-account.** The deliver callbacks in `monitor.ts` / `index.ts` read `account.replyToMode` directly; the SDK reply planner reads through this adapter. They must see the same per-account value, otherwise the SDK could plan inline replies while the plugin threads them (or vice-versa).
 
 ### Retry runner + 429 handling
 
@@ -303,7 +303,7 @@ The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dange
 
 ### Doctor / health checks
 
-`src/doctor.ts` exposes `runDoctor({ botAccount })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms()` (with bearer header), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
+`src/doctor.ts` exposes `runDoctor({ account })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms()` (with bearer header), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
 
 The doctor is surfaced as the `openclaw sabha doctor [--account <id>]` CLI subcommand, not as a plugin-object field, because the SDK's `ChannelDoctorAdapter` is config-validation only — there is no runtime-probe hook. The CLI loops over every enabled bot account (or the one specified by `--account`) and exits non-zero if any check fails. `warn` and `skip` statuses do not cause a non-zero exit.
 
@@ -333,7 +333,7 @@ The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. R
 
 ### Inbound, WebSocket path (default)
 
-1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `connectionMode === "websocket"` and `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<botAccountId>]`.
+1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `connectionMode === "websocket"` and `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<accountId>]`.
 2. **`monitor.ts`** runs `runWithReconnect` → `createSabhaConnectOnce` (`monitor-websocket.ts`), which opens the `/cable` connection and subscribes to `BotEventsChannel`. Multi-tenant workspaces pass `wid` in the query string (extracted from the numeric path prefix on `baseUrl`).
 3. For each incoming frame:
    - `createDedupCache` drops duplicates by `${event}:${id}` (FIFO, 5 min TTL, 2000 entries).
@@ -389,7 +389,7 @@ Single-bot:
       enabled: true,
       baseUrl: "https://sabha.co/1000006",              // site root; setup wizard verifies via /skill
       apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
-      botAccounts: {
+      accounts: {
         default: {
           botKey: "42-AbCdEfGhIjKl",          // bearer token
           webhookSecret: "whsec_...",         // HMAC secret (captured at registration)
@@ -403,7 +403,7 @@ Single-bot:
 }
 ```
 
-Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset fields on a named account inherit from the base:
+Multi-bot. Named accounts under `accounts.<id>` layer over the base, so unset fields on a named account inherit from the base:
 
 ```json5
 {
@@ -413,7 +413,7 @@ Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset
       // Shared base — inherited by every bot unless overridden
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botAccounts: {
+      accounts: {
         default: {
           botKey: "42-prodkey",
           botName: "OpenClaw",
@@ -429,13 +429,11 @@ Multi-bot. Named accounts under `botAccounts.<id>` layer over the base, so unset
           // baseUrl / apiBaseUrl / botName inherited from base
         },
       },
-      defaultBotAccount: "default",  // optional; alphabetic-first otherwise
+      defaultAccount: "default",  // optional; alphabetic-first otherwise
     }
   }
 }
 ```
-
-Note the intentional `botAccounts:` / `defaultBotAccount:` naming — see the "Multi-bot-account model" decision above for why this deviates from the ecosystem-canonical `accounts:` / `defaultAccount:`.
 
 Multi-tenant note: `buildWebSocketUrl` extracts a 7+ digit path prefix from `baseUrl` and passes it as `wid` on the WebSocket query string.
 

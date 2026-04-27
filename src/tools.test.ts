@@ -7,7 +7,9 @@ import { createSabhaTools } from "./tools.js";
 // by intercepting globalThis.fetch and reading the URL + Authorization
 // header. This is the minimum that proves the Feishu pattern
 // (ctx.agentAccountId + hidden params.accountId override) actually
-// selects the right bot.
+// selects the right bot. Also covers the two safety guards that fall
+// out of the Sabha-side audit: unknown agentAccountId → fall back to
+// default; disabled account → throw a typed error.
 
 type FetchMock = ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
 
@@ -47,7 +49,7 @@ const multiBotCfg = () =>
     baseUrl: "https://sabha.example/base",
     apiBaseUrl: "https://sabha.example/base/api/bots",
     botKey: "1-BaseKey",
-    botAccounts: {
+    accounts: {
       production: {
         baseUrl: "https://sabha.example/prod",
         apiBaseUrl: "https://sabha.example/prod/api/bots",
@@ -59,7 +61,7 @@ const multiBotCfg = () =>
         botKey: "20-StagingKey",
       },
     },
-    defaultBotAccount: "production",
+    defaultAccount: "production",
   });
 
 function buildListRoomsTool(getConfig: () => OpenClawConfig) {
@@ -141,7 +143,7 @@ describe("createSabhaTools — account routing", () => {
 
     const factory = buildListRoomsTool(() =>
       cfg({
-        botAccounts: {
+        accounts: {
           default: {
             baseUrl: "https://sabha.example/solo",
             apiBaseUrl: "https://sabha.example/solo/api/bots",
@@ -156,6 +158,47 @@ describe("createSabhaTools — account routing", () => {
     const call = mock.fetch.mock.calls[0];
     expect(String(call[0])).toContain("https://sabha.example/solo/api/bots");
     expect(authHeader(call)).toBe("Bearer 7-SoloKey");
+  });
+
+  it("falls back to the default account when agentAccountId names a non-existent account", async () => {
+    // Mirrors Feishu's tool-account-routing.test.ts:142 — a stray
+    // `agentAccountId` from a different channel's routing context (e.g.
+    // a Slack workspace id) should not produce a degenerate base-only
+    // resolve. We fall back to the configured default instead.
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildListRoomsTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: "agent-spawner" });
+    await tool.execute("id", {});
+
+    const call = mock.fetch.mock.calls[0];
+    expect(String(call[0])).toContain("https://sabha.example/prod/api/bots");
+    expect(authHeader(call)).toBe("Bearer 10-ProdKey");
+  });
+
+  it("returns an Error result when the resolved account is disabled", async () => {
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildListRoomsTool(() =>
+      cfg({
+        accounts: {
+          default: {
+            enabled: false,
+            baseUrl: "https://sabha.example/disabled",
+            apiBaseUrl: "https://sabha.example/disabled/api/bots",
+            botKey: "9-DisabledKey",
+          },
+        },
+      }),
+    );
+    const tool = factory({ agentAccountId: undefined });
+    const result = await tool.execute("id", {});
+
+    expect(mock.fetch).not.toHaveBeenCalled();
+    expect(result.content[0].text).toMatch(/disabled/i);
+    expect((result.details as { error?: string }).error).toMatch(/disabled/i);
   });
 
   it("returns a text + details result shape", async () => {

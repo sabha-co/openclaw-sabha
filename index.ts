@@ -2,11 +2,12 @@ import {
   defineChannelPluginEntry,
   type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
+import { moveSingleAccountChannelSectionToDefaultAccount } from "openclaw/plugin-sdk/setup";
 import { sabhaPlugin } from "./src/channel.js";
 import {
-  listBotAccountIds,
-  resolveBotAccount,
-} from "./src/bot-accounts.js";
+  listConfiguredSabhaAccountIds,
+  resolveSabhaAccount,
+} from "./src/accounts.js";
 import { parseWebhookPayload } from "./src/webhook.js";
 import {
   processInboundMessage,
@@ -60,19 +61,54 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
   },
 
   registerFull(api) {
+    // Migration shim: fold any leftover base-level credentials (botKey,
+    // baseUrl, etc.) sitting at `channels.sabha.<field>` into
+    // `channels.sabha.accounts.default` so the multi-account resolver
+    // can see them. SDK-blessed (matrix/setup-helpers); idempotent — a
+    // config that's already in the canonical shape is unchanged.
+    //
+    // Closes the silent-leak footgun where base-level creds would be
+    // inherited into every named account that doesn't override them.
+    {
+      const before = api.runtime.config.loadConfig();
+      const after = moveSingleAccountChannelSectionToDefaultAccount({
+        cfg: before,
+        channelKey: "sabha",
+      });
+      if (after !== before) {
+        api.logger.info?.(
+          "[sabha] Migrated base-level credentials into channels.sabha.accounts.default",
+        );
+        // Fire-and-forget: the file write is async but the rest of
+        // startup reads from runtime config, which the SDK refreshes
+        // on its own loop. If the write fails (read-only mount?) the
+        // operator sees the error in logs and falls back to the
+        // pre-migration shape, which is still valid.
+        void api.runtime.config.writeConfigFile(after).catch((err) => {
+          api.logger.error?.(
+            `[sabha] Failed to persist migrated config: ${err}`,
+          );
+        });
+      }
+    }
+
     const getConfig = () => api.runtime.config.loadConfig();
 
     // Detect the silent-skip case: `channels.sabha` is set (operator thinks
-    // sabha is configured) but no `botAccounts` entries are declared. The
-    // gateway's start loop iterates `listBotAccountIds`, which would return
-    // [], so no bot would start and the only signal would be the absence of
-    // any `[sabha]` log lines. Hand-edited configs fail invisibly. Warn loudly.
+    // sabha is configured) but no explicit `accounts` entries exist and the
+    // base block has no credentials either. The SDK's listAccountIds returns
+    // ["default"] as a fallback, so we can't use that for the warning;
+    // listConfiguredSabhaAccountIds returns the truly-configured set.
     const startupCfg = getConfig();
-    if (startupCfg.channels?.sabha && listBotAccountIds(startupCfg).length === 0) {
+    if (
+      startupCfg.channels?.sabha &&
+      listConfiguredSabhaAccountIds(startupCfg).length === 0 &&
+      !resolveSabhaAccount({ cfg: startupCfg }).botKey
+    ) {
       api.logger.warn(
-        "[sabha] channels.sabha is set but has no botAccounts entries — " +
-          "no Sabha bot will start. Move credentials under botAccounts.<id> " +
-          "(e.g. botAccounts.default) or run `openclaw configure --section channels`. " +
+        "[sabha] channels.sabha is set but has no accounts entries and no base-level botKey — " +
+          "no Sabha bot will start. Add credentials under accounts.<id> " +
+          "(e.g. accounts.default) or run `openclaw configure --section channels`. " +
           "See https://github.com/sabha-co/openclaw-sabha#configure for the correct shape.",
       );
     }
@@ -110,10 +146,10 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
 
           // Webhook mode binds to one HTTP route per plugin, so we route
           // every inbound event through the default bot account. Multi-
-          // bot webhook routing would need a path prefix scheme (e.g.
-          // /sabha/webhook/:botAccountId) — deferred to v1.1.
+          // account webhook routing would need a path prefix scheme (e.g.
+          // /sabha/webhook/:accountId) — deferred to v1.1.
           const cfg = getConfig();
-          const currentAccount = resolveBotAccount({ cfg });
+          const currentAccount = resolveSabhaAccount({ cfg });
 
           // Mirror the monitor's dispatch table so every variant routes
           // to its typed handler. Only `message_created` runs the full

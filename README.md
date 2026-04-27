@@ -69,7 +69,7 @@ Edit `~/.openclaw/openclaw.json`:
       enabled: true,
       baseUrl: "https://sabha.co/1000006",              // site root (setup wizard verifies via /skill)
       apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
-      botAccounts: {
+      accounts: {
         default: {
           botKey: "42-AbCdEfGhIjKl",
           webhookSecret: "whsec_..."  // captured at registration; reserved for HMAC signature verification in a future release

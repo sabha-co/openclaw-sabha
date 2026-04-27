@@ -6,7 +6,7 @@ import {
   isSelfEchoEvent,
   monitorSabha,
 } from "./monitor.js";
-import type { ResolvedBotAccount } from "./bot-accounts.js";
+import type { ResolvedSabhaAccount } from "./accounts.js";
 import type {
   SabhaBoostCreatedPayload,
   SabhaMessageCreatedPayload,
@@ -50,12 +50,12 @@ describe("buildWebSocketUrl", () => {
 });
 
 describe("monitorSabha — logging", () => {
-  // Minimal ResolvedBotAccount stub. We only exercise the boot + log path
+  // Minimal ResolvedSabhaAccount stub. We only exercise the boot + log path
   // (aborted signal short-circuits runWithReconnect before a socket opens),
   // so most runtime fields can be defaults.
-  function stubBotAccount(
-    overrides: Partial<ResolvedBotAccount> = {},
-  ): ResolvedBotAccount {
+  function stubAccount(
+    overrides: Partial<ResolvedSabhaAccount> = {},
+  ): ResolvedSabhaAccount {
     return {
       accountId: "default",
       enabled: true,
@@ -84,13 +84,13 @@ describe("monitorSabha — logging", () => {
   const stubRuntime = {} as unknown as PluginRuntime;
 
   async function runWithAbortedSignal(
-    botAccount: ResolvedBotAccount,
+    account: ResolvedSabhaAccount,
     logger: { info: (msg: string) => void; error: (msg: string) => void },
   ) {
     const controller = new AbortController();
     controller.abort();
     await monitorSabha({
-      botAccount,
+      account,
       config: { channels: { sabha: {} } } as never,
       runtime: stubRuntime,
       abortSignal: controller.signal,
@@ -101,7 +101,7 @@ describe("monitorSabha — logging", () => {
   it("includes the bot account id in the connect log line for the default account", async () => {
     const info = vi.fn();
     const error = vi.fn();
-    await runWithAbortedSignal(stubBotAccount(), { info, error });
+    await runWithAbortedSignal(stubAccount(), { info, error });
     expect(
       info.mock.calls.some(([msg]) =>
         typeof msg === "string" && msg.startsWith("[sabha:default] Connecting"),
@@ -113,7 +113,7 @@ describe("monitorSabha — logging", () => {
   it("uses the named bot account id when running under a non-default account", async () => {
     const info = vi.fn();
     await runWithAbortedSignal(
-      stubBotAccount({ accountId: "staging", botKey: "99-stg" }),
+      stubAccount({ accountId: "staging", botKey: "99-stg" }),
       { info, error: vi.fn() },
     );
     expect(
@@ -126,7 +126,7 @@ describe("monitorSabha — logging", () => {
   it("redacts the bot_key query parameter in the connect log", async () => {
     const info = vi.fn();
     await runWithAbortedSignal(
-      stubBotAccount({ botKey: "42-SecretKey" }),
+      stubAccount({ botKey: "42-SecretKey" }),
       { info, error: vi.fn() },
     );
     const connectLine = info.mock.calls

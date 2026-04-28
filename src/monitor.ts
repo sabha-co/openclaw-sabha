@@ -7,7 +7,6 @@ import { SabhaClient } from "./client.js";
 import {
   processInboundMessage,
   shouldHandleInbound,
-  shouldStreamReply,
   handleMessageUpdated,
   handleMessageDeleted,
   handleBoostCreated,
@@ -253,9 +252,9 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       // Self-echo pre-filter: drop events caused by the bot itself
       // before they touch the dedup cache or the log. Without this
       // early return, every `editMessage` the bot issues during a
-      // streaming turn (Phase 2.1) causes Sabha to fan a
-      // `message_updated` frame back over the WS (Scout A, hazard
-      // #2), polluting the dedup cache with the bot's own echoes
+      // streaming turn causes Sabha to fan a `message_updated` frame
+      // back over the WS (Scout A, hazard #2), polluting the dedup
+      // cache with the bot's own echoes
       // and producing one "Skipping duplicate" info line per edit
       // as soon as the `message_updated:<id>` dedup slot was first
       // marked. Per-handler `shouldHandleInbound` still re-checks
@@ -302,10 +301,10 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
 
       // `message_created` is the only variant that runs the full reply
       // pipeline (typing indicator → dispatch → deliver). Every other
-      // variant routes to a typed log-only handler. Phase 2.2 will
-      // upgrade `boost_created` to consume pending approvals, and the
-      // streaming work in Phase 2.1 may grow `message_updated` into a
-      // real edit-propagation path.
+      // variant routes to a typed log-only handler. A future approval-
+      // routing pass will upgrade `boost_created` to consume pending
+      // approvals, and `message_updated` may eventually grow into an
+      // edit-propagation path.
       if (payload.event === "message_created") {
         if (!shouldHandleInbound(payload, account.botId)) return;
 
@@ -320,40 +319,74 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         statusSink?.({ lastInboundAt: Date.now() });
         typing?.start(payload.room.id);
 
+        // Decide threading once for the turn. The SDK's internal reply
+        // planner doesn't call our plugin's `threading.resolveReplyToMode`
+        // — it reads raw config at a different code path and often doesn't
+        // set `replyToId` even when mode is "all". So we resolve the mode
+        // here directly and decide whether to create a thread ourselves.
+        //
+        // Sabha models threads as Room subclasses. When the inbound is
+        // already in a thread, `payload.room.id` is the thread's room id
+        // and plain `sendMessage(roomId, ...)` posts into the thread —
+        // calling `replyInThread` would create a nested thread, wrong.
+        //
+        // Sabha's /thread endpoint is idempotent via `find_or_create_for`:
+        // calling `replyInThread(roomId, userMessageId)` multiple times in
+        // a turn appends to the same thread. So "first" and "all" modes
+        // collapse on Sabha — thread the reply or don't.
+        const isInThread = payload.message.thread != null;
+        const isDm = payload.room.type === "Direct";
+        const replyToMode = account.replyToMode ?? "first";
+        const shouldThread = !isInThread && !isDm && replyToMode !== "off";
+
         // Streaming draft-stream preview. Lives for the duration of one
         // inbound turn and is shared between `onPartialReply` (per-token
-        // updates) and `deliver` (final edit). The gate (`shouldStreamReply`)
-        // is centralized in `inbound.ts` so the webhook path uses the same
-        // rules; it covers the in-thread, DM, and threading-off cases.
-        // Top-level non-DM with threading on is still skipped (Phase 2 will
-        // add a `firstSend` hook on the draft stream so partials can land
-        // in the new thread instead of orphaned in the parent room).
-        const draftStream = shouldStreamReply(payload, account)
-          ? createSabhaDraftStream({
-              client,
-              roomId: payload.room.id,
-              logger: {
-                debug: (msg) => logger?.info?.(`${logPrefix} ${msg}`),
-                warn: (msg) => logger?.error?.(`${logPrefix} ${msg}`),
-              },
-            })
-          : undefined;
+        // updates) and `deliver` (final edit).
+        //
+        // For the threading-on case we wire a `firstSend` hook: the very
+        // first partial is posted via `replyInThread`, which creates the
+        // thread server-side and returns the new thread room id. The
+        // stream rebinds its room id to that captured value so all
+        // subsequent edits (and the recovery / error-replace paths via
+        // `draftStream.roomId()`) target the thread, not the parent.
+        const draftStream = createSabhaDraftStream({
+          client,
+          roomId: payload.room.id,
+          ...(shouldThread
+            ? {
+                firstSend: async (text) => {
+                  const r = await client.replyInThread(
+                    payload.room.id,
+                    payload.message.id,
+                    text,
+                  );
+                  return { roomId: r.thread.id, messageId: r.message.id };
+                },
+              }
+            : {}),
+          logger: {
+            debug: (msg) => logger?.info?.(`${logPrefix} ${msg}`),
+            warn: (msg) => logger?.error?.(`${logPrefix} ${msg}`),
+          },
+        });
+
+        logger?.info?.(
+          `${logPrefix} deliver gate: mode=${replyToMode} isInThread=${isInThread} isDm=${isDm} willThread=${shouldThread}`,
+        );
 
         // The runtime may stream partials with reasoning/thinking tags
         // still embedded; we display text only. Reasoning previews are
         // their own lane (`onReasoningStream`) that we do NOT wire — the
         // bot surfaces the final assistant text, not its chain-of-thought.
-        const onPartialReply = draftStream
-          ? (partial: { text?: string }) => {
-              const text = partial.text;
-              if (typeof text !== "string" || text.length === 0) return;
-              draftStream.update(text);
-              // Stop the typing indicator once the first preview lands.
-              // Typing + an empty preview looks broken; typing + a growing
-              // preview is redundant. (Q12 default.)
-              typing?.stop(payload.room.id);
-            }
-          : undefined;
+        const onPartialReply = (partial: { text?: string }) => {
+          const text = partial.text;
+          if (typeof text !== "string" || text.length === 0) return;
+          draftStream.update(text);
+          // Stop the typing indicator once the first preview lands.
+          // Typing + an empty preview looks broken; typing + a growing
+          // preview is redundant. (Q12 default.)
+          typing?.stop(payload.room.id);
+        };
 
         const work = (async () => {
           try {
@@ -361,40 +394,10 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
               runtime,
               cfg: config,
               account,
-              ...(onPartialReply ? { onPartialReply } : {}),
+              onPartialReply,
               deliver: async (replyPayload) => {
                 const roomId = Number(replyPayload.to ?? payload.room.id);
                 const text = replyPayload.text ?? replyPayload.body ?? "";
-                // Sabha models threads as Room subclasses. When the inbound
-                // is already in a thread, `payload.room.id` is the thread's
-                // room id and plain `sendMessage(roomId, ...)` posts into
-                // the thread. Calling `replyInThread` here would try to
-                // create a *nested* thread on the reply target — wrong.
-                const isInThread = payload.message.thread != null;
-                const isDm = payload.room.type === "Direct";
-
-                // The SDK's internal reply planner doesn't call our plugin's
-                // `threading.resolveReplyToMode` — it reads raw config at a
-                // different code path and often doesn't set `replyToId` even
-                // when mode is "all". So we resolve the mode here directly
-                // and decide whether to create a thread ourselves.
-                //
-                // Sabha's /thread endpoint is idempotent via find_or_create_for:
-                // calling replyInThread(roomId, userMessageId) multiple times
-                // in a turn just appends to the same thread. So "first" and
-                // "all" modes are effectively the same on Sabha — thread the
-                // reply or don't.
-                const replyToMode = account.replyToMode ?? "first";
-                const shouldThread = !isInThread && !isDm && replyToMode !== "off";
-
-                logger?.info?.(
-                  `${logPrefix} deliver: mode=${replyToMode} isInThread=${isInThread} isDm=${isDm} room=${roomId} willThread=${shouldThread}`,
-                );
-
-                if (shouldThread) {
-                  await client.replyInThread(roomId, payload.message.id, text);
-                  return;
-                }
 
                 // Streaming fast-path. Three cases:
                 //
@@ -402,47 +405,62 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 //       `update + stop`. The `stop()` implementation
                 //       awaits the SDK loop's `inFlightPromise` before
                 //       sending the final edit, so this is correct even
-                //       when a partial's `sendMessage` is still pending
-                //       and `messageId()` is momentarily undefined. That
-                //       race (fast model, slow Sabha API) was the reason
-                //       the earlier gate `messageId() !== undefined`
-                //       double-posted: it fell through to plain send
-                //       while the in-flight partial was still writing
-                //       its id. `isAlive()` gates on "can the loop
-                //       still accept updates," which is what we need.
+                //       when a partial's send is still pending and
+                //       `messageId()` is momentarily undefined. The
+                //       earlier gate `messageId() !== undefined`
+                //       double-posted because it fell through to plain
+                //       send while the in-flight partial was still
+                //       writing its id. `isAlive()` gates on "can the
+                //       loop still accept updates," which is what we
+                //       need. For the threading-on case the in-flight
+                //       send may be `firstSend` (creating the thread);
+                //       `stop()` still awaits it correctly.
                 //
                 //   (b) Stream is dead but a preview exists — the SDK's
                 //       controls wrapper silently drops further updates
                 //       once stopped, so `update + stop` would no-op
                 //       and leave the preview stuck on partial N-1.
                 //       Bypass the loop and PATCH the final text
-                //       directly via the client. If even the direct
-                //       edit fails, delete the stale preview and post
-                //       fresh so the user sees the final reply.
+                //       directly via the client. The preview lives at
+                //       `draftStream.roomId()` (which equals the thread
+                //       room when `firstSend` already resolved, or the
+                //       parent room otherwise). If even the direct edit
+                //       fails, delete the stale preview and fall through.
                 //
                 //   (c) Stream is dead with no preview (first send
                 //       failed, or no partials ever arrived) — fall
-                //       through to plain `sendMessage`.
-                if (draftStream && draftStream.isAlive()) {
+                //       through to a final fallback that honors the
+                //       threading decision: `replyInThread` if we were
+                //       supposed to thread, plain `sendMessage`
+                //       otherwise. Without the `shouldThread` branch
+                //       here, a thread-on conversation that hit a
+                //       streaming failure would land in the parent room
+                //       instead of being threaded.
+                if (draftStream.isAlive()) {
                   draftStream.update(text);
                   await draftStream.stop();
                   return;
                 }
-                if (draftStream && draftStream.messageId() !== undefined) {
+                if (draftStream.messageId() !== undefined) {
                   const previewId = draftStream.messageId()!;
+                  const previewRoom = draftStream.roomId();
                   try {
-                    await client.editMessage(roomId, previewId, text);
+                    await client.editMessage(previewRoom, previewId, text);
                     return;
                   } catch (err) {
                     logger?.error?.(
                       `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
                     );
                     await client
-                      .deleteMessage(roomId, previewId)
+                      .deleteMessage(previewRoom, previewId)
                       .catch(() => undefined);
                   }
                 }
 
+                if (shouldThread) {
+                  await client.replyInThread(roomId, payload.message.id, text);
+                  return;
+                }
                 await client.sendMessage(roomId, text);
               },
               logger,
@@ -465,19 +483,18 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             //
             // Drain any in-flight partial send first so `messageId()`
             // is accurate. Without the flush, an error arriving while
-            // a partial's `sendMessage` was pending would skip the
-            // error-replace entirely (messageId undefined → gate
-            // fails), leave the partial to land as a stale preview
-            // with no error indication, and the user would see
-            // whatever the last partial said instead of the error.
-            if (draftStream) {
-              await draftStream.flush().catch(() => undefined);
-            }
-            if (draftStream && draftStream.messageId() !== undefined) {
+            // a partial's send was pending would skip the error-replace
+            // entirely (messageId undefined → gate fails), leave the
+            // partial to land as a stale preview with no error
+            // indication, and the user would see whatever the last
+            // partial said instead of the error.
+            await draftStream.flush().catch(() => undefined);
+            if (draftStream.messageId() !== undefined) {
               const previewId = draftStream.messageId()!;
+              const previewRoom = draftStream.roomId();
               const safe = formatStreamError(err);
               await client
-                .editMessage(payload.room.id, previewId, safe)
+                .editMessage(previewRoom, previewId, safe)
                 .catch((replaceErr) => {
                   logger?.error?.(
                     `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,
@@ -491,9 +508,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // loop so any pending tick is cleared and Node can exit
             // cleanly after an abort. Idempotent — calling stop on an
             // already-stopped loop is a no-op.
-            if (draftStream) {
-              await draftStream.stop().catch(() => undefined);
-            }
+            await draftStream.stop().catch(() => undefined);
             typing?.stop(payload.room.id);
             inFlight.delete(dedupKey!);
           }

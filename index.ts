@@ -11,7 +11,6 @@ import {
 import { parseWebhookPayload } from "./src/webhook.js";
 import {
   processInboundMessage,
-  shouldStreamReply,
   handleMessageUpdated,
   handleMessageDeleted,
   handleBoostCreated,
@@ -171,32 +170,47 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               currentAccount.botKey,
             );
 
-            // Streaming: gate is centralized in `shouldStreamReply` so the
-            // webhook path uses the same rules as the WS monitor. Covers
-            // in-thread, DM, and threading-off cases. Top-level non-DM
-            // with threading on still skips streaming (Phase 2 will add a
-            // `firstSend` hook so partials can land in the new thread
-            // instead of orphaned in the parent room). The webhook handler
-            // has to return 200 immediately, so we still `await
+            // Decide threading once for the turn. See monitor.ts for the
+            // full rationale on why we resolve `replyToMode` ourselves
+            // instead of relying on the SDK's reply planner. The webhook
+            // handler returns 200 immediately, so we still `await
             // processInboundMessage` below — webhook mode is inherently
             // sync-to-the-runtime.
-            const draftStream = shouldStreamReply(payload, currentAccount)
-              ? createSabhaDraftStream({
-                  client,
-                  roomId: payload.room.id,
-                  logger: {
-                    debug: (msg) => api.logger.info?.(`[sabha] ${msg}`),
-                    warn: (msg) => api.logger.error?.(`[sabha] ${msg}`),
-                  },
-                })
-              : undefined;
-            const onPartialReply = draftStream
-              ? (partial: { text?: string }) => {
-                  const text = partial.text;
-                  if (typeof text !== "string" || text.length === 0) return;
-                  draftStream.update(text);
-                }
-              : undefined;
+            const isInThread = payload.message.thread != null;
+            const isDm = payload.room.type === "Direct";
+            const replyToMode = currentAccount.replyToMode ?? "first";
+            const shouldThread = !isInThread && !isDm && replyToMode !== "off";
+
+            // Streaming draft-stream preview. For the threading-on case
+            // we wire `firstSend`: the first partial posts via
+            // `replyInThread`, captures the new thread room id from
+            // the response, and rebinds the stream's effective room so
+            // subsequent edits / recovery paths target the thread.
+            const draftStream = createSabhaDraftStream({
+              client,
+              roomId: payload.room.id,
+              ...(shouldThread
+                ? {
+                    firstSend: async (text) => {
+                      const r = await client.replyInThread(
+                        payload.room.id,
+                        payload.message.id,
+                        text,
+                      );
+                      return { roomId: r.thread.id, messageId: r.message.id };
+                    },
+                  }
+                : {}),
+              logger: {
+                debug: (msg) => api.logger.info?.(`[sabha] ${msg}`),
+                warn: (msg) => api.logger.error?.(`[sabha] ${msg}`),
+              },
+            });
+            const onPartialReply = (partial: { text?: string }) => {
+              const text = partial.text;
+              if (typeof text !== "string" || text.length === 0) return;
+              draftStream.update(text);
+            };
 
             try {
               await processInboundMessage(payload, {
@@ -204,20 +218,42 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               cfg,
               account: currentAccount,
               logger: api.logger,
-              ...(onPartialReply ? { onPartialReply } : {}),
+              onPartialReply,
               deliver: async (replyPayload) => {
                 const roomId = Number(
                   replyPayload.to ?? payload.room.id,
                 );
                 const text = replyPayload.text ?? replyPayload.body ?? "";
-                // Sabha threads are Room subclasses; when the inbound
-                // is already in a thread, plain sendMessage posts into
-                // the thread. See monitor.ts for the full rationale on
-                // why we resolve replyToMode ourselves.
-                const isInThread = payload.message.thread != null;
-                const isDm = payload.room.type === "Direct";
-                const replyToMode = currentAccount.replyToMode ?? "first";
-                const shouldThread = !isInThread && !isDm && replyToMode !== "off";
+
+                // Streaming fast-path — see monitor.ts for the full
+                // rationale. Three cases: (a) stream is alive → update
+                // + stop drains any in-flight partial (incl. firstSend);
+                // (b) stream dead but preview exists → bypass the SDK
+                // and PATCH directly at `draftStream.roomId()` (thread
+                // room when firstSend already resolved); (c) stream
+                // dead with no preview → final fallback that honors
+                // `shouldThread` so a stream failure on a thread-on
+                // conversation still creates the thread for the reply.
+                if (draftStream.isAlive()) {
+                  draftStream.update(text);
+                  await draftStream.stop();
+                  return;
+                }
+                if (draftStream.messageId() !== undefined) {
+                  const previewId = draftStream.messageId()!;
+                  const previewRoom = draftStream.roomId();
+                  try {
+                    await client.editMessage(previewRoom, previewId, text);
+                    return;
+                  } catch (err) {
+                    api.logger.error?.(
+                      `[sabha] Draft stream recovery edit failed: ${formatStreamError(err)}`,
+                    );
+                    await client
+                      .deleteMessage(previewRoom, previewId)
+                      .catch(() => undefined);
+                  }
+                }
 
                 if (shouldThread) {
                   await client.replyInThread(
@@ -227,33 +263,6 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
                   );
                   return;
                 }
-
-                // Streaming fast-path — see monitor.ts for the full
-                // rationale. Three cases: (a) stream is alive → route
-                // through update + stop which drains any in-flight
-                // partial send; (b) stream is dead but preview exists
-                // → bypass the SDK and PATCH directly; (c) stream is
-                // dead with no preview → plain send.
-                if (draftStream && draftStream.isAlive()) {
-                  draftStream.update(text);
-                  await draftStream.stop();
-                  return;
-                }
-                if (draftStream && draftStream.messageId() !== undefined) {
-                  const previewId = draftStream.messageId()!;
-                  try {
-                    await client.editMessage(roomId, previewId, text);
-                    return;
-                  } catch (err) {
-                    api.logger.error?.(
-                      `[sabha] Draft stream recovery edit failed: ${formatStreamError(err)}`,
-                    );
-                    await client
-                      .deleteMessage(roomId, previewId)
-                      .catch(() => undefined);
-                  }
-                }
-
                 await client.sendMessage(roomId, text);
               },
             });
@@ -262,18 +271,16 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
               // drain in-flight partial sends first so messageId() is
               // accurate, then bypass the draft stream (it may be
               // stopped) and PATCH the preview directly with a
-              // redacted error string. Since the bearer-auth refactor
-              // the bot_key is no longer embedded in the URL (it rides
-              // in the Authorization header), but the redactor stays
-              // as defense-in-depth for any future leak path.
-              if (draftStream) {
-                await draftStream.flush().catch(() => undefined);
-              }
-              if (draftStream && draftStream.messageId() !== undefined) {
+              // redacted error string. Use `draftStream.roomId()` so
+              // a threading-on preview gets the error in the thread,
+              // not the parent room.
+              await draftStream.flush().catch(() => undefined);
+              if (draftStream.messageId() !== undefined) {
                 const previewId = draftStream.messageId()!;
+                const previewRoom = draftStream.roomId();
                 const safe = formatStreamError(err);
                 await client
-                  .editMessage(payload.room.id, previewId, safe)
+                  .editMessage(previewRoom, previewId, safe)
                   .catch((replaceErr) => {
                     api.logger.error?.(
                       `[sabha] Webhook error-replace edit failed: ${formatStreamError(replaceErr)}`,
@@ -286,9 +293,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
             } finally {
               // Clear the SDK's pending setTimeout so the Node event
               // loop can unwind after the request handler returns.
-              if (draftStream) {
-                await draftStream.stop().catch(() => undefined);
-              }
+              await draftStream.stop().catch(() => undefined);
             }
           } else {
             const botId = currentAccount.botId;

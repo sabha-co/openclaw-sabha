@@ -260,9 +260,13 @@ One follow-on still open server-side: **cursor pagination on `/api/bots/rooms`**
 
 ## What's already done (and what's incomplete)
 
-- ⚠️ **`listGroupMembers` removed but not replaced.** Commit `8828a05` (2026.4.27) removed the dump-shaped slot — that part was correct. The replacement (`resolver.resolveTargets` for workspace name resolution + `sabha_member_search` agent tool for the room-scoped case) has not landed yet. Until it does, agents have no way to resolve free-form name references — neither at workspace scope nor inside a specific room. See the "Room-scoped member resolution" section above for the design and step 2 in the Plan section for the work unit. Do not treat the removal alone as a finished win.
-- ✅ **`listUsers` / `getUser` / `searchUsers` shipped correctly.** Server-side pagination, hard cap, scoped search. The template for the rest.
-- ✅ **`message-actions` `member-info` action.** Single-record lookup with documented 404-as-"not-visible" semantics.
+- ✅ **`listGroupMembers` regression closed.** Commit `8828a05` (2026.4.27) removed the dump-shaped slot. Commit `ebdafe3` (2026.4.28) wired the replacement: `resolver.resolveTargets` for workspace-level name → id (peer parity with Discord/Slack/Telegram) and `sabha_search_members` for the room-scoped case (the verb the SDK can't model). Both surfaces are SDK-compliant and required no SDK fork.
+- ✅ **Step 1 — dead reads deleted.** `getMessage` / `getMessages` removed (`45c2766`). `SabhaMessage` type and stale `SabhaMember` import gone. Comparison doc no longer points future contributors at the unbounded dump.
+- ✅ **Step 3 — `listRooms` reshaped** (`1bb5150`). Single method `{ joinable?, query?, page?, perPage? }`; `listJoinableRooms` retired with both call sites updated. Directory adapter paginates with `ROOMS_MAX_PAGES = 100` × `ROOMS_PAGE_SIZE = 100`. Server-side query replaces in-memory filter. Doctor probe rewritten as a reachability check (no longer reports a misleading workspace count).
+- ✅ **Step 4 — `search` reshaped** (`0828285`). New shape `search({ query, roomIds, authorIds, before, after, limit, cursor })` returning `{ results, hasMore, nextCursor }`. Array params use repeated keys; CSV strings accepted at the message-action layer for agent ergonomics. Agent prompt now carries an explicit `SEARCH IN SABHA` hint covering the truncation signal and scoping params.
+- ✅ **`listUsers` / `getUser` / `searchUsers` shipped correctly** (pre-existing). Server-side pagination, hard cap, scoped search. Template for the rest.
+- ✅ **`message-actions` `member-info` action** (pre-existing). Single-record lookup with documented 404-as-"not-visible" semantics.
+- ⏳ **Step 5 — cursor pagination on `/api/bots/rooms`** (open, non-blocking). Picks up if a workspace's room list grows past a few thousand. Page-based pagination is fine until then.
 
 ## Plan
 

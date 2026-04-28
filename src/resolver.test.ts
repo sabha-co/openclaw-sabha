@@ -269,11 +269,9 @@ describe("resolveSabhaTargets — group kind", () => {
   it("strips leading # before resolving a name and matches against listRooms", async () => {
     const mock = withMockedFetch((url) => {
       expect(url).toContain("/rooms");
+      expect(url).toContain("query=general");
       return {
-        body: [
-          { id: 1, name: "general", type: "Open" },
-          { id: 2, name: "random", type: "Open" },
-        ],
+        body: [{ id: 1, name: "general", type: "Open" }],
       };
     });
     restore = mock.restore;
@@ -292,13 +290,18 @@ describe("resolveSabhaTargets — group kind", () => {
     });
   });
 
-  it("fetches the rooms list once per batch even with multiple name inputs", async () => {
-    const mock = withMockedFetch(() => ({
-      body: [
-        { id: 1, name: "general", type: "Open" },
-        { id: 2, name: "random", type: "Open" },
-      ],
-    }));
+  it("caches identical name queries within a single batch", async () => {
+    // Different names mean different server calls; duplicate names share
+    // one cached response. ["general", "random", "general"] = 2 calls.
+    const responses: Record<string, { id: number; name: string }[]> = {
+      general: [{ id: 1, name: "general" }],
+      random: [{ id: 2, name: "random" }],
+    };
+    const mock = withMockedFetch((url) => {
+      const m = url.match(/query=([^&]+)/);
+      const key = m ? decodeURIComponent(m[1]) : "";
+      return { body: responses[key] ?? [] };
+    });
     restore = mock.restore;
 
     const results = await resolveSabhaTargets({
@@ -308,13 +311,15 @@ describe("resolveSabhaTargets — group kind", () => {
     });
 
     expect(results).toHaveLength(3);
-    expect(mock.fetch).toHaveBeenCalledTimes(1);
+    expect(results[0]).toMatchObject({ resolved: true, id: "1" });
+    expect(results[1]).toMatchObject({ resolved: true, id: "2" });
+    expect(results[2]).toMatchObject({ resolved: true, id: "1" });
+    // Two distinct queries, third input is a cache hit.
+    expect(mock.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("returns unresolved when no room matches the name", async () => {
-    const mock = withMockedFetch(() => ({
-      body: [{ id: 1, name: "general", type: "Open" }],
-    }));
+  it("returns unresolved when the server returns no matches", async () => {
+    const mock = withMockedFetch(() => ({ body: [] }));
     restore = mock.restore;
 
     const results = await resolveSabhaTargets({

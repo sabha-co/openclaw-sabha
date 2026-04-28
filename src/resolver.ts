@@ -133,21 +133,11 @@ async function resolveGroupInputs(
   client: SabhaClient,
   inputs: string[],
 ): Promise<InternalResolution[]> {
-  // One rooms snapshot per call. `listRooms()` is currently unbounded
-  // (paginated reshape lands in step 3 of the read-endpoint scale plan);
-  // a single fetch shared across inputs keeps this tolerable until then.
-  let rooms: SabhaRoom[] | null = null;
-  const getRooms = async (): Promise<SabhaRoom[]> => {
-    if (rooms !== null) return rooms;
-    try {
-      rooms = await client.listRooms();
-    } catch {
-      rooms = [];
-    }
-    return rooms;
-  };
-
   const results: InternalResolution[] = [];
+  // Cache per-call so duplicate name inputs (e.g. ["general", "general"])
+  // don't each trigger their own server round-trip.
+  const queryCache = new Map<string, InternalResolution>();
+
   for (const input of inputs) {
     const parsed = parseGroupInput(input);
 
@@ -161,23 +151,39 @@ async function resolveGroupInputs(
       continue;
     }
 
-    const all = await getRooms();
-    const lower = parsed.query.toLowerCase();
-    const matches = all.filter((r) => r.name?.toLowerCase().includes(lower));
-
-    if (matches.length === 0) {
-      results.push({ input, resolved: false });
+    const cacheKey = parsed.query.toLowerCase();
+    const cached = queryCache.get(cacheKey);
+    if (cached) {
+      results.push({ ...cached, input });
       continue;
     }
 
-    const top = matches[0];
-    results.push({
+    let rooms: SabhaRoom[];
+    try {
+      // Server-side query — small payload, scoped to the room name.
+      // Mirrors the user path's `searchUsers` shape.
+      rooms = await client.listRooms({ query: parsed.query });
+    } catch {
+      rooms = [];
+    }
+
+    if (rooms.length === 0) {
+      const entry: InternalResolution = { input, resolved: false };
+      queryCache.set(cacheKey, entry);
+      results.push(entry);
+      continue;
+    }
+
+    const top = rooms[0];
+    const entry: InternalResolution = {
       input,
       resolved: true,
       id: String(top.id),
       name: top.name,
-      note: matches.length > 1 ? "multiple matches; chose best" : undefined,
-    });
+      note: rooms.length > 1 ? "multiple matches; chose best" : undefined,
+    };
+    queryCache.set(cacheKey, entry);
+    results.push(entry);
   }
 
   return results;

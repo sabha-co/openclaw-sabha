@@ -217,13 +217,28 @@ export class SabhaClient {
 
   // --- Rooms ---
 
-  async listRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms`);
-    return (await res.json()) as SabhaRoom[];
-  }
-
-  async listJoinableRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms?joinable=true`);
+  /**
+   * List rooms reachable to this bot, paginated. `joinable: true` filters
+   * to open rooms the bot could join (but isn't in yet); `query` runs a
+   * server-side name match. Server caps `perPage` at 100 and clamps
+   * `page` to >= 1; we forward whatever the caller passes and let the
+   * server enforce.
+   *
+   * Server route: `GET /api/bots/rooms[?joinable=&query=&page=&per_page=]`.
+   */
+  async listRooms(opts?: {
+    joinable?: boolean;
+    query?: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<SabhaRoom[]> {
+    const params = new URLSearchParams();
+    if (opts?.joinable) params.set("joinable", "true");
+    if (opts?.query) params.set("query", opts.query);
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.perPage != null) params.set("per_page", String(opts.perPage));
+    const qs = params.toString();
+    const res = await this.fetch(`/rooms${qs ? `?${qs}` : ""}`);
     return (await res.json()) as SabhaRoom[];
   }
 

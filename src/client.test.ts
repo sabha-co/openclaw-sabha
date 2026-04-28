@@ -388,4 +388,49 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url.startsWith(API)).toBe(true);
     }
   });
+
+  describe("listRooms — pagination + filter params", () => {
+    it("hits /rooms with no query string when called bare", async () => {
+      mockFetch();
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.listRooms();
+
+      expect(lastCall().url).toBe(`${API}/rooms`);
+    });
+
+    it("propagates joinable, query, page, and per_page", async () => {
+      mockFetch();
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.listRooms({
+        joinable: true,
+        query: "general",
+        page: 2,
+        perPage: 50,
+      });
+
+      const url = lastCall().url;
+      expect(url).toContain("joinable=true");
+      expect(url).toContain("query=general");
+      expect(url).toContain("page=2");
+      expect(url).toContain("per_page=50");
+    });
+
+    it("omits joinable when false (the server default already handles 'all rooms')", async () => {
+      mockFetch();
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.listRooms({ joinable: false });
+
+      expect(lastCall().url).not.toContain("joinable=");
+    });
+
+    it("URL-encodes query values with special characters", async () => {
+      mockFetch();
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.listRooms({ query: "team alpha & beta" });
+
+      const url = lastCall().url;
+      // URLSearchParams encodes spaces as `+` and `&` as `%26`.
+      expect(url).toMatch(/query=team\+alpha\+%26\+beta/);
+    });
+  });
 });

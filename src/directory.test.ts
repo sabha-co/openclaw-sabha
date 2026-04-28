@@ -95,11 +95,14 @@ describe("listSabhaDirectoryGroups", () => {
 
     const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
 
-    // One fetch only — to the default account 'a', not both.
+    // One fetch only — to the default account 'a', not both. A 1-room
+    // page is shorter than perPage (100), so the loop terminates after
+    // page 1.
     expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/rooms",
-    );
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("https://sabha.example/a/api/bots/rooms");
+    expect(url).toContain("page=1");
+    expect(url).toContain("per_page=100");
     expect(entries.map((e) => e.id)).toEqual(["1"]);
   });
 
@@ -113,14 +116,12 @@ describe("listSabhaDirectoryGroups", () => {
     expect(mock.fetch).not.toHaveBeenCalled();
   });
 
-  it("filters by query (case-insensitive substring on name)", async () => {
+  it("propagates the query param to the server (filtering happens server-side)", async () => {
+    // Server-side query → small payload, scoped on the wire. The wrapper
+    // no longer does an in-memory filter; the mock simulates the server
+    // returning only matches.
     const mock = withMockedFetch([
-      {
-        body: [
-          { id: 1, name: "general", type: "Open" },
-          { id: 2, name: "Random", type: "Open" },
-        ],
-      },
+      { body: [{ id: 2, name: "Random", type: "Open" }] },
     ]);
     restore = mock.restore;
 
@@ -129,7 +130,19 @@ describe("listSabhaDirectoryGroups", () => {
       query: "rand",
     });
 
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("query=rand");
     expect(entries.map((e) => e.id)).toEqual(["2"]);
+  });
+
+  it("trims whitespace-only queries to undefined so the server gets no query param", async () => {
+    const mock = withMockedFetch([{ body: [] }]);
+    restore = mock.restore;
+
+    await listSabhaDirectoryGroups({ cfg: multiBotCfg(), query: "   " });
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).not.toContain("query=");
   });
 
   it("respects limit", async () => {
@@ -160,8 +173,62 @@ describe("listSabhaDirectoryGroups", () => {
     });
 
     expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(String(mock.fetch.mock.calls[0][0])).toBe("https://sabha.example/a/api/bots/rooms");
+    expect(String(mock.fetch.mock.calls[0][0])).toContain(
+      "https://sabha.example/a/api/bots/rooms",
+    );
     expect(entries).toHaveLength(1);
+  });
+
+  it("paginates: walks pages until a short page terminates the loop", async () => {
+    // Mirrors the listSabhaDirectoryPeers pagination tests. With
+    // perPage=100, returning 100 then a short page (or empty) ends the loop.
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `room-${i + 1}`,
+      type: "Open" as const,
+    }));
+    const tail = [{ id: 101, name: "room-101", type: "Open" as const }];
+    const mock = withMockedFetch([{ body: fullPage }, { body: tail }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
+
+    expect(mock.fetch).toHaveBeenCalledTimes(2);
+    expect(entries).toHaveLength(101);
+    // Second call should be page=2.
+    expect(String(mock.fetch.mock.calls[1][0])).toContain("page=2");
+  });
+
+  it("stops the pagination loop on an empty page", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `room-${i + 1}`,
+      type: "Open" as const,
+    }));
+    const mock = withMockedFetch([{ body: fullPage }, { body: [] }]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
+
+    expect(mock.fetch).toHaveBeenCalledTimes(2);
+    expect(entries).toHaveLength(100);
+  });
+
+  it("returns partial results when a mid-stream page throws", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `room-${i + 1}`,
+      type: "Open" as const,
+    }));
+    const mock = withMockedFetch([
+      { body: fullPage },
+      { body: "boom", status: 500 },
+    ]);
+    restore = mock.restore;
+
+    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
+
+    expect(entries).toHaveLength(100);
   });
 });
 

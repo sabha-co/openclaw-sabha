@@ -138,13 +138,31 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
     // Tools below are room/member admin operations without cross-channel
     // analogs (`sabha_search_members` is the room-scoped variant of name
     // resolution — no SDK directory slot models `roomId + query`).
-    build<AccountAwareParams>({
+    build<
+      AccountAwareParams & { query?: string; page?: number; per_page?: number }
+    >({
       name: "sabha_list_joinable_rooms",
       label: "List joinable Sabha rooms",
-      description: "List open rooms the bot can join in Sabha",
-      parameters: Type.Object({}),
+      description:
+        "List open rooms the bot can join in Sabha. Server paginates (default 50 per page, max 100); pass `query` for a name match, or `page` to walk further.",
+      parameters: Type.Object({
+        query: Type.Optional(
+          Type.String({ description: "Optional partial name match" }),
+        ),
+        page: Type.Optional(
+          Type.Number({ description: "1-indexed page number" }),
+        ),
+        per_page: Type.Optional(
+          Type.Number({ description: "Page size (server caps at 100)" }),
+        ),
+      }),
       execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).listJoinableRooms(),
+        await getClientForTool(cfg, params, agentAccountId).listRooms({
+          joinable: true,
+          query: params.query,
+          page: params.page,
+          perPage: params.per_page,
+        }),
     }),
     // Room-scoped name disambiguation. Workspace-level resolution lives on
     // `resolver.resolveTargets` (see channel.ts) and matches what Discord /

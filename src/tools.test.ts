@@ -89,12 +89,13 @@ describe("createSabhaTools — account routing", () => {
     const factory = buildListRoomsTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: undefined });
 
-    // Schema is a TypeBox object — its `properties` field should have
-    // zero entries for sabha_list_joinable_rooms. The LLM never sees accountId.
+    // The LLM-visible schema only carries pagination/query knobs; the
+    // hidden `accountId` override is not advertised. (After the listRooms
+    // pagination reshape, query/page/per_page are intentionally exposed.)
     const schema = tool.parameters as {
       properties?: Record<string, unknown>;
     };
-    expect(schema.properties ?? {}).toEqual({});
+    expect(Object.keys(schema.properties ?? {})).not.toContain("accountId");
   });
 
   it("routes to the default bot account when no context is provided", async () => {
@@ -215,6 +216,57 @@ describe("createSabhaTools — account routing", () => {
     expect(result.details).toEqual([
       { id: 1, name: "General", type: "Open" },
     ]);
+  });
+});
+
+describe("createSabhaTools — sabha_list_joinable_rooms", () => {
+  let restore: (() => void) | null = null;
+  afterEach(() => {
+    if (restore) {
+      restore();
+      restore = null;
+    }
+  });
+
+  it("hits /rooms with joinable=true and the bot account's auth", async () => {
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildListRoomsTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    await tool.execute("id", {});
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("/rooms");
+    expect(url).toContain("joinable=true");
+  });
+
+  it("propagates query/page/per_page when the agent passes them", async () => {
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildListRoomsTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    await tool.execute("id", { query: "general", page: 3, per_page: 25 });
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("query=general");
+    expect(url).toContain("page=3");
+    expect(url).toContain("per_page=25");
+  });
+
+  it("omits unset pagination params (server picks its default)", async () => {
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildListRoomsTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    await tool.execute("id", {});
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).not.toContain("page=");
+    expect(url).not.toContain("per_page=");
+    expect(url).not.toContain("query=");
   });
 });
 

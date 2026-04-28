@@ -200,6 +200,46 @@ describe("sabhaPlugin.actions.describeMessageTool", () => {
   });
 });
 
+describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
+  // The core message-action runner gates dispatch on `actionHasTarget`
+  // (`node_modules/openclaw/dist/message-action-runner-*.js`). Without these
+  // alias declarations, `{ action: "read", roomId: 5 }` would be rejected
+  // before reaching `handleAction` even though dispatch accepts roomId.
+  // These tests pin the publishing so a future drift (handler accepts an
+  // alias that core silently rejects) surfaces here.
+
+  it("publishes roomId / room_id / channel_id aliases for `read`", () => {
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.read?.aliases.sort()).toEqual([
+      "channel_id",
+      "roomId",
+      "room_id",
+    ]);
+  });
+
+  it("publishes roomId / room_id / channel_id aliases for `reactions`", () => {
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.reactions?.aliases.sort()).toEqual([
+      "channel_id",
+      "roomId",
+      "room_id",
+    ]);
+  });
+
+  it("does not publish `to`, `channelId`, or `target` (handled by core or as a synthetic field)", () => {
+    // `to` and `channelId` are always accepted by core's actionHasTarget;
+    // `target` is the runner's synthetic post-normalization field, which
+    // we don't want to short-circuit by claiming it as an alias.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    for (const action of ["read", "reactions"] as const) {
+      const list = aliases[action]?.aliases ?? [];
+      expect(list).not.toContain("to");
+      expect(list).not.toContain("channelId");
+      expect(list).not.toContain("target");
+    }
+  });
+});
+
 describe("sabhaPlugin.agentPrompt.messageToolHints", () => {
   it("contains the newest-first read-history hint so agents reorder for chronological summaries", () => {
     const fn = sabhaPlugin.agentPrompt!.messageToolHints!;

@@ -209,6 +209,27 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // sending replies through the inbound pipeline.
     actions: {
       ...sabhaMessageActions,
+      // Core's message-action runner gates the call on `actionHasTarget`
+      // before dispatching to `handleAction`: only `to`, `channelId`, and
+      // per-action aliases declared here are recognized as a valid target.
+      // Without this entry, an agent calling `{ action: "read", roomId: 5 }`
+      // would be rejected by core with "Action read requires a target." even
+      // though the dispatch handler in `src/message-actions.ts` accepts the
+      // alias. See `node_modules/openclaw/dist/message-action-runner-*.js`
+      // (`actionRequiresTarget` / `actionHasTarget`).
+      //
+      // We publish only the genuine room-target aliases — `to` and
+      // `channelId` are always accepted by core and `target` is the
+      // runner's synthetic post-normalization field, so neither belongs
+      // here. The pre-existing 6 actions (send/edit/unsend/react/
+      // thread-reply) have the same dead-code aliasing in their dispatch
+      // (`room_id`, `roomId`, `target` listed in `readNumber` calls) but
+      // agents reach them via `to` in practice; broadening their alias
+      // publishing is a separate PR's concern (see design doc).
+      messageActionTargetAliases: {
+        read: { aliases: ["roomId", "room_id", "channel_id"] },
+        reactions: { aliases: ["roomId", "room_id", "channel_id"] },
+      },
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the
         // implicit-target reply, and `thread-reply` covers the explicit one

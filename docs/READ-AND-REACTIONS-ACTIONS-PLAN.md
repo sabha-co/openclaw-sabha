@@ -284,14 +284,33 @@ if (action === "reactions") {
 
 The two missing-field errors for `reactions` are split into separate `throw`s (rather than one combined message) so each test assertion can pin a specific branch instead of matching either with a regex disjunction.
 
-### 4. `src/channel.ts` — `describeMessageTool`
+### 4. `src/channel.ts` — `describeMessageTool` and `messageActionTargetAliases`
 
-Two changes only:
+Three changes:
 
 - Add `"read"` and `"reactions"` to the `actions` array.
 - Broaden the four field descriptions in the existing schema fragment (`before`/`after`/`limit`/`cursor`) so they no longer say "Sabha search:" — replace with field-purpose descriptions that cover both `search` and `read`.
+- **Publish `messageActionTargetAliases`** for the new actions:
 
-The schema fragment doesn't need a new entry. The same four fields apply to `read` as to `search`; the `properties` bag is global on the merged tool, not per-action. The `channelId`/`channelIds`/`authorId`/`authorIds` canonical scoping fields continue to come from core's `buildChannelTargetSchema`.
+```ts
+messageActionTargetAliases: {
+  read: { aliases: ["roomId", "room_id", "channel_id"] },
+  reactions: { aliases: ["roomId", "room_id", "channel_id"] },
+}
+```
+
+This is **load-bearing**, not cosmetic. Core's `message-action-runner` calls `actionHasTarget(action, params, { channel })` before dispatching to `handleAction`, and rejects with `Error("Action ${action} requires a target.")` if no target is found (`node_modules/openclaw/dist/message-action-runner-*.js`, `actionHasTarget` at `channel-target-*.js`). The runner accepts only:
+
+1. `params.to` (always)
+2. `params.channelId` (always)
+3. Per-action aliases from core's `ACTION_TARGET_ALIASES` (none for `read` / `reactions`)
+4. Per-action aliases from the plugin's `messageActionTargetAliases`
+
+Without the publishing, an agent calling `{ action: "read", roomId: 5 }` is rejected by core *before* the dispatch handler runs, even though the handler accepts the alias. We publish `roomId` / `room_id` / `channel_id` because those are the genuine Sabha-native room targets; we deliberately do **not** publish `to` (always accepted by core), `channelId` (always accepted), or `target` (the runner uses `target` as a synthetic post-normalization field — claiming it as an alias would short-circuit the runner's auto-inference of `target` from `currentChannelId` in tool context).
+
+The schema fragment itself doesn't need a new entry. The same four `before`/`after`/`limit`/`cursor` fields apply to `read` as to `search`; the `properties` bag is global on the merged tool, not per-action. The `channelId`/`channelIds`/`authorId`/`authorIds` canonical scoping fields continue to come from core's `buildChannelTargetSchema`.
+
+**Caveat about the existing 6 actions.** `send`/`edit`/`unsend`/`react`/`thread-reply` have the same dead-code aliasing in dispatch (`readNumber(params, "to", "room_id", "roomId", "target")`) without publishing those aliases. Agents reach them via `to` in practice, so the dead-code aliasing hasn't bitten anyone — but a `roomId`-only call to those actions would be rejected by core for the same reason. Broadening the publishing to all 9 actions is a small mechanical change but is its own concern (separate PR; no behavior change for the existing aliases-via-`to` path).
 
 ### 5. `src/channel.ts` — `messageToolHints`
 
@@ -336,6 +355,9 @@ The hint is gated behind `availableTools.has("message")` by the SDK, so it's inv
 - `describeMessageTool`'s schema fragment still publishes `before` / `after` / `limit` / `cursor` (unchanged from main)
 - The four field descriptions don't say "Sabha search:" anymore (regression guard for the broadening)
 - `messageToolHints` preamble contains the "newest-first" sentence
+- `messageActionTargetAliases.read` publishes `["roomId", "room_id", "channel_id"]` — load-bearing for the core gate; without it core rejects `{action: "read", roomId: 5}` before dispatch
+- `messageActionTargetAliases.reactions` publishes the same alias set
+- Neither published list contains `to` / `channelId` (always-accepted by core) or `target` (runner's synthetic post-normalization field)
 
 ## Doc updates (in same PR)
 

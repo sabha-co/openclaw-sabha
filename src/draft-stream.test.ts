@@ -359,6 +359,173 @@ describe("createSabhaDraftStream", () => {
     });
   });
 
+  describe("firstSend (threading-on path)", () => {
+    it("routes the first send through firstSend, captures roomId+messageId, edits the thread on follow-ups", async () => {
+      const { client, sendMessage, editMessage } = makeStubClient();
+      const firstSend = vi
+        .fn()
+        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+      });
+
+      expect(stream.roomId()).toBe(10);
+
+      stream.update("partial 1");
+      await stream.flush();
+
+      // First send went through firstSend, not client.sendMessage.
+      expect(firstSend).toHaveBeenCalledExactlyOnceWith("partial 1");
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(stream.messageId()).toBe(7);
+      // roomId rebound to the captured thread room.
+      expect(stream.roomId()).toBe(99);
+
+      stream.update("partial 1 plus more");
+      await stream.flush();
+
+      // Subsequent edit targets the thread room (99), not the parent (10).
+      expect(editMessage).toHaveBeenCalledExactlyOnceWith(99, 7, "partial 1 plus more");
+      // firstSend was a one-shot.
+      expect(firstSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats firstSend returning null like sendMessage returning null — stops the stream, no captured id", async () => {
+      const { client, sendMessage, editMessage } = makeStubClient();
+      const firstSend = vi.fn().mockResolvedValue(null);
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+        logger: { warn: vi.fn() },
+      });
+
+      stream.update("partial");
+      await stream.flush();
+
+      expect(firstSend).toHaveBeenCalledTimes(1);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(editMessage).not.toHaveBeenCalled();
+      expect(stream.isAlive()).toBe(false);
+      expect(stream.messageId()).toBeUndefined();
+      // roomId stays at the parent — caller's case-(c) fallback uses
+      // shouldThread to decide what to do.
+      expect(stream.roomId()).toBe(10);
+    });
+
+    it("stops the stream when firstSend throws (mirrors the sendMessage-throws path)", async () => {
+      const { client, sendMessage } = makeStubClient();
+      const firstSend = vi.fn().mockRejectedValue(new Error("thread create 500"));
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+        logger: { warn: vi.fn() },
+      });
+
+      stream.update("partial");
+      await stream.flush();
+
+      expect(firstSend).toHaveBeenCalledTimes(1);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(stream.isAlive()).toBe(false);
+      expect(stream.messageId()).toBeUndefined();
+    });
+
+    it("routes the final-only path (no partials, only update + stop) through firstSend", async () => {
+      // Models the case where the model emitted no partials and the
+      // deliver callback finalizes through `update(final) + stop()`.
+      // The first send is the final text and must still go through
+      // firstSend (i.e. create the thread) so the reply is threaded.
+      const { client, sendMessage, editMessage } = makeStubClient();
+      const firstSend = vi
+        .fn()
+        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+      });
+
+      stream.update("final answer");
+      await stream.stop();
+
+      expect(firstSend).toHaveBeenCalledExactlyOnceWith("final answer");
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(editMessage).not.toHaveBeenCalled();
+      expect(stream.messageId()).toBe(7);
+      expect(stream.roomId()).toBe(99);
+    });
+
+    it("clear() deletes the preview against the captured thread room, not the parent", async () => {
+      const { client, deleteMessage } = makeStubClient();
+      const firstSend = vi
+        .fn()
+        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+      });
+
+      stream.update("partial");
+      await stream.flush();
+      await stream.clear();
+
+      // Delete uses the rebound effectiveRoomId (99 = thread), not 10 (parent).
+      expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(99, 7);
+    });
+
+    it("forceNewMessage re-routes through firstSend (idempotent thread append on the server)", async () => {
+      // After forceNewMessage, the stream forgets its preview id and the
+      // next update is a fresh "first" send. With firstSend wired, that
+      // re-enters the threading path. Sabha's /thread is idempotent via
+      // find_or_create_for, so this re-creates inside the same thread —
+      // intentional behavior for chunk handoffs.
+      const { client, sendMessage } = makeStubClient();
+      const firstSend = vi
+        .fn()
+        .mockResolvedValueOnce({ roomId: 99, messageId: 7 })
+        .mockResolvedValueOnce({ roomId: 99, messageId: 8 });
+      const stream = createSabhaDraftStream({
+        client,
+        roomId: 10,
+        firstSend,
+      });
+
+      stream.update("first chunk");
+      await stream.flush();
+      stream.forceNewMessage();
+      stream.update("second chunk");
+      await stream.flush();
+
+      expect(firstSend).toHaveBeenCalledTimes(2);
+      expect(firstSend).toHaveBeenNthCalledWith(1, "first chunk");
+      expect(firstSend).toHaveBeenNthCalledWith(2, "second chunk");
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(stream.messageId()).toBe(8);
+    });
+
+    it("without firstSend, behavior is unchanged (sendMessage on first, editMessage on follow-ups)", async () => {
+      // Regression guard: the firstSend path must NOT engage when callers
+      // don't pass one. This is the path used for in-thread, DM, and
+      // threading-off cases.
+      const { client, sendMessage, editMessage } = makeStubClient();
+      const stream = createSabhaDraftStream({ client, roomId: 10 });
+
+      stream.update("hello");
+      await stream.flush();
+      stream.update("hello world");
+      await stream.flush();
+
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "hello");
+      expect(editMessage).toHaveBeenCalledExactlyOnceWith(10, 42, "hello world");
+      expect(stream.roomId()).toBe(10);
+    });
+  });
+
 });
 
 describe("formatStreamError", () => {

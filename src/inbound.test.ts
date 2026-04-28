@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   processInboundMessage,
   shouldHandleInbound,
-  shouldStreamReply,
   handleMessageUpdated,
   handleMessageDeleted,
   handleBoostCreated,
@@ -564,39 +563,3 @@ describe("handleUserCreated / handleUserDeleted (privacy-scoped stubs)", () => {
   });
 });
 
-describe("shouldStreamReply", () => {
-  it("streams when the inbound is in a thread (server emits room.id == thread.id)", () => {
-    const payload = makePayload({
-      message: {
-        ...makePayload().message,
-        thread: { id: 99, parent_message_id: 10 },
-      },
-    });
-    expect(shouldStreamReply(payload, { replyToMode: "first" })).toBe(true);
-  });
-
-  it("streams in DMs regardless of replyToMode (DMs never thread)", () => {
-    const payload = makePayload({
-      room: { ...makePayload().room, type: "Direct" },
-    });
-    expect(shouldStreamReply(payload, { replyToMode: "first" })).toBe(true);
-    expect(shouldStreamReply(payload, { replyToMode: "all" })).toBe(true);
-    expect(shouldStreamReply(payload, { replyToMode: "off" })).toBe(true);
-  });
-
-  it("streams top-level non-DM when replyToMode is off (final reply is inline)", () => {
-    expect(shouldStreamReply(makePayload(), { replyToMode: "off" })).toBe(true);
-  });
-
-  it("skips streaming top-level non-DM when replyToMode would create a new thread", () => {
-    // Phase 1 limit: partials would land in the parent room while the
-    // final lands in the new thread, leaving two surfaces. Phase 2 fixes
-    // this via a `firstSend` hook on the draft stream.
-    expect(shouldStreamReply(makePayload(), { replyToMode: "first" })).toBe(false);
-    expect(shouldStreamReply(makePayload(), { replyToMode: "all" })).toBe(false);
-  });
-
-  it("defaults replyToMode to 'first' when not set (skips streaming top-level non-DM)", () => {
-    expect(shouldStreamReply(makePayload(), {})).toBe(false);
-  });
-});

@@ -58,34 +58,6 @@ export function shouldHandleInbound(
   return true;
 }
 
-/**
- * Should the bot stream its reply (draft-stream preview) for this inbound?
- *
- * Streaming requires a target room id known up front for both the partial
- * sends and the final edit. Three cases qualify:
- *
- *   - Already in a thread: `payload.room.id` IS the thread room id (Sabha
- *     models threads as Room subclasses; server emits `room.id == thread.id`
- *     when in-thread — see `app/models/bot/event_payload.rb#thread_to_api`).
- *     Stream directly into that room.
- *   - DM: never threaded, partials and final both go to the room.
- *   - Top-level non-DM with `replyToMode: "off"`: final reply is inline,
- *     same room as partials.
- *
- * The remaining case — top-level non-DM with threading on — would split
- * partials (parent room) from the final (new thread room). Phase 2 handles
- * this via a `firstSend` hook on the draft stream that creates the thread
- * on the first partial; until then, fall back to the non-streaming path.
- */
-export function shouldStreamReply(
-  payload: SabhaMessageEventPayload,
-  account: { replyToMode?: "off" | "first" | "all" },
-): boolean {
-  if (payload.message.thread != null) return true;
-  if (payload.room.type === "Direct") return true;
-  return (account.replyToMode ?? "first") === "off";
-}
-
 type InboundDeps = {
   runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;
@@ -96,10 +68,10 @@ type InboundDeps = {
    * Streaming hook. Called by the OpenClaw runtime as the agent yields
    * partial output during a turn. `payload.text` carries the full
    * accumulated snapshot on every call, not a delta. Wired into
-   * `dispatchInboundReplyWithBase`'s `replyOptions.onPartialReply` so
-   * Phase 2.1's draft stream can PATCH the preview message in place.
-   * Left undefined on code paths that don't want streaming (e.g.
-   * thread replies in v1 — see `src/draft-stream.ts` for why).
+   * `dispatchInboundReplyWithBase`'s `replyOptions.onPartialReply` so the
+   * draft stream can PATCH the preview message in place. Always defined
+   * now — every inbound case streams, whether the target room is known
+   * up front or resolved lazily through the stream's `firstSend` hook.
    */
   onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
 };

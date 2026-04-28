@@ -55,18 +55,18 @@ const DEFAULT_MAX_CHARS = 16_000;
  * and the lifecycle helper throttles the actual `sendMessage` /
  * `editMessage` calls to roughly `throttleMs` apart.
  *
- * **In-thread inbounds stream directly into the thread room** (Phase 1):
- * Sabha emits `payload.room.id == payload.message.thread.id` for in-thread
- * events, so `createSabhaDraftStream({ roomId: payload.room.id })` already
- * targets the right room. The streaming gate `shouldStreamReply` in
- * `inbound.ts` enables this path.
+ * **In-thread inbounds stream directly into the thread room.** Sabha emits
+ * `payload.room.id == payload.message.thread.id` for in-thread events, so
+ * `createSabhaDraftStream({ roomId: payload.room.id })` already targets the
+ * right room.
  *
- * **Top-level replies that create a NEW thread still skip streaming**
- * (Phase 2 follow-up). Streaming partials would write to the parent room
- * while the final goes to the new thread, leaving two surfaces that don't
- * agree. Phase 2 will add a `firstSend` hook so the first partial is sent
- * via `replyInThread` (capturing the new thread room id), and subsequent
- * edits target that captured room.
+ * **Top-level replies that create a NEW thread stream via `firstSend`.** The
+ * caller supplies a `firstSend` callback that posts the first partial via
+ * `replyInThread`, captures the new thread room id from the response, and
+ * returns it. The stream rebinds its room id to the captured value so all
+ * subsequent `editMessage` / `deleteMessage` calls target the thread, not the
+ * parent room. `roomId()` exposes the captured value to callers (recovery /
+ * error-replace paths) so they don't reach for the parent room id and 404.
  */
 export type SabhaDraftStream = {
   /** Set the current accumulated text. The loop throttles the actual send. */
@@ -75,6 +75,13 @@ export type SabhaDraftStream = {
   flush: () => Promise<void>;
   /** Current stream message id, or undefined if nothing has been sent yet. */
   messageId: () => number | undefined;
+  /**
+   * Effective room id for the preview message. Equals the param `roomId`
+   * until `firstSend` is wired and resolves; after that, equals the captured
+   * thread room id (so callers can `editMessage` / `deleteMessage` against
+   * the right room in recovery / error-replace paths).
+   */
+  roomId: () => number;
   /**
    * `true` while the loop can still accept `update` calls. Flips to
    * `false` the moment `sendOrEditStreamMessage` short-circuits due to an
@@ -101,6 +108,26 @@ type DraftStreamLogger = {
 export type CreateSabhaDraftStreamParams = {
   client: SabhaClient;
   roomId: number;
+  /**
+   * Optional override for the very first send. When supplied, the first
+   * partial is routed through this callback instead of `client.sendMessage`,
+   * and the returned `{ roomId, messageId }` rebinds the stream's effective
+   * room for all subsequent edits and deletes.
+   *
+   * Used by the threading-on streaming path: the callback posts via
+   * `client.replyInThread(parentRoomId, userMessageId, text)`, reads the
+   * new thread room id from the response (`r.thread.id`), and returns it
+   * along with `r.message.id`. Sabha's `/thread` endpoint is idempotent
+   * via `find_or_create_for`, so a network-drop retry can't fork the
+   * thread.
+   *
+   * Returning `null` is treated like `sendMessage` returning `null`: the
+   * stream stops and the caller's `deliver` fast-path handles finalization
+   * via the dead-stream branches.
+   */
+  firstSend?: (
+    text: string,
+  ) => Promise<{ roomId: number; messageId: number } | null>;
   throttleMs?: number;
   maxChars?: number;
   logger?: DraftStreamLogger;
@@ -122,7 +149,7 @@ export function createSabhaDraftStream(
     );
   }
   const maxChars = params.maxChars ?? DEFAULT_MAX_CHARS;
-  const { client, roomId, logger } = params;
+  const { client, logger, firstSend } = params;
 
   // `state` is shared by reference with the SDK helper — the helper reads
   // `stopped` / `final` on every flush tick, and our send-or-edit callback
@@ -130,6 +157,12 @@ export function createSabhaDraftStream(
   const state = { stopped: false, final: false };
   let streamMessageId: number | undefined;
   let lastSentText = "";
+  // `effectiveRoomId` starts at the configured room and gets rebound to the
+  // thread room id once `firstSend` resolves (see the threading-on streaming
+  // path). All `editMessage` / `deleteMessage` calls below MUST read this
+  // variable, not the original `params.roomId`, otherwise post-thread edits
+  // and the `clear()` deletion would target the parent room.
+  let effectiveRoomId = params.roomId;
 
   const sendOrEditStreamMessage = async (text: string): Promise<boolean> => {
     // The final flush runs even after an explicit stop (e.g. `clear()`),
@@ -162,11 +195,30 @@ export function createSabhaDraftStream(
 
     try {
       if (streamMessageId !== undefined) {
-        await client.editMessage(roomId, streamMessageId, trimmed);
+        await client.editMessage(effectiveRoomId, streamMessageId, trimmed);
         lastSentText = trimmed;
         return true;
       }
-      const sentId = await client.sendMessage(roomId, trimmed);
+      if (firstSend) {
+        // First-send override (threading-on path). The callback posts the
+        // initial partial via `replyInThread` and returns the new thread's
+        // room id along with the first message id. Subsequent ticks fall
+        // into the `streamMessageId !== undefined` branch above and target
+        // `effectiveRoomId` (the captured thread room).
+        const sent = await firstSend(trimmed);
+        if (sent == null) {
+          state.stopped = true;
+          logger?.warn?.(
+            "sabha draft stream stopped (firstSend returned null)",
+          );
+          return false;
+        }
+        effectiveRoomId = sent.roomId;
+        streamMessageId = sent.messageId;
+        lastSentText = trimmed;
+        return true;
+      }
+      const sentId = await client.sendMessage(effectiveRoomId, trimmed);
       if (sentId == null) {
         // Sabha's `sendMessage` returns `null` when the Location header
         // is missing. We can't edit a preview we can't address, so stop.
@@ -196,7 +248,7 @@ export function createSabhaDraftStream(
   const isValidMessageId = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value);
   const deleteMessage = async (messageId: number) => {
-    await client.deleteMessage(roomId, messageId);
+    await client.deleteMessage(effectiveRoomId, messageId);
   };
 
   const { loop, update, stop, clear } = createFinalizableDraftLifecycle<number>({
@@ -218,13 +270,14 @@ export function createSabhaDraftStream(
   };
 
   logger?.debug?.(
-    `sabha draft stream ready (room=${roomId}, throttleMs=${throttleMs}, maxChars=${maxChars})`,
+    `sabha draft stream ready (room=${params.roomId}, throttleMs=${throttleMs}, maxChars=${maxChars}${firstSend ? ", firstSend=on" : ""})`,
   );
 
   return {
     update,
     flush: loop.flush,
     messageId: readMessageId,
+    roomId: () => effectiveRoomId,
     isAlive: () => !state.stopped,
     clear,
     stop,

@@ -354,7 +354,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
             "that threading happens automatically when you reply to their mention — it's configured by the operator, not by you. " +
             "Users have roles: administrator, moderator, member, or bot. " +
             "Messages support rich text (Markdown), file attachments, emoji reactions, and @mentions. " +
-            "Use the sabha_* tools to manage rooms, members, search messages, and more. " +
             "Never suggest Discord/Slack/Teams instructions — those platforms don't apply here.",
           // Sabha mention syntax is deliberately NOT the same as Discord /
           // Slack. Without this reinforcement, agents default to `<@id>`

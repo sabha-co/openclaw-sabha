@@ -64,12 +64,17 @@ const multiBotCfg = () =>
     defaultAccount: "production",
   });
 
-function buildListRoomsTool(getConfig: () => OpenClawConfig) {
+// Account-routing tests use `sabha_search_members` as the fixture because
+// it's one of the two retained `registerTool` factories. The behavior under
+// test (precedence of params.accountId / ctx.agentAccountId / default,
+// disabled-account error, schema doesn't expose accountId) is generic to
+// all tools, so any retained factory works.
+function buildAccountRoutingTool(getConfig: () => OpenClawConfig) {
   const tools = createSabhaTools(getConfig);
   const factory = tools.find(
-    (f) => f({ agentAccountId: undefined }).name === "sabha_list_joinable_rooms",
+    (f) => f({ agentAccountId: undefined }).name === "sabha_search_members",
   );
-  if (!factory) throw new Error("sabha_list_joinable_rooms not registered");
+  if (!factory) throw new Error("sabha_search_members not registered");
   return factory;
 }
 
@@ -86,7 +91,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: undefined });
 
     // The LLM-visible schema only carries pagination/query knobs; the
@@ -102,7 +107,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: undefined });
     await tool.execute("id", {});
 
@@ -117,7 +122,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: "staging" });
     await tool.execute("id", {});
 
@@ -130,7 +135,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     // ctx says production, but the caller explicitly overrides to staging
     const tool = factory({ agentAccountId: "production" });
     await tool.execute("id", { accountId: "staging" });
@@ -144,7 +149,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() =>
+    const factory = buildAccountRoutingTool(() =>
       cfg({
         accounts: {
           default: {
@@ -171,7 +176,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: "agent-spawner" });
     await tool.execute("id", {});
 
@@ -184,7 +189,7 @@ describe("createSabhaTools — account routing", () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() =>
+    const factory = buildAccountRoutingTool(() =>
       cfg({
         accounts: {
           default: {
@@ -205,68 +210,15 @@ describe("createSabhaTools — account routing", () => {
   });
 
   it("returns a text + details result shape", async () => {
-    const mock = withMockedFetch([{ id: 1, name: "General", type: "Open" }]);
+    const mock = withMockedFetch([{ id: 1, name: "Alice" }]);
     restore = mock.restore;
 
-    const factory = buildListRoomsTool(() => multiBotCfg());
+    const factory = buildAccountRoutingTool(() => multiBotCfg());
     const tool = factory({ agentAccountId: undefined });
     const result = await tool.execute("id", {});
 
     expect(result.content[0].type).toBe("text");
-    expect(result.details).toEqual([
-      { id: 1, name: "General", type: "Open" },
-    ]);
-  });
-});
-
-describe("createSabhaTools — sabha_list_joinable_rooms", () => {
-  let restore: (() => void) | null = null;
-  afterEach(() => {
-    if (restore) {
-      restore();
-      restore = null;
-    }
-  });
-
-  it("hits /rooms with joinable=true and the bot account's auth", async () => {
-    const mock = withMockedFetch();
-    restore = mock.restore;
-
-    const factory = buildListRoomsTool(() => multiBotCfg());
-    const tool = factory({ agentAccountId: undefined });
-    await tool.execute("id", {});
-
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("/rooms");
-    expect(url).toContain("joinable=true");
-  });
-
-  it("propagates query/page/per_page when the agent passes them", async () => {
-    const mock = withMockedFetch();
-    restore = mock.restore;
-
-    const factory = buildListRoomsTool(() => multiBotCfg());
-    const tool = factory({ agentAccountId: undefined });
-    await tool.execute("id", { query: "general", page: 3, per_page: 25 });
-
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("query=general");
-    expect(url).toContain("page=3");
-    expect(url).toContain("per_page=25");
-  });
-
-  it("omits unset pagination params (server picks its default)", async () => {
-    const mock = withMockedFetch();
-    restore = mock.restore;
-
-    const factory = buildListRoomsTool(() => multiBotCfg());
-    const tool = factory({ agentAccountId: undefined });
-    await tool.execute("id", {});
-
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).not.toContain("page=");
-    expect(url).not.toContain("per_page=");
-    expect(url).not.toContain("query=");
+    expect(result.details).toEqual([{ id: 1, name: "Alice" }]);
   });
 });
 

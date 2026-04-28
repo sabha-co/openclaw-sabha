@@ -309,69 +309,12 @@ export class SabhaClient {
     return (await res.json()) as SabhaRoom[];
   }
 
-  async createRoom(
-    name: string,
-    type: "open" | "closed",
-  ): Promise<SabhaRoom> {
-    const res = await this.fetch(`/rooms`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, type }),
-    });
-    return (await res.json()) as SabhaRoom;
-  }
-
-  async updateRoom(roomId: number, name: string): Promise<SabhaRoom> {
-    const res = await this.fetch(`/rooms/${roomId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    return (await res.json()) as SabhaRoom;
-  }
-
-  async archiveRoom(roomId: number): Promise<void> {
-    await this.fetch(`/rooms/${roomId}`, {
-      method: "DELETE",
-    });
-  }
-
   async joinRoom(roomId: number): Promise<SabhaRoom> {
     const res = await this.fetch(
       `/rooms/${roomId}/membership`,
       { method: "POST" },
     );
     return (await res.json()) as SabhaRoom;
-  }
-
-  async leaveRoom(roomId: number): Promise<void> {
-    await this.fetch(`/rooms/${roomId}/membership`, {
-      method: "DELETE",
-    });
-  }
-
-  // --- Members ---
-
-  async addMember(
-    roomId: number,
-    userId: number,
-  ): Promise<{ id: number; name: string }> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/members`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId }),
-      },
-    );
-    return (await res.json()) as { id: number; name: string };
-  }
-
-  async removeMember(roomId: number, userId: number): Promise<void> {
-    await this.fetch(
-      `/rooms/${roomId}/members/${userId}`,
-      { method: "DELETE" },
-    );
   }
 
   // --- Users (directory) ---

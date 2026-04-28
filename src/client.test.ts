@@ -365,7 +365,6 @@ describe("SabhaClient — bearer auth + URL shape", () => {
     const calls: string[] = [];
     for (const run of [
       () => client.listRooms(),
-      () => client.createRoom("n", "open").catch(() => {}),
       () => client.sendMessage(5, "hi"),
       () =>
         client.sendAttachment(

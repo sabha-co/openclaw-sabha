@@ -2,6 +2,8 @@
 
 Implementation plan for the `v0.10.0-bearer-auth` branch (historical name; merged as the `2026.4.25` plugin release). Tracks the plugin-side work that shipped lockstep with the Sabha server's `bot-api-header-auth` branch.
 
+> **Postscript (2026.4.29):** several agent tools listed in this plan's verification checklist (`sabha_list_rooms`, `sabha_search`, `sabha_create_room`, `sabha_add_member`) were subsequently removed. `sabha_list_rooms` and `sabha_search` were replaced by canonical SDK slots in 2026.4.27 (directory adapter and the shared `message` tool's `search` action). `sabha_create_room` and `sabha_add_member` were dropped in 2026.4.29 — see `docs/CHANNEL-ADMIN-DROP-PLAN.md`. The bearer-auth wire contract those checks were exercising is unchanged.
+
 ## Goal
 
 Swap `bot_key`-in-URL-path for `Authorization: Bearer` header. Move every HTTP endpoint under `/api/bots/*`. One breaking release; no compat layer.

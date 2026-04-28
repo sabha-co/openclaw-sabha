@@ -265,7 +265,7 @@ The plugin plan assumes [`sabha-co/sabha#49`](https://github.com/sabha-co/sabha/
 2. **`/api/bots/search`** accepts `?query=&room_ids=&author_ids=&before=&after=&limit=` (default 50, hard cap 200). Response is `{ results: SabhaSearchResult[], has_more: bool, next_cursor: "<iso>|<id>" | null }`. Cursor pagination, no `page` param. 422 on unparseable timestamps.
 3. **`/api/bots/autocompletable/users`** already accepts `?query=&room_id=` and caps at 20 (predates the scale review).
 
-One follow-on still open server-side: **cursor pagination on `/api/bots/rooms`**. Not blocking — page-based works fine at expected room cardinality. Worth picking up if a workspace's room list grows past a few thousand.
+Page-based pagination on `/api/bots/rooms` is the long-term shape. A Sabha workspace's room count is bounded by social/organizational reality (single-tenant chat platforms don't grow past hundreds-to-low-thousands of rooms), so cursor pagination on this endpoint isn't on the roadmap — peers like Slack add cursor pagination because they're at the platform tier where guild/channel counts can hit `O(10⁶)`, which doesn't apply here.
 
 ## What's already done (and what's incomplete)
 
@@ -275,7 +275,6 @@ One follow-on still open server-side: **cursor pagination on `/api/bots/rooms`**
 - ✅ **Step 4 — `search` reshaped** (`0828285`, refined in `ed80f1f` and `9cf3239`). New shape `search({ query, roomIds, authorIds, before, after, limit, cursor })` returning `{ results, hasMore, nextCursor }`. Array params use repeated keys; CSV strings accepted at the message-action layer for agent ergonomics. The message-action layer also accepts the canonical cross-channel scoping fields (`channelId`/`channelIds`/`authorId`/`authorIds`) so callers using the standard message-tool shape don't have their scope silently dropped. `describeMessageTool` publishes a typed schema contribution for the Sabha-specific search fields. Wire boundary now validates the envelope shape via `parseSearchResponse`. Agent prompt carries an explicit `SEARCH IN SABHA` hint covering the truncation signal and scoping params.
 - ✅ **`listUsers` / `getUser` / `searchUsers` shipped correctly** (pre-existing). Server-side pagination, hard cap, scoped search. Template for the rest.
 - ✅ **`message-actions` `member-info` action** (pre-existing). Single-record lookup with documented 404-as-"not-visible" semantics.
-- ⏳ **Step 5 — cursor pagination on `/api/bots/rooms`** (open, non-blocking). Picks up if a workspace's room list grows past a few thousand. Page-based pagination is fine until then.
 
 ## Plan
 
@@ -321,10 +320,6 @@ Wire path (`/api/bots/autocompletable/users?query=&room_id=`) already exists and
 - Client validates the response envelope shape at the wire boundary (defends against a server regression to the pre-envelope bare-array shape).
 - `messageToolHints`: "search returns up to 200 results; pass `channelId` / `channelIds` (or Sabha's `roomIds` alias) and `authorId` / `authorIds` to scope, refine if `hasMore` is true, or pass `cursor` to continue."
 - Tests: unscoped query (default ≤200), scoped queries via canonical aliases, `hasMore` signal, cursor follow, composite cursor format (`<iso>|<id>`), hard-cap clamp, malformed-envelope rejection.
-
-### 5. (Open, non-blocking) `listRooms` cursor pagination
-
-Once the server adds `?cursor=` on `/api/bots/rooms`, swap the page-based loop in `listSabhaDirectoryGroups` for cursor-based. Caller API stays the same. Useful only if a workspace's room list grows past a few thousand — page-based is fine until then.
 
 ## When to revisit this doc
 

@@ -57,16 +57,6 @@ export type SabhaAttachment = {
   byte_size: number;
 };
 
-export type SabhaMessage = {
-  id: number;
-  creator: { id: number; name: string };
-  body: SabhaMessageBody;
-  has_attachment: boolean;
-  attachment: SabhaAttachment | null;
-  mentionees: Array<{ id: number; name: string }>;
-  created_at: string;
-};
-
 export type SabhaThreadInfo = {
   id: number;
   parent_message_id: number;

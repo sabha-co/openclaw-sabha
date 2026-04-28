@@ -205,7 +205,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 | Buttons / select menus | +500–800 LOC, 4–5 files | **Slack's shorthand** (`[[slack_buttons:Label:value]]`), not Discord's raw component JSON |
 | Slash commands | +200–400 LOC, 2–3 files | Discord's slash‑command + interaction routing |
 | Pin / unpin / list-pins | +50 LOC | Add to `SUPPORTED_ACTIONS` + `handleAction` in `src/message-actions.ts` (the adapter slot is already wired) |
-| `readMessages` (fetch room history for context) | +50 LOC | Same — extend `handleAction` to call existing `client.getMessages(roomId)` |
+| `readMessages` (fetch recent room history for context) | +100 LOC | Add a `readMessages` action with a time-bounded shape — `client.readMessages({ roomId, since?, before?, limit })` mapped onto `GET /api/bots/rooms/:id/messages?since=&before=&limit=`. **Do not reintroduce an unbounded `getMessages(roomId)` dump** — see `docs/READ-ENDPOINT-SCALE-PLAN.md`. |
 
 Inflection point for the codebase shape: at one new feature, file structure stays flat. Adding two of the above triggers `monitor/events/<namespace>.ts` reorganization and the action‑dispatcher pattern from Discord/Slack.
 

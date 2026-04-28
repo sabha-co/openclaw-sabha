@@ -1,7 +1,5 @@
 import type {
   SabhaRoom,
-  SabhaMember,
-  SabhaMessage,
   SabhaSearchResult,
   SabhaThreadReply,
   SabhaMessageBody,
@@ -163,20 +161,6 @@ export class SabhaClient {
       `/rooms/${roomId}/messages/${messageId}`,
       { method: "DELETE" },
     );
-  }
-
-  async getMessage(roomId: number, messageId: number): Promise<SabhaMessage> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
-    );
-    return (await res.json()) as SabhaMessage;
-  }
-
-  async getMessages(roomId: number): Promise<SabhaMessage[]> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages`,
-    );
-    return (await res.json()) as SabhaMessage[];
   }
 
   /**

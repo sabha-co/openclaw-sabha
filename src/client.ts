@@ -1,5 +1,6 @@
 import type {
   SabhaRoom,
+  SabhaSearchResponse,
   SabhaSearchResult,
   SabhaThreadReply,
   SabhaMessageBody,
@@ -379,11 +380,43 @@ export class SabhaClient {
 
   // --- Search ---
 
-  async search(query: string): Promise<SabhaSearchResult[]> {
-    const res = await this.fetch(
-      `/search?q=${encodeURIComponent(query)}`,
-    );
-    return (await res.json()) as SabhaSearchResult[];
+  /**
+   * Search messages. Server caps results at 200; default limit is 50.
+   * Pass `roomIds` / `authorIds` to scope; pass `cursor` to walk results.
+   *
+   * Server route: `GET /api/bots/search?query=&room_ids=&author_ids=&before=&after=&limit=&cursor=`.
+   * Array params (`room_ids`, `author_ids`) use repeated keys (Rails default).
+   * Response shape: `{ results, has_more, next_cursor: "<iso>|<id>" | null }`.
+   * 422 on unparseable `before` / `after` ISO timestamps.
+   */
+  async search(opts: {
+    query: string;
+    roomIds?: number[];
+    authorIds?: number[];
+    before?: string;
+    after?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<SabhaSearchResponse> {
+    const params = new URLSearchParams();
+    params.set("query", opts.query);
+    for (const id of opts.roomIds ?? []) params.append("room_ids", String(id));
+    for (const id of opts.authorIds ?? []) params.append("author_ids", String(id));
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    const res = await this.fetch(`/search?${params.toString()}`);
+    const json = (await res.json()) as {
+      results: SabhaSearchResult[];
+      has_more: boolean;
+      next_cursor: string | null;
+    };
+    return {
+      results: json.results,
+      hasMore: json.has_more,
+      nextCursor: json.next_cursor,
+    };
   }
 
   // --- Bot settings ---

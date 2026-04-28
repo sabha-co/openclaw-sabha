@@ -193,8 +193,12 @@ describe("sabhaMessageActions.handleAction", () => {
     ).rejects.toThrow(/userId/);
   });
 
-  it("search → GET /search?q=...", async () => {
-    const mock = withMockedFetch([{ id: 1 }, { id: 2 }]);
+  it("search → GET /search with query, returns results + hasMore + nextCursor", async () => {
+    const mock = withMockedFetch({
+      results: [{ id: 1 }, { id: 2 }],
+      has_more: false,
+      next_cursor: null,
+    });
     restore = mock.restore;
 
     const result = await sabhaMessageActions.handleAction!(
@@ -202,8 +206,93 @@ describe("sabhaMessageActions.handleAction", () => {
     );
 
     const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toBe("https://sabha.example/api/bots/search?q=hello%20world");
-    expect((result.details as { results: unknown[] }).results).toHaveLength(2);
+    expect(url).toContain("/search?");
+    // URLSearchParams encodes spaces as `+`, not `%20`.
+    expect(url).toContain("query=hello+world");
+    const details = result.details as {
+      results: unknown[];
+      hasMore: boolean;
+      nextCursor: string | null;
+    };
+    expect(details.results).toHaveLength(2);
+    expect(details.hasMore).toBe(false);
+    expect(details.nextCursor).toBeNull();
+  });
+
+  it("search propagates roomIds and authorIds as repeated keys", async () => {
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", {
+        query: "hi",
+        roomIds: [1, 2, 3],
+        authorIds: [42],
+      }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    // Repeated-key array form (Rails default).
+    expect(url).toContain("room_ids=1");
+    expect(url).toContain("room_ids=2");
+    expect(url).toContain("room_ids=3");
+    expect(url).toContain("author_ids=42");
+  });
+
+  it("search accepts a CSV string for roomIds/authorIds (agent ergonomics)", async () => {
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", { query: "hi", room_ids: "1,2,3" }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("room_ids=1");
+    expect(url).toContain("room_ids=2");
+    expect(url).toContain("room_ids=3");
+  });
+
+  it("search propagates before/after/limit/cursor", async () => {
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", {
+        query: "hi",
+        before: "2026-04-28T00:00:00Z",
+        after: "2026-04-01T00:00:00Z",
+        limit: 100,
+        cursor: "2026-04-15T12:00:00Z|987",
+      }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("before=2026-04-28T00%3A00%3A00Z");
+    expect(url).toContain("after=2026-04-01T00%3A00%3A00Z");
+    expect(url).toContain("limit=100");
+    expect(url).toContain("cursor=2026-04-15T12%3A00%3A00Z%7C987");
+  });
+
+  it("search surfaces the hasMore + nextCursor signal back to the agent", async () => {
+    const mock = withMockedFetch({
+      results: [{ id: 1 }],
+      has_more: true,
+      next_cursor: "2026-04-15T12:00:00Z|987",
+    });
+    restore = mock.restore;
+
+    const result = await sabhaMessageActions.handleAction!(
+      ctx("search", { query: "hi" }),
+    );
+
+    const details = result.details as {
+      hasMore: boolean;
+      nextCursor: string | null;
+    };
+    expect(details.hasMore).toBe(true);
+    expect(details.nextCursor).toBe("2026-04-15T12:00:00Z|987");
+    expect(result.content[0].text).toMatch(/more available/);
   });
 
   it("throws when required params are missing", async () => {

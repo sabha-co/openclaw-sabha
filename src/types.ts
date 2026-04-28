@@ -75,6 +75,19 @@ export type SabhaSearchResult = {
   created_at: string;
 };
 
+/**
+ * Envelope returned by `client.search`. `nextCursor` is a composite
+ * `"<iso>|<id>"` token the server emits — opaque to the plugin, just
+ * passed back on the next call. `hasMore` is the explicit truncation
+ * signal the agent reads to decide between refining the query and
+ * paginating.
+ */
+export type SabhaSearchResponse = {
+  results: SabhaSearchResult[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
 // Webhook payload from Sabha to bot
 //
 // Sabha's `BotEventsChannel` fans out nine event types (see Scout A

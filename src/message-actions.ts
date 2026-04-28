@@ -74,6 +74,34 @@ function readNumber(params: Record<string, unknown>, ...keys: string[]): number 
   return undefined;
 }
 
+/**
+ * Parse a numeric-array param. Accepts either a real array (`[1, 2, 3]`)
+ * or a CSV string (`"1,2,3"`) — agents trained on REST APIs often emit
+ * the comma form even when the schema asks for an array.
+ */
+function readNumberArray(
+  params: Record<string, unknown>,
+  ...keys: string[]
+): number[] | undefined {
+  for (const k of keys) {
+    const v = params[k];
+    if (Array.isArray(v)) {
+      const nums = v
+        .map((x) => (typeof x === "number" ? x : Number(x)))
+        .filter((n) => Number.isFinite(n));
+      if (nums.length > 0) return nums;
+    }
+    if (typeof v === "string" && v.trim()) {
+      const nums = v
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n));
+      if (nums.length > 0) return nums;
+    }
+  }
+  return undefined;
+}
+
 function ok(text: string, details: unknown = {}): AgentToolResult<unknown> {
   return {
     content: [{ type: "text" as const, text }],
@@ -95,8 +123,25 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (!query) {
         throw new Error("Sabha search requires a 'query' parameter.");
       }
-      const results = await client.search(query);
-      return ok(`Found ${results.length} result(s)`, { results });
+      const response = await client.search({
+        query,
+        roomIds: readNumberArray(params, "roomIds", "room_ids"),
+        authorIds: readNumberArray(params, "authorIds", "author_ids"),
+        before: readString(params, "before"),
+        after: readString(params, "after"),
+        limit: readNumber(params, "limit"),
+        cursor: readString(params, "cursor"),
+      });
+      // The agent reads `hasMore` to decide whether to refine vs. paginate;
+      // `nextCursor` lets it walk if it really needs more.
+      const note = response.hasMore
+        ? `Found ${response.results.length} (more available — pass cursor to walk or scope with roomIds/authorIds)`
+        : `Found ${response.results.length} result(s)`;
+      return ok(note, {
+        results: response.results,
+        hasMore: response.hasMore,
+        nextCursor: response.nextCursor,
+      });
     }
 
     if (action === "member-info") {

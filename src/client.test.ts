@@ -433,4 +433,80 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).toMatch(/query=team\+alpha\+%26\+beta/);
     });
   });
+
+  describe("search — envelope + array params", () => {
+    function searchMockFetch(json: {
+      results: { id: number }[];
+      has_more: boolean;
+      next_cursor: string | null;
+    }) {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify(json), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+    }
+
+    it("returns the camel-cased envelope { results, hasMore, nextCursor }", async () => {
+      searchMockFetch({
+        results: [{ id: 1 }, { id: 2 }],
+        has_more: true,
+        next_cursor: "2026-04-15T12:00:00Z|987",
+      });
+      const client = new SabhaClient(API, BOT_KEY);
+      const out = await client.search({ query: "hi" });
+
+      expect(out.results).toHaveLength(2);
+      expect(out.hasMore).toBe(true);
+      expect(out.nextCursor).toBe("2026-04-15T12:00:00Z|987");
+    });
+
+    it("emits room_ids/author_ids as repeated keys (Rails default)", async () => {
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({
+        query: "hi",
+        roomIds: [1, 2, 3],
+        authorIds: [42, 99],
+      });
+
+      const url = lastCall().url;
+      expect(url).toContain("room_ids=1");
+      expect(url).toContain("room_ids=2");
+      expect(url).toContain("room_ids=3");
+      expect(url).toContain("author_ids=42");
+      expect(url).toContain("author_ids=99");
+    });
+
+    it("threads before/after/limit/cursor through unchanged", async () => {
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({
+        query: "hi",
+        before: "2026-04-28T00:00:00Z",
+        after: "2026-04-01T00:00:00Z",
+        limit: 100,
+        cursor: "2026-04-15T12:00:00Z|987",
+      });
+
+      const url = lastCall().url;
+      expect(url).toContain("query=hi");
+      expect(url).toContain("before=2026-04-28T00%3A00%3A00Z");
+      expect(url).toContain("after=2026-04-01T00%3A00%3A00Z");
+      expect(url).toContain("limit=100");
+      expect(url).toContain("cursor=2026-04-15T12%3A00%3A00Z%7C987");
+    });
+
+    it("omits empty arrays from the URL", async () => {
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({ query: "hi", roomIds: [], authorIds: [] });
+
+      const url = lastCall().url;
+      expect(url).not.toContain("room_ids=");
+      expect(url).not.toContain("author_ids=");
+    });
+  });
 });

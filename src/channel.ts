@@ -311,6 +311,13 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
             "incoming message envelope's `from` field as `Name (@{id})` — copy the `@{id}` token verbatim to reply-mention " +
             "them. For example, if the envelope shows `From: Alice (@{42})`, reply with `Thanks @{42}, on it!` to produce " +
             "a real mention pill.",
+          // Search returns at most 200 hits regardless of caller. The
+          // explicit `hasMore` signal closes the silent-truncation gap —
+          // without it the agent would summarize the visible slice as if
+          // it were complete.
+          "SEARCH IN SABHA: The `search` action returns up to 200 results (default 50). It returns `hasMore: true` " +
+            "when more matches exist beyond what was returned — refine the query or pass `roomIds` / `authorIds` to scope, " +
+            "or pass `cursor` (from `nextCursor`) to walk further. Time-bound with `before` / `after` (ISO timestamps).",
         ];
       },
     },

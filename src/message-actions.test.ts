@@ -253,6 +253,53 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).toContain("room_ids=3");
   });
 
+  it("search accepts the canonical channelId / channelIds / authorId / authorIds shape", async () => {
+    // Cross-channel callers (e.g. the cron message tool, an isolated
+    // agent dispatch) use the SDK-canonical field names from core's
+    // buildChannelTargetSchema. Sabha rooms are channels; without these
+    // aliases, the scope would be silently dropped and run a
+    // workspace-wide search.
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", {
+        query: "hi",
+        channelId: 7,
+        channelIds: [8, 9],
+        authorId: 42,
+        authorIds: [99, 100],
+      }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    // Plural keys come first (per readNumberList ordering), then the
+    // singular gets appended.
+    expect(url).toContain("room_ids=8");
+    expect(url).toContain("room_ids=9");
+    expect(url).toContain("room_ids=7");
+    expect(url).toContain("author_ids=99");
+    expect(url).toContain("author_ids=100");
+    expect(url).toContain("author_ids=42");
+  });
+
+  it("search unions canonical and Sabha-native plurals (no double-counting on overlap)", async () => {
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", {
+        query: "hi",
+        channelIds: [1],
+        roomIds: [2],
+      }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("room_ids=1");
+    expect(url).toContain("room_ids=2");
+  });
+
   it("search silently drops non-numeric entries from a mixed array (lossy by design)", async () => {
     // Agents trained on REST APIs sometimes emit ["1", "abc", 2] when
     // they're unsure about the wire type. Rather than failing the

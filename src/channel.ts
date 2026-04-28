@@ -225,47 +225,36 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
         ],
         capabilities: [],
         schema: [
-          // search action — without these typed fields, the agent only
-          // learns about scoping/pagination from the prose
-          // `SEARCH IN SABHA` hint, and malformed calls slip past the
-          // ad-hoc readNumberArray/readString coercion in
-          // message-actions.ts. Expose them explicitly so the SDK
-          // validates input shape at the tool boundary.
+          // search action — these fields are Sabha-specific and not in
+          // core's `buildChannelTargetSchema`. The canonical scoping
+          // fields (`channelId`/`channelIds`/`authorId`/`authorIds`) are
+          // already exposed by core; the message-action handler reads
+          // them via readNumberList and unions them with Sabha's
+          // `roomId`/`roomIds` aliases. So we only need to advertise
+          // the genuinely-new fields here.
           {
             properties: {
-              roomIds: Type.Optional(
-                Type.Array(Type.Number(), {
-                  description:
-                    "Sabha: scope search to these room ids. Accepts an array of numbers or a comma-separated string.",
-                }),
-              ),
-              authorIds: Type.Optional(
-                Type.Array(Type.Number(), {
-                  description:
-                    "Sabha: scope search to messages authored by these user ids. Accepts an array or comma-separated string.",
-                }),
-              ),
               before: Type.Optional(
                 Type.String({
                   description:
-                    "Sabha: ISO timestamp upper bound (inclusive of older messages, exclusive of newer).",
+                    "Sabha search: ISO timestamp upper bound (older messages).",
                 }),
               ),
               after: Type.Optional(
                 Type.String({
-                  description: "Sabha: ISO timestamp lower bound.",
+                  description: "Sabha search: ISO timestamp lower bound.",
                 }),
               ),
               limit: Type.Optional(
                 Type.Number({
                   description:
-                    "Sabha: max results to return. Default 50, server hard cap 200.",
+                    "Sabha search: max results to return. Default 50, server hard cap 200.",
                 }),
               ),
               cursor: Type.Optional(
                 Type.String({
                   description:
-                    "Sabha: opaque pagination cursor from a prior response's `nextCursor`. Pass to walk further; refining the query is usually preferable.",
+                    "Sabha search: opaque pagination cursor from a prior response's `nextCursor`. Pass to walk further; refining the query is usually preferable.",
                 }),
               ),
             },
@@ -364,8 +353,9 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           // without it the agent would summarize the visible slice as if
           // it were complete.
           "SEARCH IN SABHA: The `search` action returns up to 200 results (default 50). It returns `hasMore: true` " +
-            "when more matches exist beyond what was returned — refine the query or pass `roomIds` / `authorIds` to scope, " +
-            "or pass `cursor` (from `nextCursor`) to walk further. Time-bound with `before` / `after` (ISO timestamps).",
+            "when more matches exist beyond what was returned — refine the query or pass `channelId` / `channelIds` " +
+            "(or Sabha's `roomIds` alias) and `authorId` / `authorIds` to scope, or pass `cursor` (from `nextCursor`) " +
+            "to walk further. Time-bound with `before` / `after` (ISO timestamps).",
         ];
       },
     },

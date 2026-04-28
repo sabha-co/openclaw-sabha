@@ -137,31 +137,40 @@ No scoping, no limit, no pagination. The agent passes a query, the server presum
 
 All peers force scoping or strict pagination. Sabha exposes a bare `query` string.
 
-**Right shape:**
+**Shipped shape (commit `0828285` + `9cf3239`):**
 
 ```ts
+// src/client.ts — wire boundary, plural-only
 async search(opts: {
   query: string;
-  roomId?: number;           // scope to one room
-  roomIds?: number[];        // scope to multiple rooms
-  authorId?: number;         // scope to one user
-  before?: string;           // ISO timestamp or message id
-  after?: string;
-  limit?: number;            // default 50, hard cap 200
-  page?: number;             // for follow-up pagination
+  roomIds?: number[];         // → ?room_ids=1&room_ids=2 (repeated keys)
+  authorIds?: number[];       // → ?author_ids=7
+  before?: string;            // ISO timestamp upper bound
+  after?: string;             // ISO timestamp lower bound
+  limit?: number;             // default 50, hard cap 200
+  cursor?: string;            // composite "<iso>|<id>"
 }): Promise<{
   results: SabhaSearchResult[];
-  hasMore: boolean;          // explicit truncation signal
+  hasMore: boolean;           // explicit truncation signal
+  nextCursor: string | null;  // pass back on the next call to walk
 }>
 ```
 
-The `search` message-action surfaces the same params (minus `page`, which the agent typically doesn't drive — it asks "more?" semantically and we paginate under the hood). Server enforces the hard cap (200) regardless of what the client requests.
+The `search` message-action layer (`src/message-actions.ts`) is the agent boundary and accepts a wider set of param names so cross-channel callers stay compatible:
+
+- **Canonical scoping fields from core's `buildChannelTargetSchema`:** `channelId` / `channelIds` (singular and plural forms), `authorId` / `authorIds`. Discord, MSTeams, and qa-channel all read these. Without them, a caller using the standard fields would have their scope silently dropped and run a workspace-wide search.
+- **Sabha-native aliases:** `roomId` / `roomIds` / `room_id` / `room_ids`. Sabha's wire calls them rooms; these aliases keep Sabha-aware callers ergonomic.
+- **All forms union into the wire's repeated-key `room_ids=` / `author_ids=` shape.** A caller passing `{ channelIds: [1, 2], roomId: 3 }` produces `room_ids=1&room_ids=2&room_ids=3`.
+
+The `describeMessageTool` schema contribution publishes only the genuinely Sabha-specific fields (`before` / `after` / `limit` / `cursor`); core already advertises the canonical channel/author scoping fields, so duplicating them would just add noise.
 
 The `hasMore` boolean closes the silent-truncation gap: when the agent gets 50 results and there are 30,000 more, it knows to refine the query or scope. Without this signal, the agent confidently summarizes the visible 50 as if it were the complete answer.
 
-**Server contract:** `/api/bots/search` accepts `?query=&room_ids=&author_ids=&before=&after=&limit=` (default 50, hard cap 200), returns `{ results, has_more, next_cursor: "<iso>|<id>" \| null }`, 422s on unparseable timestamps. Cursor-based, no `page` param.
+**Runtime guard at the wire:** `client.search` validates the response envelope shape (`results: array`, `has_more: boolean`) and throws a typed Error on a regression to the pre-envelope bare-array shape. Keeps the `as` cast honest without pulling in zod.
 
-**Wire format for array params:** `room_ids` and `author_ids` are sent as repeated keys (`?room_ids=1&room_ids=2&author_ids=7`), matching Rails' default array parsing. Not CSV, not JSON — repeated keys are the only form that round-trips cleanly through both `URLSearchParams` on the client and Rails' `ActionController::Parameters` on the server without a custom parser. The companion server PR follows the same convention.
+**Server contract:** `/api/bots/search` accepts `?query=&room_ids=&author_ids=&before=&after=&limit=&cursor=` (default 50, hard cap 200), returns `{ results, has_more, next_cursor: "<iso>|<id>" \| null }`, 422s on unparseable timestamps. Cursor-based, no `page` param. Cursor walks should re-issue the original opts (the cursor is anchored to the original query / scope; changing query mid-walk produces undefined ordering).
+
+**Wire format for array params:** `room_ids` and `author_ids` are sent as repeated keys (`?room_ids=1&room_ids=2&author_ids=7`), matching Rails' default array parsing. Not CSV, not JSON — repeated keys are the only form that round-trips cleanly through both `URLSearchParams` on the client and Rails' `ActionController::Parameters` on the server without a custom parser. The companion server PR follows the same convention. The message-action layer additionally accepts a CSV string at the agent boundary (`{ roomIds: "1,2,3" }`) since agents trained on REST APIs sometimes emit the comma form; the layer parses and forwards as repeated keys.
 
 ## Room-scoped member resolution: the `listGroupMembers` gap
 
@@ -206,11 +215,11 @@ resolver: {
 
 Wire path: `GET /api/bots/autocompletable/users?query=` (no `room_id`). Server caps at 20 — taking the top match (or the unique match if 1) is the standard pattern. Returns a `ChannelResolveResult[]` with `{ input, resolved, id, name, note }` per input.
 
-**Surface 2: `sabha_member_search` agent tool** in `src/tools.ts` — for the room-scoped case the SDK can't model. `ChannelDirectoryListParams` has no `roomId` field, and `ChannelDirectoryListGroupMembersParams` has no `query`, so neither directory slot fits. CLAUDE.md's `tools.ts` policy admits "operations that have no cross-channel analog," and Sabha's room-scoped name disambiguation qualifies: peers don't need the verb because their inbound is pre-resolved (Slack mentions, Discord guild member cache, Mattermost inline user objects). The asymmetry is the analog gap.
+**Surface 2: `sabha_search_members` agent tool** in `src/tools.ts` — for the room-scoped case the SDK can't model. `ChannelDirectoryListParams` has no `roomId` field, and `ChannelDirectoryListGroupMembersParams` has no `query`, so neither directory slot fits. CLAUDE.md's `tools.ts` policy admits "operations that have no cross-channel analog," and Sabha's room-scoped name disambiguation qualifies: peers don't need the verb because their inbound is pre-resolved (Slack mentions, Discord guild member cache, Mattermost inline user objects). The asymmetry is the analog gap.
 
 ```ts
 build<AccountAwareParams & { roomId: number; query?: string }>({
-  name: "sabha_member_search",
+  name: "sabha_search_members",
   label: "Find users by name in a Sabha room",
   description: "Search users in a specific Sabha room by partial name.",
   parameters: Type.Object({
@@ -228,7 +237,7 @@ Wire path: `GET /api/bots/autocompletable/users?room_id=&query=`. Already exists
 This pair passes the lens:
 
 1. **Cardinality at 100×.** Both surfaces bounded at 20 server-side. Doesn't grow with workspace size.
-2. **Agent affordance.** `resolveTargets` answers "who is Alex" at workspace scope; `sabha_member_search` answers "who matches X in this room" with explicit room context.
+2. **Agent affordance.** `resolveTargets` answers "who is Alex" at workspace scope; `sabha_search_members` answers "who matches X in this room" with explicit room context.
 3. **Server-side filtering.** `query` (and `room_id` for the agent tool) enforced server-side.
 4. **Hard cap.** Server-enforced 20 on both.
 5. **Peer comparison.** `resolver.resolveTargets` is exactly the slot Discord/Slack/Telegram use. Room-scoped variant has no peer because peers don't need it — Sabha's plugin owns the verb its inbound asymmetry creates.
@@ -246,7 +255,7 @@ The two surfaces above are SDK-blessed (`resolver.resolveTargets`) or fully plug
 
 ### Why not the `listGroupMembers` directory slot
 
-`ChannelDirectoryListGroupMembersParams` is `{ groupId, limit }` — no `query` — which is the dump shape we removed in `8828a05`. Filtering would have to happen in-memory after a paginated dump, which is the lens-failure the slot was retired for. If a future SDK release adds `query` to that param shape, `sabha_member_search` collapses into a thin directory adapter at that point; until then, the agent tool is the right home.
+`ChannelDirectoryListGroupMembersParams` is `{ groupId, limit }` — no `query` — which is the dump shape we removed in `8828a05`. Filtering would have to happen in-memory after a paginated dump, which is the lens-failure the slot was retired for. If a future SDK release adds `query` to that param shape, `sabha_search_members` collapses into a thin directory adapter at that point; until then, the agent tool is the right home.
 
 ## Server-side contract (assumed shipped)
 
@@ -263,7 +272,7 @@ One follow-on still open server-side: **cursor pagination on `/api/bots/rooms`**
 - ✅ **`listGroupMembers` regression closed.** Commit `8828a05` (2026.4.27) removed the dump-shaped slot. Commit `ebdafe3` (2026.4.28) wired the replacement: `resolver.resolveTargets` for workspace-level name → id (peer parity with Discord/Slack/Telegram) and `sabha_search_members` for the room-scoped case (the verb the SDK can't model). Both surfaces are SDK-compliant and required no SDK fork.
 - ✅ **Step 1 — dead reads deleted.** `getMessage` / `getMessages` removed (`45c2766`). `SabhaMessage` type and stale `SabhaMember` import gone. Comparison doc no longer points future contributors at the unbounded dump.
 - ✅ **Step 3 — `listRooms` reshaped** (`1bb5150`). Single method `{ joinable?, query?, page?, perPage? }`; `listJoinableRooms` retired with both call sites updated. Directory adapter paginates with `ROOMS_MAX_PAGES = 100` × `ROOMS_PAGE_SIZE = 100`. Server-side query replaces in-memory filter. Doctor probe rewritten as a reachability check (no longer reports a misleading workspace count).
-- ✅ **Step 4 — `search` reshaped** (`0828285`). New shape `search({ query, roomIds, authorIds, before, after, limit, cursor })` returning `{ results, hasMore, nextCursor }`. Array params use repeated keys; CSV strings accepted at the message-action layer for agent ergonomics. Agent prompt now carries an explicit `SEARCH IN SABHA` hint covering the truncation signal and scoping params.
+- ✅ **Step 4 — `search` reshaped** (`0828285`, refined in `ed80f1f` and `9cf3239`). New shape `search({ query, roomIds, authorIds, before, after, limit, cursor })` returning `{ results, hasMore, nextCursor }`. Array params use repeated keys; CSV strings accepted at the message-action layer for agent ergonomics. The message-action layer also accepts the canonical cross-channel scoping fields (`channelId`/`channelIds`/`authorId`/`authorIds`) so callers using the standard message-tool shape don't have their scope silently dropped. `describeMessageTool` publishes a typed schema contribution for the Sabha-specific search fields. Wire boundary now validates the envelope shape via `parseSearchResponse`. Agent prompt carries an explicit `SEARCH IN SABHA` hint covering the truncation signal and scoping params.
 - ✅ **`listUsers` / `getUser` / `searchUsers` shipped correctly** (pre-existing). Server-side pagination, hard cap, scoped search. Template for the rest.
 - ✅ **`message-actions` `member-info` action** (pre-existing). Single-record lookup with documented 404-as-"not-visible" semantics.
 - ⏳ **Step 5 — cursor pagination on `/api/bots/rooms`** (open, non-blocking). Picks up if a workspace's room list grows past a few thousand. Page-based pagination is fine until then.
@@ -287,12 +296,12 @@ Two surfaces, both plugin-side, no SDK changes:
 - For `kind: "group"`: parse numeric id directly, or scan `client.listRooms()` results (post-step-3 reshape, with the `query` arg) for a name match.
 - Tests: numeric id passthrough, name → id, ambiguous match (note: "multiple matches; chose best"), no-match.
 
-**2b. `sabha_member_search` agent tool** in `src/tools.ts` — room-scoped disambiguation, the case no SDK slot models.
+**2b. `sabha_search_members` agent tool** in `src/tools.ts` — room-scoped disambiguation, the case no SDK slot models.
 
 - Register alongside `sabha_list_joinable_rooms` etc.
 - Params: `roomId` (required), `query?`.
 - Dispatch: `client.searchUsers({ roomId, query })`; return `SabhaUser[]`. Server caps at 20.
-- `messageToolHints`: add a line — "to resolve a name within a specific room, call `sabha_member_search` with `roomId` + `query`. Returns ≤20 matches; refine if you get exactly 20."
+- `messageToolHints`: add a line — "to resolve a name within a specific room, call `sabha_search_members` with `roomId` + `query`. Returns ≤20 matches; refine if you get exactly 20."
 - Tests: happy path, missing `roomId` (fails closed via tool param schema), 20-cap behavior.
 
 Wire path (`/api/bots/autocompletable/users?query=&room_id=`) already exists and already caps at 20 for both surfaces.
@@ -307,9 +316,11 @@ Wire path (`/api/bots/autocompletable/users?query=&room_id=`) already exists and
 ### 4. Reshape `search`
 
 - Replace `search(query: string): Promise<SabhaSearchResult[]>` with `search(opts: { query: string; roomIds?: number[]; authorIds?: number[]; before?: string; after?: string; limit?: number; cursor?: string }): Promise<{ results: SabhaSearchResult[]; hasMore: boolean; nextCursor: string | null }>`.
-- `message-actions.ts` `search` action surfaces the same params; agent receives `hasMore` and `nextCursor` in its tool response.
-- `messageToolHints`: "search returns up to 200 results; pass `roomIds` / `authorIds` to scope, refine if `hasMore` is true, or pass `cursor` to continue."
-- Tests: unscoped query (default ≤200), scoped queries, `hasMore` signal, cursor follow, composite cursor format (`<iso>|<id>`), hard-cap clamp.
+- `message-actions.ts` `search` action accepts the canonical message-tool scoping aliases (`channelId` / `channelIds` / `authorId` / `authorIds` from core's `buildChannelTargetSchema`) alongside Sabha-native `roomId` / `roomIds` and unions all forms into the wire shape. Without these aliases, cross-channel callers using the canonical names would have their scope silently dropped.
+- `describeMessageTool` schema contribution publishes only the genuinely Sabha-specific fields (`before` / `after` / `limit` / `cursor`); the channel/author scoping fields are already advertised by core, and duplicating them adds noise.
+- Client validates the response envelope shape at the wire boundary (defends against a server regression to the pre-envelope bare-array shape).
+- `messageToolHints`: "search returns up to 200 results; pass `channelId` / `channelIds` (or Sabha's `roomIds` alias) and `authorId` / `authorIds` to scope, refine if `hasMore` is true, or pass `cursor` to continue."
+- Tests: unscoped query (default ≤200), scoped queries via canonical aliases, `hasMore` signal, cursor follow, composite cursor format (`<iso>|<id>`), hard-cap clamp, malformed-envelope rejection.
 
 ### 5. (Open, non-blocking) `listRooms` cursor pagination
 

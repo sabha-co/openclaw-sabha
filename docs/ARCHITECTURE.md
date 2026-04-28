@@ -131,7 +131,10 @@ src/
                         design.
 
   doctor.ts             runDoctor({ account }) — runtime health checks
-                        Config validation, listRooms() API probe,
+                        Config validation, listRooms({ perPage: 1 })
+                        first-page reachability probe (NOT a workspace
+                        room count — listRooms is paginated and a
+                        one-page response would mislead operators),
                         fresh /cable WebSocket subscribe handshake
                         (connect → welcome → subscribe → confirmed),
                         webhook-mode soft-fail. Returns a structured
@@ -199,8 +202,14 @@ src/
 
   tools.ts              Agent tools registered via api.registerTool
                         Room CRUD, join/leave, member management,
-                        DM-open (9 tools total — all room/member
-                        admin without cross-channel analogs).
+                        DM-open, list-joinable-rooms (paginated
+                        with optional query), sabha_search_members
+                        (room-scoped name → id; the verb no SDK
+                        directory slot models because
+                        ChannelDirectoryListParams has no roomId
+                        and ChannelDirectoryListGroupMembersParams
+                        has no query). 10 tools total — all
+                        operations without cross-channel analogs.
                         `sabha_list_rooms` / `sabha_search` /
                         `sabha_list_members` were removed in 2026.4.27
                         and now live behind the directory adapter and
@@ -216,9 +225,16 @@ src/
                         Agent-callable message ops on Sabha via core's
                         shared `message` tool. handleAction routes
                         send / edit / unsend / react / thread-reply /
-                        search to existing SabhaClient methods. The
-                        discovery half (describeMessageTool's action
-                        list) lives in channel.ts. `reply` is
+                        search / member-info to existing SabhaClient
+                        methods. The discovery half
+                        (describeMessageTool's action list + schema
+                        contribution) lives in channel.ts. `search`
+                        accepts the canonical channelId/channelIds/
+                        authorId/authorIds aliases plus Sabha-native
+                        roomId/roomIds (all union into the wire's
+                        repeated-key room_ids= shape) and returns
+                        an envelope { results, hasMore, nextCursor }
+                        capped at 200 server-side. `reply` is
                         intentionally absent — `send` with replyToId
                         covers implicit, `thread-reply` covers
                         explicit (and fails closed if messageId is
@@ -226,7 +242,10 @@ src/
                         same reason.
 
   directory.ts          Channel directory adapter helpers
-                        listSabhaDirectoryGroups (rooms),
+                        listSabhaDirectoryGroups (rooms — server-
+                        paginated via ?query=&page=&per_page= with a
+                        100-page × 100-per-page = 10k ceiling, mirrors
+                        the listSabhaDirectoryPeers loop),
                         listSabhaDirectoryPeers (bot-reachable users
                         via GET /api/bots/users — server-side scoped
                         to users sharing rooms with the bot), and
@@ -245,6 +264,20 @@ src/
                         overlapping room id namespaces), so a union
                         would collide bare ids and hand the agent
                         rooms it cannot subsequently message.
+
+  resolver.ts           ChannelResolverAdapter — workspace-level name
+                        → id, the SDK slot Discord/Slack/Telegram all
+                        wire. Numeric and `@{id}`/`#id` inputs pass
+                        through; bare names hit
+                        client.searchUsers({ query }) (users) or
+                        client.listRooms({ query }) (groups). Per-call
+                        cache shares one server call across duplicate
+                        inputs in a batch. Distinguishes lookup-failed
+                        (transient 5xx → resolved:false +
+                        note:"lookup failed") from no-match (clean
+                        empty response → bare resolved:false) so the
+                        agent doesn't fabricate a name → user pairing
+                        on a server hiccup.
 
   setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
                         Accepts either a join URL (self-registers via
@@ -319,8 +352,8 @@ Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every op
 
 The SDK splits outbound capability into three slots, and Sabha uses all three deliberately:
 
-- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info`. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
-- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms), `listPeers` (bot-reachable users via `GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocompletable variant trimmed to ≤20). Replaces the old `sabha_list_rooms` / `sabha_search` agent tools. **`listGroupMembers` is intentionally NOT wired** — peers (Slack/Discord/Mattermost) don't wire it either; a full-room roster dump can't scale (a 100k-member room can't be paginated through a single agent call). Agents that need user-in-room context use `member-info` for individual lookups, read mention metadata from inbound payloads, or use `listPeers` at the workspace level.
+- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info`. `search` returns an envelope `{ results, hasMore, nextCursor }` capped at 200 server-side; accepts the canonical `channelId`/`channelIds`/`authorId`/`authorIds` scoping fields from core's `buildChannelTargetSchema` plus Sabha-native `roomId`/`roomIds` aliases. The `describeMessageTool` schema contribution publishes only the genuinely Sabha-specific search params (`before`/`after`/`limit`/`cursor`) — channel/author scoping is already advertised by core. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
+- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms, server-side paginated via `?query=&page=&per_page=` with a 100-page × 100-per-page = 10k ceiling), `listPeers` (bot-reachable users via `GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocompletable variant trimmed to ≤20). Replaces the old `sabha_list_rooms` / `sabha_search` agent tools. **`listGroupMembers` is intentionally NOT wired** — peers (Slack/Discord/Mattermost) don't wire it either; a full-room roster dump can't scale (a 100k-member room can't be paginated through a single agent call). Room-scoped name resolution (`given a roomId + partial name, find the user`) lives on the `sabha_search_members` agent tool — no SDK directory slot models `roomId + query`. Workspace-level name → id lives on `resolver.resolveTargets` (peer-parity with Discord / Slack / Telegram).
 - **`api.registerTool(factory)`** (`src/tools.ts`) — 9 agent tools for room/member admin (`sabha_create_room`, archive / join / leave / update_room, `add_member` / `remove_member`, `create_dm`, `list_joinable_rooms`). These are workspace-level operations without cross-channel analogs — Slack/Discord/Mattermost expose **zero** `registerTool` calls because they don't let agents create channels at runtime; Sabha intentionally does, and `registerTool` is the right slot for that.
 
 Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
@@ -353,7 +386,7 @@ The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dange
 
 ### Doctor / health checks
 
-`src/doctor.ts` exposes `runDoctor({ account })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms()` (with bearer header), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
+`src/doctor.ts` exposes `runDoctor({ account })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms({ perPage: 1 })` (with bearer header — a deliberate first-page-only probe; reporting a workspace count would mislead since `listRooms` is paginated), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
 
 The doctor is surfaced as the `openclaw sabha doctor [--account <id>]` CLI subcommand, not as a plugin-object field, because the SDK's `ChannelDoctorAdapter` is config-validation only — there is no runtime-probe hook. The CLI loops over every enabled bot account (or the one specified by `--account`) and exits non-zero if any check fails. `warn` and `skip` statuses do not cause a non-zero exit.
 

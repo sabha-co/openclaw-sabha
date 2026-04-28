@@ -173,11 +173,17 @@ async function probeApi(
     }),
   });
   try {
-    const rooms = await client.listRooms();
+    // First-page probe: enough to confirm bearer auth + JSON pipe-through.
+    // The probe explicitly does NOT count workspace-wide rooms — listRooms
+    // is paginated and a one-page response only reflects the first slice.
+    const rooms = await client.listRooms({ perPage: 1 });
     return {
       name: "API reachable",
       status: "ok",
-      message: `listRooms() returned ${rooms.length} room${rooms.length === 1 ? "" : "s"}`,
+      message:
+        rooms.length > 0
+          ? "listRooms() reachable (first-page probe returned a room)"
+          : "listRooms() reachable (no rooms visible to bot yet)",
     };
   } catch (err) {
     if (err instanceof SabhaApiError) {

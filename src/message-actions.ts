@@ -74,6 +74,59 @@ function readNumber(params: Record<string, unknown>, ...keys: string[]): number 
   return undefined;
 }
 
+/**
+ * Parse a numeric-array param. Accepts either a real array (`[1, 2, 3]`)
+ * or a CSV string (`"1,2,3"`) — agents trained on REST APIs often emit
+ * the comma form even when the schema asks for an array.
+ */
+function readNumberArray(
+  params: Record<string, unknown>,
+  ...keys: string[]
+): number[] | undefined {
+  for (const k of keys) {
+    const v = params[k];
+    if (Array.isArray(v)) {
+      const nums = v
+        .map((x) => (typeof x === "number" ? x : Number(x)))
+        .filter((n) => Number.isFinite(n));
+      if (nums.length > 0) return nums;
+    }
+    if (typeof v === "string" && v.trim()) {
+      const nums = v
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n));
+      if (nums.length > 0) return nums;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Merge an arbitrary set of plural and singular keys into a single number
+ * list. The canonical message-tool schema exposes both forms (e.g.
+ * `channelId` + `channelIds`, `authorId` + `authorIds`); peers union the
+ * two so callers can use either. Sabha rooms ARE channels in the cross-
+ * channel sense, so `channelId` / `channelIds` map onto the same wire
+ * field as Sabha's own `roomId` / `roomIds` aliases.
+ */
+function readNumberList(
+  params: Record<string, unknown>,
+  pluralKeys: string[],
+  singularKeys: string[],
+): number[] | undefined {
+  const merged: number[] = [];
+  for (const k of pluralKeys) {
+    const arr = readNumberArray(params, k);
+    if (arr) merged.push(...arr);
+  }
+  for (const k of singularKeys) {
+    const n = readNumber(params, k);
+    if (n != null) merged.push(n);
+  }
+  return merged.length > 0 ? merged : undefined;
+}
+
 function ok(text: string, details: unknown = {}): AgentToolResult<unknown> {
   return {
     content: [{ type: "text" as const, text }],
@@ -95,8 +148,38 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (!query) {
         throw new Error("Sabha search requires a 'query' parameter.");
       }
-      const results = await client.search(query);
-      return ok(`Found ${results.length} result(s)`, { results });
+      const response = await client.search({
+        query,
+        // Canonical message-tool schema exposes channelId/channelIds and
+        // authorId/authorIds (plural and singular). Sabha rooms are
+        // channels in the cross-channel sense — without these aliases,
+        // a caller using the standard fields would have their scope
+        // silently dropped and run a workspace-wide search.
+        roomIds: readNumberList(
+          params,
+          ["channelIds", "channel_ids", "roomIds", "room_ids"],
+          ["channelId", "channel_id", "roomId", "room_id"],
+        ),
+        authorIds: readNumberList(
+          params,
+          ["authorIds", "author_ids"],
+          ["authorId", "author_id"],
+        ),
+        before: readString(params, "before"),
+        after: readString(params, "after"),
+        limit: readNumber(params, "limit"),
+        cursor: readString(params, "cursor"),
+      });
+      // The agent reads `hasMore` to decide whether to refine vs. paginate;
+      // `nextCursor` lets it walk if it really needs more.
+      const note = response.hasMore
+        ? `Found ${response.results.length} (more available — pass cursor to walk or scope with channelIds/authorIds)`
+        : `Found ${response.results.length} result(s)`;
+      return ok(note, {
+        results: response.results,
+        hasMore: response.hasMore,
+        nextCursor: response.nextCursor,
+      });
     }
 
     if (action === "member-info") {

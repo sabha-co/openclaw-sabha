@@ -52,34 +52,70 @@ function lower(s: string | null | undefined): string {
   return (s ?? "").toLowerCase();
 }
 
+/**
+ * Page size for room listing. Server clamps `per_page` to [1, 100]; we ask
+ * for the cap so workspaces under that size resolve in a single round-trip.
+ * Larger workspaces are paginated transparently below. Mirrors
+ * `PEERS_PAGE_SIZE`.
+ */
+const ROOMS_PAGE_SIZE = 100;
+
+/**
+ * Hard ceiling on pagination loops as a server-misbehavior guard. With
+ * `ROOMS_PAGE_SIZE = 100`, this caps total fetched rooms at 10,000 — well
+ * above any realistic Sabha workspace, while preventing a runaway loop
+ * if the server stops respecting the "short page = last page" convention.
+ * Mirrors `PEERS_MAX_PAGES`.
+ */
+const ROOMS_MAX_PAGES = 100;
+
 export async function listSabhaDirectoryGroups(
   params: DirectoryParams,
 ): Promise<ChannelDirectoryEntry[]> {
   const client = buildClient(params.cfg, params.accountId);
   if (!client) return [];
 
-  let rooms;
-  try {
-    rooms = await client.listRooms();
-  } catch {
-    return [];
-  }
-
-  const q = lower(params.query);
+  // Server-side query keeps payloads bounded — per-page response only
+  // contains rooms that already match the name. The plugin's older
+  // approach (fetch-all + in-memory filter) didn't scale past a few
+  // hundred rooms.
+  const queryArg = params.query?.trim() || undefined;
+  const cap =
+    params.limit && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
   const entries: ChannelDirectoryEntry[] = [];
-  for (const room of rooms) {
-    if (q && !lower(room.name).includes(q)) continue;
-    entries.push({
-      kind: "group" as const,
-      id: String(room.id),
-      name: room.name,
-      handle: room.name,
-    });
+
+  for (let page = 1; page <= ROOMS_MAX_PAGES; page++) {
+    let rooms;
+    try {
+      rooms = await client.listRooms({
+        query: queryArg,
+        page,
+        perPage: ROOMS_PAGE_SIZE,
+      });
+    } catch {
+      // Mid-stream failure (token expired, transient network, …): return
+      // whatever we've accumulated rather than wiping a partially-good
+      // result. Page 1 failing produces an empty array, same as before.
+      break;
+    }
+    if (rooms.length === 0) break;
+
+    for (const room of rooms) {
+      entries.push({
+        kind: "group" as const,
+        id: String(room.id),
+        name: room.name,
+        handle: room.name,
+      });
+      if (entries.length >= cap) return entries;
+    }
+
+    // Server returns < perPage when on the last page. Avoids one extra
+    // empty-page round-trip per call.
+    if (rooms.length < ROOMS_PAGE_SIZE) break;
   }
 
-  return params.limit && params.limit > 0
-    ? entries.slice(0, params.limit)
-    : entries;
+  return entries;
 }
 
 /**

@@ -145,7 +145,7 @@ async function autoJoinOpenRooms(
 
   let joinable: SabhaRoom[];
   try {
-    joinable = await client.listJoinableRooms();
+    joinable = await client.listRooms({ joinable: true });
   } catch (err) {
     await prompter.note(
       `Could not list joinable rooms: ${formatError(err)}\nYou can invite the bot manually later.`,
@@ -288,7 +288,7 @@ async function probeBotKey(
   // when that happens.
   const client = new SabhaClient(`${baseUrl}/api/bots`, botKey);
   try {
-    await client.listJoinableRooms();
+    await client.listRooms({ joinable: true });
     return { ok: true };
   } catch (err) {
     if (err instanceof SabhaApiError) {
@@ -305,7 +305,7 @@ async function probeBotKey(
         message: `Server returned HTTP ${err.status}`,
       };
     }
-    // `listJoinableRooms` calls `res.json()` — a 200 response that is
+    // `listRooms` calls `res.json()` — a 200 response that is
     // actually an HTML login page (common Rails default for an invalid
     // bot key) surfaces here as SyntaxError, not SabhaApiError. Treat
     // that as an auth problem since the server clearly didn't route

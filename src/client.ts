@@ -1,7 +1,6 @@
 import type {
   SabhaRoom,
-  SabhaMember,
-  SabhaMessage,
+  SabhaSearchResponse,
   SabhaSearchResult,
   SabhaThreadReply,
   SabhaMessageBody,
@@ -165,20 +164,6 @@ export class SabhaClient {
     );
   }
 
-  async getMessage(roomId: number, messageId: number): Promise<SabhaMessage> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
-    );
-    return (await res.json()) as SabhaMessage;
-  }
-
-  async getMessages(roomId: number): Promise<SabhaMessage[]> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages`,
-    );
-    return (await res.json()) as SabhaMessage[];
-  }
-
   /**
    * Post a reply inside a message's thread. `text` is treated as markdown
    * and converted to Trix HTML before the POST, same as `sendMessage`.
@@ -233,13 +218,33 @@ export class SabhaClient {
 
   // --- Rooms ---
 
-  async listRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms`);
-    return (await res.json()) as SabhaRoom[];
-  }
-
-  async listJoinableRooms(): Promise<SabhaRoom[]> {
-    const res = await this.fetch(`/rooms?joinable=true`);
+  /**
+   * List rooms reachable to this bot, paginated. `joinable: true` filters
+   * to open rooms the bot could join (but isn't in yet); `query` runs a
+   * server-side name match. Server caps `perPage` at 100 and clamps
+   * `page` to >= 1; we forward whatever the caller passes and let the
+   * server enforce.
+   *
+   * `joinable` is intentionally typed as `true | undefined` rather than
+   * `boolean`. The server treats absence as "all rooms" already; sending
+   * `joinable=false` would either be ignored or, worse, treated as
+   * "non-joinable" — the type narrows to express the asymmetry.
+   *
+   * Server route: `GET /api/bots/rooms[?joinable=&query=&page=&per_page=]`.
+   */
+  async listRooms(opts?: {
+    joinable?: true;
+    query?: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<SabhaRoom[]> {
+    const params = new URLSearchParams();
+    if (opts?.joinable) params.set("joinable", "true");
+    if (opts?.query) params.set("query", opts.query);
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.perPage != null) params.set("per_page", String(opts.perPage));
+    const qs = params.toString();
+    const res = await this.fetch(`/rooms${qs ? `?${qs}` : ""}`);
     return (await res.json()) as SabhaRoom[];
   }
 
@@ -338,6 +343,12 @@ export class SabhaClient {
    * with the bot — a 404 is returned if the bot can't reach the user, so
    * callers should treat that as "not visible" rather than "doesn't exist."
    *
+   * Positional signature kept on purpose: the wire route has no optional
+   * params and a single required id. If a `query` / `include` parameter
+   * ever lands server-side, reshape to an opts object then; for now the
+   * asymmetry with `listRooms` / `listUsers` / `searchUsers` is the
+   * smaller cost.
+   *
    * Server route: `GET /api/bots/users/:id`.
    */
   async getUser(userId: number): Promise<SabhaUserDetail> {
@@ -380,11 +391,42 @@ export class SabhaClient {
 
   // --- Search ---
 
-  async search(query: string): Promise<SabhaSearchResult[]> {
-    const res = await this.fetch(
-      `/search?q=${encodeURIComponent(query)}`,
-    );
-    return (await res.json()) as SabhaSearchResult[];
+  /**
+   * Search messages. Server caps results at 200; default limit is 50.
+   * Pass `roomIds` / `authorIds` to scope; pass `cursor` to walk results.
+   *
+   * Server route: `GET /api/bots/search?query=&room_ids=&author_ids=&before=&after=&limit=&cursor=`.
+   * Array params (`room_ids`, `author_ids`) use repeated keys (Rails default).
+   * Response shape: `{ results, has_more, next_cursor: "<iso>|<id>" | null }`.
+   * 422 on unparseable `before` / `after` ISO timestamps.
+   *
+   * Cursor walk semantics: when `cursor` is supplied, the server uses it
+   * as the anchor and continues from that point. `query`, `roomIds`, etc.
+   * SHOULD match the original call — the cursor is only meaningful in the
+   * scope it was issued from. Sending a different `query` alongside a
+   * cursor produces undefined ordering at the server. Re-issue the
+   * original opts plus the cursor; don't change the query mid-walk.
+   */
+  async search(opts: {
+    query: string;
+    roomIds?: number[];
+    authorIds?: number[];
+    before?: string;
+    after?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<SabhaSearchResponse> {
+    const params = new URLSearchParams();
+    params.set("query", opts.query);
+    for (const id of opts.roomIds ?? []) params.append("room_ids", String(id));
+    for (const id of opts.authorIds ?? []) params.append("author_ids", String(id));
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    const res = await this.fetch(`/search?${params.toString()}`);
+    const raw = (await res.json()) as unknown;
+    return parseSearchResponse(raw);
   }
 
   // --- Bot settings ---
@@ -442,6 +484,36 @@ export class SabhaClient {
     }
     return ctrl.signal;
   }
+}
+
+/**
+ * Validate the search-response JSON shape at the wire boundary. Without
+ * this guard, a server regression to the pre-envelope bare-array shape
+ * (or a misconfigured proxy returning HTML) reaches the agent path as
+ * `response.results.length` throwing on `undefined`. Cheap structural
+ * check beats either zod or letting the runtime error bubble.
+ */
+function parseSearchResponse(raw: unknown): SabhaSearchResponse {
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !Array.isArray((raw as { results?: unknown }).results) ||
+    typeof (raw as { has_more?: unknown }).has_more !== "boolean"
+  ) {
+    throw new Error(
+      "Sabha /search returned an unexpected shape (expected { results, has_more, next_cursor })",
+    );
+  }
+  const json = raw as {
+    results: SabhaSearchResult[];
+    has_more: boolean;
+    next_cursor?: string | null;
+  };
+  return {
+    results: json.results,
+    hasMore: json.has_more,
+    nextCursor: json.next_cursor ?? null,
+  };
 }
 
 export class SabhaApiError extends Error {

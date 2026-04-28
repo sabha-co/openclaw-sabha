@@ -57,16 +57,6 @@ export type SabhaAttachment = {
   byte_size: number;
 };
 
-export type SabhaMessage = {
-  id: number;
-  creator: { id: number; name: string };
-  body: SabhaMessageBody;
-  has_attachment: boolean;
-  attachment: SabhaAttachment | null;
-  mentionees: Array<{ id: number; name: string }>;
-  created_at: string;
-};
-
 export type SabhaThreadInfo = {
   id: number;
   parent_message_id: number;
@@ -83,6 +73,19 @@ export type SabhaSearchResult = {
   body: SabhaMessageBody;
   room: { id: number; name: string };
   created_at: string;
+};
+
+/**
+ * Envelope returned by `client.search`. `nextCursor` is a composite
+ * `"<iso>|<id>"` token the server emits — opaque to the plugin, just
+ * passed back on the next call. `hasMore` is the explicit truncation
+ * signal the agent reads to decide between refining the query and
+ * paginating.
+ */
+export type SabhaSearchResponse = {
+  results: SabhaSearchResult[];
+  hasMore: boolean;
+  nextCursor: string | null;
 };
 
 // Webhook payload from Sabha to bot

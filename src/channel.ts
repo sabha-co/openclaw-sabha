@@ -10,6 +10,7 @@ import {
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
+import { Type } from "@sinclair/typebox";
 
 import type { ResolvedSabhaAccount } from "./accounts.js";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
+import { resolveSabhaTargets } from "./resolver.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import {
   sabhaNamedAccountPromotionKeys,
@@ -222,7 +224,43 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "member-info",
         ],
         capabilities: [],
-        schema: [],
+        schema: [
+          // search action — these fields are Sabha-specific and not in
+          // core's `buildChannelTargetSchema`. The canonical scoping
+          // fields (`channelId`/`channelIds`/`authorId`/`authorIds`) are
+          // already exposed by core; the message-action handler reads
+          // them via readNumberList and unions them with Sabha's
+          // `roomId`/`roomIds` aliases. So we only need to advertise
+          // the genuinely-new fields here.
+          {
+            properties: {
+              before: Type.Optional(
+                Type.String({
+                  description:
+                    "Sabha search: ISO timestamp upper bound (older messages).",
+                }),
+              ),
+              after: Type.Optional(
+                Type.String({
+                  description: "Sabha search: ISO timestamp lower bound.",
+                }),
+              ),
+              limit: Type.Optional(
+                Type.Number({
+                  description:
+                    "Sabha search: max results to return. Default 50, server hard cap 200.",
+                }),
+              ),
+              cursor: Type.Optional(
+                Type.String({
+                  description:
+                    "Sabha search: opaque pagination cursor from a prior response's `nextCursor`. Pass to walk further; refining the query is usually preferable.",
+                }),
+              ),
+            },
+            visibility: "current-channel" as const,
+          },
+        ],
       }),
     },
     // Sabha rooms surface as directory groups; per-room members and
@@ -253,6 +291,14 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           limit: params.limit,
         }),
     }),
+    // Name → id resolution for free-form mention targets and group refs.
+    // Discord/Slack/Telegram all wire this slot. Sabha needs it because its
+    // inbound only pre-resolves `@{user_id}` curly-brace mentions; anything
+    // else arrives as plain text. See `src/resolver.ts`.
+    resolver: {
+      resolveTargets: async ({ cfg, accountId, inputs, kind }) =>
+        await resolveSabhaTargets({ cfg, accountId, inputs, kind }),
+    },
     agentPrompt: {
       inboundFormattingHints: () => ({
         text_markup: "markdown",
@@ -302,6 +348,14 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
             "incoming message envelope's `from` field as `Name (@{id})` — copy the `@{id}` token verbatim to reply-mention " +
             "them. For example, if the envelope shows `From: Alice (@{42})`, reply with `Thanks @{42}, on it!` to produce " +
             "a real mention pill.",
+          // Search returns at most 200 hits regardless of caller. The
+          // explicit `hasMore` signal closes the silent-truncation gap —
+          // without it the agent would summarize the visible slice as if
+          // it were complete.
+          "SEARCH IN SABHA: The `search` action returns up to 200 results (default 50). It returns `hasMore: true` " +
+            "when more matches exist beyond what was returned — refine the query or pass `channelId` / `channelIds` " +
+            "(or Sabha's `roomIds` alias) and `authorId` / `authorIds` to scope, or pass `cursor` (from `nextCursor`) " +
+            "to walk further. Time-bound with `before` / `after` (ISO timestamps).",
         ];
       },
     },

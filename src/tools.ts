@@ -129,11 +129,15 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
   };
 
   return [
-    // Note: room *listing* lives in `src/directory.ts` as a directory adapter,
-    // and message *search* is exposed via the shared `message` tool's `search`
-    // action (see `src/message-actions.ts`). The agent reaches them through
-    // canonical SDK slots, not through `sabha_*` agent tools. Tools below are
-    // room/member admin operations without cross-channel analogs.
+    // Note: room *listing* lives in `src/directory.ts` as a directory adapter;
+    // message *search* is exposed via the shared `message` tool's `search`
+    // action (see `src/message-actions.ts`); workspace-level name → id
+    // resolution lives on `resolver.resolveTargets` in `src/channel.ts` (the
+    // SDK slot Discord / Slack / Telegram use). The agent reaches all of
+    // those through canonical SDK slots, not through `sabha_*` agent tools.
+    // Tools below are room/member admin operations without cross-channel
+    // analogs (`sabha_search_members` is the room-scoped variant of name
+    // resolution — no SDK directory slot models `roomId + query`).
     build<AccountAwareParams>({
       name: "sabha_list_joinable_rooms",
       label: "List joinable Sabha rooms",
@@ -141,6 +145,32 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
       parameters: Type.Object({}),
       execute: async ({ cfg, params, agentAccountId }) =>
         await getClientForTool(cfg, params, agentAccountId).listJoinableRooms(),
+    }),
+    // Room-scoped name disambiguation. Workspace-level resolution lives on
+    // `resolver.resolveTargets` (see channel.ts) and matches what Discord /
+    // Slack / Telegram expose. The room-scoped variant lives here because
+    // no SDK directory slot models `roomId + query` — see
+    // `docs/READ-ENDPOINT-SCALE-PLAN.md` for the full rationale. Server
+    // returns ≤20 results; if exactly 20 come back the agent should refine.
+    build<AccountAwareParams & { room_id: number; query?: string }>({
+      name: "sabha_search_members",
+      label: "Search Sabha room members",
+      description:
+        "Find users in a specific Sabha room by partial name. Returns up to 20 candidates; refine the query if you receive exactly 20.",
+      parameters: Type.Object({
+        room_id: Type.Number({ description: "Room ID to search within" }),
+        query: Type.Optional(
+          Type.String({
+            description:
+              "Partial name to match (server runs prefix-style match via User.matching). Omit to fetch recent posters.",
+          }),
+        ),
+      }),
+      execute: async ({ cfg, params, agentAccountId }) =>
+        await getClientForTool(cfg, params, agentAccountId).searchUsers({
+          roomId: params.room_id,
+          query: params.query,
+        }),
     }),
     build<AccountAwareParams & { name: string; type: "open" | "closed" }>({
       name: "sabha_create_room",

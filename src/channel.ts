@@ -27,6 +27,7 @@ import {
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
+import { resolveSabhaTargets } from "./resolver.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
 import {
   sabhaNamedAccountPromotionKeys,
@@ -253,6 +254,14 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           limit: params.limit,
         }),
     }),
+    // Name → id resolution for free-form mention targets and group refs.
+    // Discord/Slack/Telegram all wire this slot. Sabha needs it because its
+    // inbound only pre-resolves `@{user_id}` curly-brace mentions; anything
+    // else arrives as plain text. See `src/resolver.ts`.
+    resolver: {
+      resolveTargets: async ({ cfg, accountId, inputs, kind }) =>
+        await resolveSabhaTargets({ cfg, accountId, inputs, kind }),
+    },
     agentPrompt: {
       inboundFormattingHints: () => ({
         text_markup: "markdown",

@@ -217,3 +217,80 @@ describe("createSabhaTools — account routing", () => {
     ]);
   });
 });
+
+describe("createSabhaTools — sabha_search_members", () => {
+  let restore: (() => void) | null = null;
+  afterEach(() => {
+    if (restore) {
+      restore();
+      restore = null;
+    }
+  });
+
+  function buildSearchMembersTool(getConfig: () => OpenClawConfig) {
+    const tools = createSabhaTools(getConfig);
+    const factory = tools.find(
+      (f) => f({ agentAccountId: undefined }).name === "sabha_search_members",
+    );
+    if (!factory) throw new Error("sabha_search_members not registered");
+    return factory;
+  }
+
+  it("hits /autocompletable/users with both room_id and query params", async () => {
+    const mock = withMockedFetch([{ id: 7, name: "Alex" }]);
+    restore = mock.restore;
+
+    const factory = buildSearchMembersTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    await tool.execute("id", { room_id: 42, query: "alex" });
+
+    expect(mock.fetch).toHaveBeenCalledOnce();
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("/autocompletable/users");
+    expect(url).toContain("query=alex");
+    expect(url).toContain("room_id=42");
+  });
+
+  it("omits the query param when the agent doesn't supply one", async () => {
+    const mock = withMockedFetch([]);
+    restore = mock.restore;
+
+    const factory = buildSearchMembersTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    await tool.execute("id", { room_id: 99 });
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("room_id=99");
+    expect(url).not.toContain("query=");
+  });
+
+  it("returns the user list verbatim in details", async () => {
+    const users = [
+      { id: 7, name: "Alex Doe" },
+      { id: 8, name: "Alexei Putin" },
+    ];
+    const mock = withMockedFetch(users);
+    restore = mock.restore;
+
+    const factory = buildSearchMembersTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    const result = await tool.execute("id", { room_id: 42, query: "alex" });
+
+    expect(result.details).toEqual(users);
+  });
+
+  it("declares room_id as required and query as optional in the JSON schema", () => {
+    const mock = withMockedFetch();
+    restore = mock.restore;
+
+    const factory = buildSearchMembersTool(() => multiBotCfg());
+    const tool = factory({ agentAccountId: undefined });
+    const schema = tool.parameters as {
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(Object.keys(schema.properties)).toContain("room_id");
+    expect(Object.keys(schema.properties)).toContain("query");
+    expect(schema.required).toEqual(["room_id"]);
+  });
+});

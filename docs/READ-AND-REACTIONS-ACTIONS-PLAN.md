@@ -435,6 +435,27 @@ The `BOT-READ-REACTIONS-PLAN.md` filed `mentionees` batch-preload as a server fo
 
 Already noted under risks. The new guards match `parseSearchResponse`'s structural-only stance for in-file consistency. If a maintainer wants stricter checks, do all three together in a code-quality PR rather than just the new ones.
 
+## Postscript: formatter-shape projection (2026.4.28)
+
+Post-merge review caught that the v1 `read` and `reactions` envelopes returned the wire shape verbatim, which broke the shared CLI formatter at `openclaw/src/commands/message-format.ts`:
+
+- `renderMessagesFromPayload` reads `payload.messages[]`, not `results`.
+- `renderMessageList` per-entry pulls `id` / `timestamp` (or `ts`) / `authorTag` (or `author.username` / `user`) / `text` (or `content`). Sabha's wire `{ id, creator: { id, name }, body: { html, plain }, created_at }` matches none except `id`, producing rows with empty Time/Author/Text columns.
+- `renderReactions` reads `entry.name` for the emoji label and `entry.users[]` for booster identities, gating each on `typeof === "string"`. Sabha's `{ content, boosters: [{id: number, name}] }` would render with an empty Emoji column and silently-dropped boosters (numeric `id` fails the `typeof === "string"` gate).
+
+Slack and Discord avoid this by either (a) returning a shape that natively matches the formatter's lookups (Slack — `messages: [...]` from the Slack Web API uses `ts` / `text` / `user` keys) or (b) running an explicit `normalizeMessage` projection (Discord — see `extensions/discord/src/actions/runtime.messaging.ts:325`).
+
+**Decision:** project Sabha's wire shape into the formatter's expected field names in `handleAction`, and **drop the raw wire fields entirely** (do not ship `results` / `content` / `boosters` alongside the projection). Two reasons to drop:
+
+1. **Two consumers, one field** — agents and the formatter both read `details`. Shipping both shapes lets the LLM consume the un-normalized one and produce reverse-conclusions about the wire (e.g., asking what "boosters" are when the answer is "they're called users now"). Slack/Discord ship one shape only.
+2. **No Sabha-specific metadata is dropped** — per-emoji `truncated` and the message's `attachment` survive in the projection. Nothing meaningful is lost.
+
+`hasMore` / `nextCursor` keep their names (matching `search`'s envelope) — those fields aren't formatter-consumed.
+
+**Anti-regression:** `src/message-actions.test.ts` pins `details.results` is `undefined` (read) and that per-reaction `content` / `boosters` are `undefined` — a future refactor that "helpfully" re-exposes the wire shape will fail there.
+
+**Open meta-issue, not blocking:** the formatter's expected field shape is hidden coupling — there's no SDK-level contract advertising "if you implement `read`, your `details.messages[]` must look like X." The right long-term fix is for `openclaw/plugin-sdk` to ship a typed `MessageRow` / `ReactionRow` interface that the formatter and channel handlers both depend on; until then, CLAUDE.md's outbound-paths section calls out the formatter file by path so the next maintainer adding a formatted action checks it directly.
+
 ## References
 
 - [`sabha-co/sabha#50`](https://github.com/sabha-co/sabha/pull/50) — Server PR shipping both endpoints

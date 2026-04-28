@@ -393,7 +393,14 @@ describe("sabhaMessageActions.handleAction", () => {
     await expect(handle(ctx("send", { message: "hi" }))).rejects.toThrow(/room/);
   });
 
-  it("read → GET /rooms/:id/messages with the envelope returned verbatim", async () => {
+  it("read → GET /rooms/:id/messages and projects results into the formatter-friendly `messages[]` shape", async () => {
+    // The shared CLI formatter at `openclaw/src/commands/message-format.ts`
+    // reads `payload.messages[]` (not `results`) and per-entry pulls
+    // `timestamp` / `authorTag` / `text` — it doesn't know how to read
+    // Sabha's raw `{ creator, body, created_at }` wire shape. This test
+    // pins the projection so a future refactor that reverts to "verbatim"
+    // breaks here instead of silently producing blank rows in
+    // `openclaw message read --target sabha:...`.
     const mock = withMockedFetch({
       results: [
         {
@@ -417,11 +424,34 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url.pathname).toBe("/api/bots/rooms/5/messages");
     expect(url.searchParams.get("limit")).toBe("25");
     const details = result.details as {
-      results: unknown[];
+      messages: Array<{
+        id: string;
+        timestamp: string;
+        author: { id: string; username: string };
+        authorTag: string;
+        text: string;
+        attachment: unknown;
+      }>;
       hasMore: boolean;
       nextCursor: string | null;
+      results?: unknown;
     };
-    expect(details.results).toHaveLength(1);
+    // Raw wire field must be gone — keeping both would let the LLM
+    // accidentally consume the un-normalized one.
+    expect(details.results).toBeUndefined();
+    expect(details.messages).toHaveLength(1);
+    const msg = details.messages[0];
+    // Per-field projection: numeric ids are stringified (formatter's
+    // `typeof === "string"` gate), `created_at` -> `timestamp`,
+    // `creator.name` -> both `author.username` and `authorTag` so the
+    // formatter's two-tier lookup (`authorTag` first, then
+    // `author.username`) hits regardless of which it tries.
+    expect(msg.id).toBe("100");
+    expect(msg.timestamp).toBe("2026-04-28T12:00:00Z");
+    expect(msg.authorTag).toBe("alice");
+    expect(msg.author).toEqual({ id: "1", username: "alice" });
+    expect(msg.text).toBe("hi");
+    expect(msg.attachment).toBeNull();
     expect(details.hasMore).toBe(true);
     expect(details.nextCursor).toBe("2026-04-28T12:00:00Z|100");
     // Newest-first hint must land in the user-visible note text so the
@@ -483,7 +513,12 @@ describe("sabhaMessageActions.handleAction", () => {
     ).rejects.toThrow(/single room target/);
   });
 
-  it("reactions → GET /rooms/:id/messages/:msg/boosts with the wire shape verbatim", async () => {
+  it("reactions → GET /rooms/:id/messages/:msg/boosts and projects into the formatter-friendly `{name, users}` shape", async () => {
+    // Same rationale as `read` above: the shared formatter reads
+    // `entry.name` for the emoji label and `entry.users[].id` /
+    // `entry.users[].username`, gating each on `typeof === "string"`.
+    // Sabha's wire `{ content, boosters: [{id: number, name}] }` would
+    // render as a blank-Emoji / blank-Users row without this projection.
     const wire = {
       reactions: [
         {
@@ -506,7 +541,39 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(String(mock.fetch.mock.calls[0][0])).toBe(
       "https://sabha.example/api/bots/rooms/5/messages/100/boosts",
     );
-    expect(result.details).toEqual(wire);
+    const details = result.details as {
+      reactions: Array<{
+        name: string;
+        count: number;
+        users: Array<{ id: string; username: string }>;
+        truncated: boolean;
+      }>;
+      total: number;
+      truncated: boolean;
+      // Raw wire fields must NOT be present — see read test above for
+      // the "don't ship both" rationale.
+      content?: unknown;
+      boosters?: unknown;
+    };
+    expect(details).toEqual({
+      reactions: [
+        {
+          name: "🚀",
+          count: 3,
+          users: [{ id: "1", username: "alice" }],
+          truncated: false,
+        },
+      ],
+      total: 3,
+      truncated: false,
+    });
+    // Defensive: per-entry raw keys (`content`, `boosters`) must not leak
+    // through. The structural deepEqual above already covers this, but
+    // pin it explicitly so a future change that adds them back as
+    // "extras" surfaces here.
+    const entry = details.reactions[0] as Record<string, unknown>;
+    expect(entry.content).toBeUndefined();
+    expect(entry.boosters).toBeUndefined();
     expect(result.content[0].text).toMatch(/3 reaction/);
   });
 

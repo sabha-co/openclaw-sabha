@@ -1,5 +1,9 @@
 import type {
   SabhaRoom,
+  SabhaReaction,
+  SabhaReactionsResponse,
+  SabhaReadMessage,
+  SabhaReadMessagesResponse,
   SabhaSearchResponse,
   SabhaSearchResult,
   SabhaThreadReply,
@@ -185,7 +189,64 @@ export class SabhaClient {
     return (await res.json()) as SabhaThreadReply;
   }
 
+  /**
+   * Cursor-paginated room history. Same envelope shape as `search` (results
+   * + has_more + next_cursor) and the same dual-purpose `before` URL
+   * parameter — the server's `parse_pagination_params` is shared between
+   * `MessagesController#index` and `SearchesController#show`.
+   *
+   * Newest-first ordering server-side (`reorder(created_at: :desc, id: :desc)`).
+   * Default `limit=50`, server clamp `max=200` (`CursorPaginated::MAX_LIMIT`).
+   * A malformed `before` (unparseable iso, or composite with non-integer id)
+   * returns 422 `validation_failed`, surfaced as `SabhaApiError`.
+   *
+   * Cursor walk semantics: when `cursor` is supplied, the server uses it
+   * as the anchor and continues from that point. The plugin sends `cursor`
+   * via the wire's `before` URL param since the server has no separate
+   * `cursor` URL param for this endpoint.
+   */
+  async readMessages(opts: {
+    roomId: number;
+    before?: string;
+    after?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<SabhaReadMessagesResponse> {
+    const params = new URLSearchParams();
+    const beforeParam = opts.cursor ?? opts.before;
+    if (beforeParam) params.set("before", beforeParam);
+    if (opts.after) params.set("after", opts.after);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    const path = qs
+      ? `/rooms/${opts.roomId}/messages?${qs}`
+      : `/rooms/${opts.roomId}/messages`;
+    const res = await this.fetch(path);
+    return parseReadMessagesResponse((await res.json()) as unknown);
+  }
+
   // --- Reactions ---
+
+  /**
+   * Aggregated reactions on a single message. Server returns groups sorted
+   * `count DESC, MIN(created_at) ASC` with boosters within a group oldest-first.
+   * Capped at 50 distinct emoji and 100 boosters per emoji
+   * (`REACTIONS_CAP` / `BOOSTERS_CAP` in `boosts_controller.rb`).
+   *
+   * 404 surfaces as `SabhaApiError` and is indistinguishable between
+   * "room not visible to bot," "message never existed," and "message was
+   * deleted" — the server scopes through `Current.user.rooms.find` plus
+   * `messages.active`, collapsing all three failure modes into one wire shape.
+   */
+  async listReactions(
+    roomId: number,
+    messageId: number,
+  ): Promise<SabhaReactionsResponse> {
+    const res = await this.fetch(
+      `/rooms/${roomId}/messages/${messageId}/boosts`,
+    );
+    return parseReactionsResponse((await res.json()) as unknown);
+  }
 
   async addReaction(
     roomId: number,
@@ -420,10 +481,16 @@ export class SabhaClient {
     params.set("query", opts.query);
     for (const id of opts.roomIds ?? []) params.append("room_ids", String(id));
     for (const id of opts.authorIds ?? []) params.append("author_ids", String(id));
-    if (opts.before) params.set("before", opts.before);
+    // The wire's `before` is dual-purpose: plain ISO = filter, composite
+    // `<iso>|<id>` = cursor. The server's `parse_pagination_params`
+    // (controllers/concerns/cursor_paginated.rb) only reads `params[:before]`
+    // and ignores any `cursor=` URL param. If both are passed, prefer the
+    // explicit `cursor` field — agent intent "continue paginating" beats
+    // "filter older than X".
+    const beforeParam = opts.cursor ?? opts.before;
+    if (beforeParam) params.set("before", beforeParam);
     if (opts.after) params.set("after", opts.after);
     if (opts.limit != null) params.set("limit", String(opts.limit));
-    if (opts.cursor) params.set("cursor", opts.cursor);
     const res = await this.fetch(`/search?${params.toString()}`);
     const raw = (await res.json()) as unknown;
     return parseSearchResponse(raw);
@@ -514,6 +581,44 @@ function parseSearchResponse(raw: unknown): SabhaSearchResponse {
     hasMore: json.has_more,
     nextCursor: json.next_cursor ?? null,
   };
+}
+
+function parseReadMessagesResponse(raw: unknown): SabhaReadMessagesResponse {
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !Array.isArray((raw as { results?: unknown }).results) ||
+    typeof (raw as { has_more?: unknown }).has_more !== "boolean"
+  ) {
+    throw new Error(
+      "Sabha read returned an unexpected shape (expected { results, has_more, next_cursor })",
+    );
+  }
+  const json = raw as {
+    results: SabhaReadMessage[];
+    has_more: boolean;
+    next_cursor?: string | null;
+  };
+  return {
+    results: json.results,
+    hasMore: json.has_more,
+    nextCursor: json.next_cursor ?? null,
+  };
+}
+
+function parseReactionsResponse(raw: unknown): SabhaReactionsResponse {
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !Array.isArray((raw as { reactions?: unknown }).reactions) ||
+    typeof (raw as { total?: unknown }).total !== "number" ||
+    typeof (raw as { truncated?: unknown }).truncated !== "boolean"
+  ) {
+    throw new Error(
+      "Sabha reactions returned an unexpected shape (expected { reactions, total, truncated })",
+    );
+  }
+  return raw as { reactions: SabhaReaction[]; total: number; truncated: boolean };
 }
 
 export class SabhaApiError extends Error {

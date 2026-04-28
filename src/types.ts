@@ -88,6 +88,56 @@ export type SabhaSearchResponse = {
   nextCursor: string | null;
 };
 
+/**
+ * Single message returned by `GET /api/bots/rooms/:id/messages` (the bot
+ * `index` endpoint added in `sabha-co/sabha#50`). Wire shape mirrors
+ * `app/views/api/bots/messages/_message.json.jbuilder` — note that `index`
+ * deliberately omits `mentionees` and `has_attachment` (kept on `show`).
+ */
+export type SabhaReadMessage = {
+  id: number;
+  creator: { id: number; name: string };
+  body: SabhaMessageBody;
+  attachment: SabhaAttachment | null;
+  created_at: string;
+};
+
+/**
+ * Cursor-paginated read response. Same envelope shape as `SabhaSearchResponse`
+ * — same dual-purpose `before` URL parameter on the server (`controllers/
+ * concerns/cursor_paginated.rb`), so `nextCursor` walks via `before` not a
+ * separate URL param.
+ */
+export type SabhaReadMessagesResponse = {
+  results: SabhaReadMessage[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+/**
+ * One reaction group from `GET /api/bots/rooms/:id/messages/:msg_id/boosts`.
+ * `boosters` is server-capped at 100 (`BOOSTERS_CAP` in
+ * `boosts_controller.rb`); `truncated` indicates the cap was hit for this
+ * specific reaction.
+ */
+export type SabhaReaction = {
+  content: string;
+  count: number;
+  boosters: { id: number; name: string }[];
+  truncated: boolean;
+};
+
+/**
+ * Aggregated reactions response. Server sorts groups `count DESC,
+ * MIN(created_at) ASC` and caps at 50 distinct emoji (`REACTIONS_CAP`).
+ * `total` is the sum across every reaction (including ones the cap clipped).
+ */
+export type SabhaReactionsResponse = {
+  reactions: SabhaReaction[];
+  total: number;
+  truncated: boolean;
+};
+
 // Webhook payload from Sabha to bot
 //
 // Sabha's `BotEventsChannel` fans out nine event types (see Scout A

@@ -7,15 +7,10 @@ type FetchMock = ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
 
 type MockResponse = { body: unknown; status?: number };
 
-function withMockedFetch(
-  responder: ((url: string) => MockResponse) | MockResponse[],
-) {
+function withMockedFetch(responder: (url: string) => MockResponse) {
   const fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    const r =
-      typeof responder === "function"
-        ? responder(url)
-        : responder[Math.min(0, responder.length - 1)];
+    const r = responder(url);
     return new Response(JSON.stringify(r.body), {
       status: r.status ?? 200,
       headers: { "Content-Type": "application/json" },
@@ -205,7 +200,11 @@ describe("resolveSabhaTargets — user kind", () => {
     expect(mock.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to unresolved when the search call throws", async () => {
+  it("distinguishes a search failure from a no-match (lookup-failed note)", async () => {
+    // 500 means the lookup itself failed — agents should not treat this
+    // the same as a clean "no Alex in this workspace" miss. Without the
+    // note an agent would happily fabricate a name → user pairing on
+    // the next turn.
     const mock = withMockedFetch(() => ({ body: "boom", status: 500 }));
     restore = mock.restore;
 
@@ -215,7 +214,11 @@ describe("resolveSabhaTargets — user kind", () => {
       kind: "user",
     });
 
-    expect(results[0]).toMatchObject({ input: "alex", resolved: false });
+    expect(results[0]).toEqual({
+      input: "alex",
+      resolved: false,
+      note: "lookup failed",
+    });
   });
 
   it("returns unresolved-with-note when the account is disabled", async () => {
@@ -366,5 +369,64 @@ describe("resolveSabhaTargets — empty / whitespace inputs", () => {
       { input: "", resolved: false, note: "empty input" },
       { input: "   ", resolved: false, note: "empty input" },
     ]);
+  });
+
+  it("returns [] for an empty inputs array without hitting the network", async () => {
+    const mock = withMockedFetch(() => ({ body: [] }));
+    const restore = mock.restore;
+    try {
+      const results = await resolveSabhaTargets({
+        cfg: basicCfg(),
+        inputs: [],
+        kind: "user",
+      });
+      expect(results).toEqual([]);
+      expect(mock.fetch).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("resolveSabhaTargets — group lookup-failed signal", () => {
+  it("flags lookup-failed when listRooms throws (vs. clean no-match)", async () => {
+    const mock = withMockedFetch(() => ({ body: "boom", status: 500 }));
+    const restore = mock.restore;
+    try {
+      const results = await resolveSabhaTargets({
+        cfg: basicCfg(),
+        inputs: ["general"],
+        kind: "group",
+      });
+      expect(results[0]).toEqual({
+        input: "general",
+        resolved: false,
+        note: "lookup failed",
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("only issues one listRooms call per inputs batch (no pagination)", async () => {
+    // resolveTargets is name → id, not enumeration. We never page past
+    // the first server response — if the server caps the per-call match
+    // count, the first 50/100/whatever is the resolution surface.
+    let callCount = 0;
+    const mock = withMockedFetch(() => {
+      callCount++;
+      return { body: [{ id: 1, name: "general", type: "Open" }] };
+    });
+    const restore = mock.restore;
+    try {
+      await resolveSabhaTargets({
+        cfg: basicCfg(),
+        inputs: ["general"],
+        kind: "group",
+      });
+      expect(callCount).toBe(1);
+    } finally {
+      restore();
+    }
   });
 });

@@ -415,10 +415,10 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).toContain("per_page=50");
     });
 
-    it("omits joinable when false (the server default already handles 'all rooms')", async () => {
+    it("omits joinable when not specified (the server default already returns all rooms)", async () => {
       mockFetch();
       const client = new SabhaClient(API, BOT_KEY);
-      await client.listRooms({ joinable: false });
+      await client.listRooms({ query: "hi" });
 
       expect(lastCall().url).not.toContain("joinable=");
     });
@@ -507,6 +507,48 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       const url = lastCall().url;
       expect(url).not.toContain("room_ids=");
       expect(url).not.toContain("author_ids=");
+    });
+
+    it("a bare { query } produces exactly /search?query=<value> on the wire", async () => {
+      // Pins the wire contract so a future change adding a default
+      // limit / cursor would surface as a test failure rather than a
+      // silent drift.
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({ query: "hi" });
+
+      expect(lastCall().url).toBe(`${API}/search?query=hi`);
+    });
+
+    it("throws on a malformed envelope (defends against server regression to bare-array)", async () => {
+      // Simulate the pre-envelope shape leaking back: bare array. Without
+      // the runtime guard, this lands as `response.results.length` on
+      // undefined at the agent path.
+      mockFetch(
+        () =>
+          new Response(JSON.stringify([{ id: 1 }]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.search({ query: "hi" })).rejects.toThrow(
+        /unexpected shape/,
+      );
+    });
+
+    it("treats missing next_cursor as null", async () => {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify({ results: [], has_more: false }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const out = await client.search({ query: "hi" });
+
+      expect(out.nextCursor).toBeNull();
     });
   });
 });

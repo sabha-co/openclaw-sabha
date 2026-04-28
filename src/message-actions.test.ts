@@ -253,6 +253,27 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).toContain("room_ids=3");
   });
 
+  it("search silently drops non-numeric entries from a mixed array (lossy by design)", async () => {
+    // Agents trained on REST APIs sometimes emit ["1", "abc", 2] when
+    // they're unsure about the wire type. Rather than failing the
+    // entire call (which would lose a recoverable query), we drop the
+    // unparseable entries. Schema validation at the SDK boundary is
+    // the proper place to reject — this test pins the lossy fallback
+    // so a future stricter mode is an explicit choice, not an
+    // accident.
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", { query: "hi", roomIds: [1, "abc", 2] }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("room_ids=1");
+    expect(url).toContain("room_ids=2");
+    expect(url).not.toContain("room_ids=abc");
+  });
+
   it("search propagates before/after/limit/cursor", async () => {
     const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
     restore = mock.restore;

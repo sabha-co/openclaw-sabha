@@ -200,7 +200,7 @@ describe("runDoctor — API check", () => {
     restore = null;
   });
 
-  it("reports ok and the first-page probe message on a 200 response", async () => {
+  it("reports the populated-probe message when the first page returns a room", async () => {
     // listRooms is paginated; probe asks for perPage=1 and reports
     // reachability rather than a workspace-wide count (would mislead).
     restore = withMockedFetch(() => jsonResponse([{ id: 1 }]));
@@ -221,10 +221,12 @@ describe("runDoctor — API check", () => {
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("ok");
-    expect(api.message).toMatch(/reachable/);
+    // Differentiated from the empty-page branch: tighter match so
+    // swapping the two messages would fail the test.
+    expect(api.message).toMatch(/first-page probe returned a room/);
   });
 
-  it("reports ok with a no-rooms-yet hint when the first page is empty", async () => {
+  it("reports the no-rooms-yet message when the first page is empty", async () => {
     restore = withMockedFetch(() => jsonResponse([]));
     const { factory } = scriptedWebSocketFactory([
       { phase: "on-open", data: { type: "welcome" } },
@@ -243,7 +245,7 @@ describe("runDoctor — API check", () => {
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("ok");
-    expect(api.message).toMatch(/no rooms visible/);
+    expect(api.message).toMatch(/no rooms visible to bot yet/);
   });
 
   it("surfaces a specific hint on 401 (bot_key invalid)", async () => {

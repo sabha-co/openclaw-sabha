@@ -31,38 +31,40 @@ type ParsedInput =
   | { kind: "empty" };
 
 /**
- * Parse a user input string into either a numeric id or a search query.
- * Accepts:
- *   - `"123"`          → id 123
- *   - `"@{123}"`       → id 123 (Sabha's mention form)
- *   - `"@alex"` / `"alex"` → query "alex"
+ * Parse a free-form input string into either a numeric id or a search query.
+ *
+ * - Empty / whitespace → `{ kind: "empty" }`.
+ * - Bare digits ("123") → `{ kind: "id", id }`.
+ * - Sabha mention form `@{N}` (users only) → `{ kind: "id", id }`. Disabled
+ *   for groups since `#{N}` is not a Sabha shape.
+ * - Anything else → `{ kind: "query", query }` with one leading `sigil`
+ *   character stripped (`@` for users, `#` for groups).
  */
-function parseUserInput(input: string): ParsedInput {
+function parseInput(
+  input: string,
+  opts: { sigil: "@" | "#"; allowMentionForm: boolean },
+): ParsedInput {
   const trimmed = input.trim();
   if (!trimmed) return { kind: "empty" };
 
-  const mention = trimmed.match(/^@\{(\d+)\}$/);
-  if (mention) return { kind: "id", id: Number(mention[1]) };
+  if (opts.allowMentionForm) {
+    const mention = trimmed.match(/^@\{(\d+)\}$/);
+    if (mention) return { kind: "id", id: Number(mention[1]) };
+  }
 
   if (/^\d+$/.test(trimmed)) return { kind: "id", id: Number(trimmed) };
 
-  const stripped = trimmed.startsWith("@") ? trimmed.slice(1).trim() : trimmed;
+  const stripped = trimmed.startsWith(opts.sigil)
+    ? trimmed.slice(1).trim()
+    : trimmed;
   return stripped ? { kind: "query", query: stripped } : { kind: "empty" };
 }
 
-/**
- * Parse a group input string. Same shape as users, but `#general`-style
- * leading hash is stripped instead of `@`.
- */
-function parseGroupInput(input: string): ParsedInput {
-  const trimmed = input.trim();
-  if (!trimmed) return { kind: "empty" };
+const parseUserInput = (input: string): ParsedInput =>
+  parseInput(input, { sigil: "@", allowMentionForm: true });
 
-  if (/^\d+$/.test(trimmed)) return { kind: "id", id: Number(trimmed) };
-
-  const stripped = trimmed.startsWith("#") ? trimmed.slice(1).trim() : trimmed;
-  return stripped ? { kind: "query", query: stripped } : { kind: "empty" };
-}
+const parseGroupInput = (input: string): ParsedInput =>
+  parseInput(input, { sigil: "#", allowMentionForm: false });
 
 type InternalResolution = {
   input: string;
@@ -72,6 +74,10 @@ type InternalResolution = {
   note?: string;
 };
 
+type UserLookup =
+  | { ok: true; users: SabhaUser[] }
+  | { ok: false };
+
 async function resolveUserInputs(
   client: SabhaClient,
   inputs: string[],
@@ -79,7 +85,7 @@ async function resolveUserInputs(
   const results: InternalResolution[] = [];
   // Cache per-call so repeated names within one resolveTargets batch don't
   // each trigger their own server round-trip.
-  const queryCache = new Map<string, SabhaUser[]>();
+  const queryCache = new Map<string, UserLookup>();
 
   for (const input of inputs) {
     const parsed = parseUserInput(input);
@@ -98,17 +104,27 @@ async function resolveUserInputs(
     }
 
     const cacheKey = parsed.query.toLowerCase();
-    let users = queryCache.get(cacheKey);
-    if (!users) {
+    let cached = queryCache.get(cacheKey);
+    if (!cached) {
       try {
-        users = await client.searchUsers({ query: parsed.query });
+        const users = await client.searchUsers({ query: parsed.query });
+        cached = { ok: true as const, users };
       } catch {
-        users = [];
+        // Distinguish "lookup failed" from "no match found": agents act
+        // very differently on the two. A transient 5xx returning a bare
+        // `resolved: false` would let the agent fabricate a name → user
+        // pairing on the next turn.
+        cached = { ok: false as const };
       }
-      queryCache.set(cacheKey, users);
+      queryCache.set(cacheKey, cached);
     }
 
-    if (users.length === 0) {
+    if (!cached.ok) {
+      results.push({ input, resolved: false, note: "lookup failed" });
+      continue;
+    }
+
+    if (cached.users.length === 0) {
       results.push({ input, resolved: false });
       continue;
     }
@@ -116,18 +132,23 @@ async function resolveUserInputs(
     // Server returns up to 20 results. We take the first as the best match
     // (server orders by `User.matching` rank). An exact-name preference
     // could be layered later if the rank ever feels off.
-    const top = users[0];
+    const top = cached.users[0];
     results.push({
       input,
       resolved: true,
       id: String(top.id),
       name: top.name,
-      note: users.length > 1 ? "multiple matches; chose best" : undefined,
+      note:
+        cached.users.length > 1 ? "multiple matches; chose best" : undefined,
     });
   }
 
   return results;
 }
+
+type GroupLookup =
+  | { ok: true; rooms: SabhaRoom[] }
+  | { ok: false };
 
 async function resolveGroupInputs(
   client: SabhaClient,
@@ -135,8 +156,9 @@ async function resolveGroupInputs(
 ): Promise<InternalResolution[]> {
   const results: InternalResolution[] = [];
   // Cache per-call so duplicate name inputs (e.g. ["general", "general"])
-  // don't each trigger their own server round-trip.
-  const queryCache = new Map<string, InternalResolution>();
+  // share one server round-trip. Same lookup-failed/no-match split as
+  // resolveUserInputs.
+  const queryCache = new Map<string, GroupLookup>();
 
   for (const input of inputs) {
     const parsed = parseGroupInput(input);
@@ -152,38 +174,38 @@ async function resolveGroupInputs(
     }
 
     const cacheKey = parsed.query.toLowerCase();
-    const cached = queryCache.get(cacheKey);
-    if (cached) {
-      results.push({ ...cached, input });
+    let cached = queryCache.get(cacheKey);
+    if (!cached) {
+      try {
+        // Server-side query — small payload, scoped to the room name.
+        // Mirrors the user path's `searchUsers` shape.
+        const rooms = await client.listRooms({ query: parsed.query });
+        cached = { ok: true as const, rooms };
+      } catch {
+        cached = { ok: false as const };
+      }
+      queryCache.set(cacheKey, cached);
+    }
+
+    if (!cached.ok) {
+      results.push({ input, resolved: false, note: "lookup failed" });
       continue;
     }
 
-    let rooms: SabhaRoom[];
-    try {
-      // Server-side query — small payload, scoped to the room name.
-      // Mirrors the user path's `searchUsers` shape.
-      rooms = await client.listRooms({ query: parsed.query });
-    } catch {
-      rooms = [];
-    }
-
-    if (rooms.length === 0) {
-      const entry: InternalResolution = { input, resolved: false };
-      queryCache.set(cacheKey, entry);
-      results.push(entry);
+    if (cached.rooms.length === 0) {
+      results.push({ input, resolved: false });
       continue;
     }
 
-    const top = rooms[0];
-    const entry: InternalResolution = {
+    const top = cached.rooms[0];
+    results.push({
       input,
       resolved: true,
       id: String(top.id),
       name: top.name,
-      note: rooms.length > 1 ? "multiple matches; chose best" : undefined,
-    };
-    queryCache.set(cacheKey, entry);
-    results.push(entry);
+      note:
+        cached.rooms.length > 1 ? "multiple matches; chose best" : undefined,
+    });
   }
 
   return results;

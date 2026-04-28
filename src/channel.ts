@@ -10,6 +10,7 @@ import {
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
+import { Type } from "@sinclair/typebox";
 
 import type { ResolvedSabhaAccount } from "./accounts.js";
 import {
@@ -223,7 +224,54 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "member-info",
         ],
         capabilities: [],
-        schema: [],
+        schema: [
+          // search action — without these typed fields, the agent only
+          // learns about scoping/pagination from the prose
+          // `SEARCH IN SABHA` hint, and malformed calls slip past the
+          // ad-hoc readNumberArray/readString coercion in
+          // message-actions.ts. Expose them explicitly so the SDK
+          // validates input shape at the tool boundary.
+          {
+            properties: {
+              roomIds: Type.Optional(
+                Type.Array(Type.Number(), {
+                  description:
+                    "Sabha: scope search to these room ids. Accepts an array of numbers or a comma-separated string.",
+                }),
+              ),
+              authorIds: Type.Optional(
+                Type.Array(Type.Number(), {
+                  description:
+                    "Sabha: scope search to messages authored by these user ids. Accepts an array or comma-separated string.",
+                }),
+              ),
+              before: Type.Optional(
+                Type.String({
+                  description:
+                    "Sabha: ISO timestamp upper bound (inclusive of older messages, exclusive of newer).",
+                }),
+              ),
+              after: Type.Optional(
+                Type.String({
+                  description: "Sabha: ISO timestamp lower bound.",
+                }),
+              ),
+              limit: Type.Optional(
+                Type.Number({
+                  description:
+                    "Sabha: max results to return. Default 50, server hard cap 200.",
+                }),
+              ),
+              cursor: Type.Optional(
+                Type.String({
+                  description:
+                    "Sabha: opaque pagination cursor from a prior response's `nextCursor`. Pass to walk further; refining the query is usually preferable.",
+                }),
+              ),
+            },
+            visibility: "current-channel" as const,
+          },
+        ],
       }),
     },
     // Sabha rooms surface as directory groups; per-room members and

@@ -9,11 +9,11 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | Dimension | Sabha | Mattermost | Slack | Discord |
 |---|---|---|---|---|
 | `.ts` files | 49 | 98 | 248 | 351 |
-| Test files (ratio) | 21 (43%) | 37 (38%) | 85 (34%) | 124 (35%) |
+| Test files (ratio) | 22 (45%) | 37 (38%) | 85 (34%) | 124 (35%) |
 | Inbound event types | 7 | ~10 | ~70 (Events API) | ~40 (gateway, intent‑gated) |
-| Message-action verbs | 9 | 2 | 13 | ~36 |
+| Message-action verbs | 9 | 2 | 13 | 39 |
 | Directory adapter slots wired | 3 (`listGroups`, `listPeers`, `listPeersLive`) | 3 (same) | 3 (same) | 3 (same) |
-| `api.registerTool` calls | 9 (room/member admin) | 0 | 0 | 0 |
+| `api.registerTool` calls | 10 (room/member admin) | 0 | 0 | 0 |
 | Connection mode | WS (AnyCable) + webhook | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
 | Thread streaming | yes (in‑thread direct; top‑level→new thread via `firstSend` hook) | yes | yes (`thread_ts` injected) | yes (native) |
@@ -61,7 +61,7 @@ The three slots:
 Per‑plugin breakdown (counts re-verified 2026‑04‑27 by enumerating switch cases and `actions.add(...)` lines):
 
 - **Slack** — `ChannelMessageActionAdapter` returning `describeMessageTool` that gates actions on per-account capability flags. **13 actions** total when all gates open: `send`, `react`, `reactions`, `read`, `edit`, `delete`, `download-file`, `upload-file`, `pin`, `unpin`, `list-pins`, `member-info`, `emoji-list`. Directory adapter wires `listGroups` + `listPeers` + `listPeersLive` (no `listGroupMembers`). **Zero `api.registerTool` calls.**
-- **Discord** — `discordMessageActions: ChannelMessageActionAdapter` dispatching **~36 actions** across messaging / guild / moderation / presence: messaging (`send`, `edit`, `delete`, `react`, `reactions`, `read`, `pin`, `unpin`, `list-pins`, `thread-create`, `thread-list`, `thread-reply`, `search`, `member-info`, `poll`, `sticker`, `sticker-upload`, `emoji-list`, `emoji-upload`), guild admin (`channel-create`, `channel-edit`, `channel-delete`, `channel-info`, `channel-list`, `channel-move`, `category-create`, `category-edit`, `category-delete`, `event-create`, `event-list`, `voice-status`, `set-presence`), moderation (`role-add`, `role-remove`, `role-info`, `permissions`, `ban`, `kick`, `timeout`). Directory adapter wires `listGroups` + `listPeers` + `listPeersLive`. Zero `api.registerTool` calls.
+- **Discord** — `discordMessageActions: ChannelMessageActionAdapter` dispatching **39 actions** across messaging / guild / moderation / presence: messaging (`send`, `edit`, `delete`, `react`, `reactions`, `read`, `pin`, `unpin`, `list-pins`, `thread-create`, `thread-list`, `thread-reply`, `search`, `member-info`, `poll`, `sticker`, `sticker-upload`, `emoji-list`, `emoji-upload`), guild admin (`channel-create`, `channel-edit`, `channel-delete`, `channel-info`, `channel-list`, `channel-move`, `category-create`, `category-edit`, `category-delete`, `event-create`, `event-list`, `voice-status`, `set-presence`), moderation (`role-add`, `role-remove`, `role-info`, `permissions`, `ban`, `kick`, `timeout`). Directory adapter wires `listGroups` + `listPeers` + `listPeersLive`. Zero `api.registerTool` calls.
 - **Mattermost** — `ChannelMessageActionAdapter` with **only 2 actions**: `send` and `react`. (Prior survey claimed ~73 — that was wrong; it likely conflated total grep hits with message-tool actions. The verb surface is genuinely tiny.) Directory wires `listGroups` + `listPeers` + `listPeersLive`. The bulk of Mattermost's file count comes from the slash-command dispatcher (`monitor-slash.ts`, `slash-commands.ts`) and a heavier action-gating config layer, not from messaging breadth. Zero `api.registerTool` calls.
 - **Sabha** — `ChannelMessageActionAdapter` wired in `src/channel.ts` with dispatch in `src/message-actions.ts`; supports **9 actions** (`send`, `edit`, `unsend`, `react`, `thread-reply`, `search`, `member-info`, `read`, `reactions`). `search` and `read` return the same envelope `{ results, hasMore, nextCursor }` capped at 200 server-side and accept the canonical scoping aliases (`channelId`/`channelIds`/`authorId`/`authorIds`) plus Sabha-native `roomId`/`roomIds`. `read` is cursor-paginated room history (newest-first); `reactions` returns aggregated boosts on a single message. Directory adapter in `src/directory.ts` wires the same 3 slots peers wire: `listGroups` (rooms — server-paginated via `?query=&page=&per_page=` with a 100×100 = 10k ceiling), `listPeers` (`GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocomplete-friendly variant trimmed to ≤20). `ChannelResolverAdapter.resolveTargets` wired in `src/resolver.ts` for workspace-level name → id (peer parity with Discord/Slack/Telegram). **10 `registerTool` entries** — all room/member admin without cross-channel analogs (`sabha_create_room`, `sabha_update_room`, `sabha_archive_room`, `sabha_join_room`, `sabha_leave_room`, `sabha_add_member`, `sabha_remove_member`, `sabha_create_dm`, `sabha_list_joinable_rooms`, `sabha_search_members`). The last is the room-scoped name-resolution verb the SDK can't model — `ChannelDirectoryListParams` has no `roomId`, and `ChannelDirectoryListGroupMembersParams` has no `query`.
 
@@ -112,10 +112,10 @@ All three peers use the same SDK primitive Sabha uses — `createFinalizableDraf
 All four use the same internal `{ stopped, final }` state object shared with the SDK helper. The divergence is whether the dead‑state is exposed on the returned handle:
 
 - **Sabha** — exposes `isAlive(): boolean` (inverted polarity of the same flag)
-- **Slack** — exposes `isStopped(): boolean`
-- **Discord / Mattermost** — do not expose the flag; instead expose richer lifecycle controls (`discardPending()`, `seal()`) that let the caller drive finalization without peeking at state
+- **Slack** — exposes `isStopped(): boolean` **and** the `discardPending()` / `seal()` controls (superset)
+- **Discord / Mattermost** — expose only `discardPending()` / `seal()`; the dead-state flag is not surfaced on the returned handle
 
-Sabha needs the probe because the `deliver` callback (in `monitor.ts` and `index.ts` webhook path) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes the same flag Sabha does, just with the opposite name.
+Sabha needs the probe because the `deliver` callback (in `monitor.ts` and `index.ts` webhook path) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes both — `isStopped` is the same flag Sabha does, just with the opposite name.
 
 The polarity choice (`isAlive` over `isStopped`) is a readability call — `if (draftStream.isAlive())` reads better in the deliver branch than `if (!draftStream.isStopped())`. Neither is more "defensive" than the other; they're the same boolean.
 
@@ -154,7 +154,7 @@ The doc invariant in `CLAUDE.md` (don't gate the fast‑path on `messageId() !==
 
 ### 11. Setup wizard
 
-- **Sabha** — ~903 lines in `setup-wizard.ts`. Join URL → POST `/join/{code}` → server returns `{bot_key, webhook_secret, websocket_url, …}` → save config. Multi‑account‑aware (can register a new bot under a new account id).
+- **Sabha** — ~911 lines in `setup-wizard.ts`. Join URL → POST `/join/{code}` → server returns `{bot_key, webhook_secret, websocket_url, …}` → save config. Multi‑account‑aware (can register a new bot under a new account id).
 - **Mattermost** — ~94 lines. Manual token + server URL paste.
 - **Slack** — ~286 lines. OAuth flow + dual tokens (bot + app) + env var integration.
 - **Discord** — ~189 lines. Manual token paste + Discord Developer Portal walkthrough copy.
@@ -174,7 +174,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 
 ### 14. Tests
 
-- **Sabha** — 21 / 49 = 43%. Coverage: accounts, account-inspect, channel, dedup, directory, draft-stream, inbound, monitor, monitor-websocket, reconnect, retry, setup-contract, setup-wizard, ssrf-guard, typing, client, message-actions, outbound chunking + mention-rewrite + format, doctor.
+- **Sabha** — 22 / 49 = 45%. Coverage: accounts, account-inspect, channel, dedup, directory, draft-stream, inbound, monitor, monitor-websocket, reconnect, retry, setup-contract, setup-wizard, ssrf-guard, typing, client, message-actions, outbound chunking + mention-rewrite + format, doctor.
 - **Mattermost** — 37 / 98 = 38%.
 - **Slack** — 85 / 248 = 34%. Heavy emphasis on Block Kit rendering snapshots and action dispatch.
 - **Discord** — 124 / 351 = 35%. Heavy emphasis on component rendering and interaction routing.

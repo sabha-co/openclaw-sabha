@@ -9,11 +9,11 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | Dimension | Sabha | Mattermost | Slack | Discord |
 |---|---|---|---|---|
 | `.ts` files | 49 | 98 | 248 | 351 |
-| Test files (ratio) | 21 (43%) | 37 (38%) | 85 (34%) | 124 (35%) |
+| Test files (ratio) | 22 (45%) | 37 (38%) | 85 (34%) | 124 (35%) |
 | Inbound event types | 7 | ~10 | ~70 (Events API) | ~40 (gateway, intent‑gated) |
-| Message-action verbs | 7 | 2 | 13 | ~36 |
+| Message-action verbs | 9 | 2 | 13 | 39 |
 | Directory adapter slots wired | 3 (`listGroups`, `listPeers`, `listPeersLive`) | 3 (same) | 3 (same) | 3 (same) |
-| `api.registerTool` calls | 9 (room/member admin) | 0 | 0 | 0 |
+| `api.registerTool` calls | 10 (room/member admin) | 0 | 0 | 0 |
 | Connection mode | WS (AnyCable) + webhook | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
 | Thread streaming | yes (in‑thread direct; top‑level→new thread via `firstSend` hook) | yes | yes (`thread_ts` injected) | yes (native) |
@@ -26,7 +26,7 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 
 Discord and Slack are 5–7× Sabha's file count almost entirely because of *platform* surface, not architecture quality. Each rich‑UI primitive (Block Kit blocks, Carbon components, slash commands, modals, interactions) needs render code, schema, agent‑hint copy, and an inbound interaction route. Sabha is text‑first with mentions and reactions, so it doesn't pay any of that.
 
-Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks in at 98 files vs. Sabha's 49 — the gap there is real complexity worth understanding, not platform breadth. Counterintuitively, Mattermost only contributes **2 actions** (`send`, `react`) to the shared `message` tool — *less* than Sabha's 7 — and most of its file count comes from the slash‑command surface and a heavier action‑gating config layer rather than messaging breadth.
+Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks in at 98 files vs. Sabha's 49 — the gap there is real complexity worth understanding, not platform breadth. Counterintuitively, Mattermost only contributes **2 actions** (`send`, `react`) to the shared `message` tool — *less* than Sabha's 9 — and most of its file count comes from the slash‑command surface and a heavier action‑gating config layer rather than messaging breadth.
 
 ## Dimension‑by‑dimension
 
@@ -61,9 +61,9 @@ The three slots:
 Per‑plugin breakdown (counts re-verified 2026‑04‑27 by enumerating switch cases and `actions.add(...)` lines):
 
 - **Slack** — `ChannelMessageActionAdapter` returning `describeMessageTool` that gates actions on per-account capability flags. **13 actions** total when all gates open: `send`, `react`, `reactions`, `read`, `edit`, `delete`, `download-file`, `upload-file`, `pin`, `unpin`, `list-pins`, `member-info`, `emoji-list`. Directory adapter wires `listGroups` + `listPeers` + `listPeersLive` (no `listGroupMembers`). **Zero `api.registerTool` calls.**
-- **Discord** — `discordMessageActions: ChannelMessageActionAdapter` dispatching **~36 actions** across messaging / guild / moderation / presence: messaging (`send`, `edit`, `delete`, `react`, `reactions`, `read`, `pin`, `unpin`, `list-pins`, `thread-create`, `thread-list`, `thread-reply`, `search`, `member-info`, `poll`, `sticker`, `sticker-upload`, `emoji-list`, `emoji-upload`), guild admin (`channel-create`, `channel-edit`, `channel-delete`, `channel-info`, `channel-list`, `channel-move`, `category-create`, `category-edit`, `category-delete`, `event-create`, `event-list`, `voice-status`, `set-presence`), moderation (`role-add`, `role-remove`, `role-info`, `permissions`, `ban`, `kick`, `timeout`). Directory adapter wires `listGroups` + `listPeers` + `listPeersLive`. Zero `api.registerTool` calls.
+- **Discord** — `discordMessageActions: ChannelMessageActionAdapter` dispatching **39 actions** across messaging / guild / moderation / presence: messaging (`send`, `edit`, `delete`, `react`, `reactions`, `read`, `pin`, `unpin`, `list-pins`, `thread-create`, `thread-list`, `thread-reply`, `search`, `member-info`, `poll`, `sticker`, `sticker-upload`, `emoji-list`, `emoji-upload`), guild admin (`channel-create`, `channel-edit`, `channel-delete`, `channel-info`, `channel-list`, `channel-move`, `category-create`, `category-edit`, `category-delete`, `event-create`, `event-list`, `voice-status`, `set-presence`), moderation (`role-add`, `role-remove`, `role-info`, `permissions`, `ban`, `kick`, `timeout`). Directory adapter wires `listGroups` + `listPeers` + `listPeersLive`. Zero `api.registerTool` calls.
 - **Mattermost** — `ChannelMessageActionAdapter` with **only 2 actions**: `send` and `react`. (Prior survey claimed ~73 — that was wrong; it likely conflated total grep hits with message-tool actions. The verb surface is genuinely tiny.) Directory wires `listGroups` + `listPeers` + `listPeersLive`. The bulk of Mattermost's file count comes from the slash-command dispatcher (`monitor-slash.ts`, `slash-commands.ts`) and a heavier action-gating config layer, not from messaging breadth. Zero `api.registerTool` calls.
-- **Sabha** — `ChannelMessageActionAdapter` wired in `src/channel.ts` with dispatch in `src/message-actions.ts`; supports **7 actions** (`send`, `edit`, `unsend`, `react`, `thread-reply`, `search`, `member-info`). `search` returns an envelope `{ results, hasMore, nextCursor }` capped at 200 server-side and accepts the canonical scoping aliases (`channelId`/`channelIds`/`authorId`/`authorIds`) plus Sabha-native `roomId`/`roomIds`. Directory adapter in `src/directory.ts` wires the same 3 slots peers wire: `listGroups` (rooms — server-paginated via `?query=&page=&per_page=` with a 100×100 = 10k ceiling), `listPeers` (`GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocomplete-friendly variant trimmed to ≤20). `ChannelResolverAdapter.resolveTargets` wired in `src/resolver.ts` for workspace-level name → id (peer parity with Discord/Slack/Telegram). **10 `registerTool` entries** — all room/member admin without cross-channel analogs (`sabha_create_room`, `sabha_update_room`, `sabha_archive_room`, `sabha_join_room`, `sabha_leave_room`, `sabha_add_member`, `sabha_remove_member`, `sabha_create_dm`, `sabha_list_joinable_rooms`, `sabha_search_members`). The last is the room-scoped name-resolution verb the SDK can't model — `ChannelDirectoryListParams` has no `roomId`, and `ChannelDirectoryListGroupMembersParams` has no `query`.
+- **Sabha** — `ChannelMessageActionAdapter` wired in `src/channel.ts` with dispatch in `src/message-actions.ts`; supports **9 actions** (`send`, `edit`, `unsend`, `react`, `thread-reply`, `search`, `member-info`, `read`, `reactions`). `search` and `read` return the same envelope `{ results, hasMore, nextCursor }` capped at 200 server-side and accept the canonical scoping aliases (`channelId`/`channelIds`/`authorId`/`authorIds`) plus Sabha-native `roomId`/`roomIds`. `read` is cursor-paginated room history (newest-first); `reactions` returns aggregated boosts on a single message. Directory adapter in `src/directory.ts` wires the same 3 slots peers wire: `listGroups` (rooms — server-paginated via `?query=&page=&per_page=` with a 100×100 = 10k ceiling), `listPeers` (`GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocomplete-friendly variant trimmed to ≤20). `ChannelResolverAdapter.resolveTargets` wired in `src/resolver.ts` for workspace-level name → id (peer parity with Discord/Slack/Telegram). **10 `registerTool` entries** — all room/member admin without cross-channel analogs (`sabha_create_room`, `sabha_update_room`, `sabha_archive_room`, `sabha_join_room`, `sabha_leave_room`, `sabha_add_member`, `sabha_remove_member`, `sabha_create_dm`, `sabha_list_joinable_rooms`, `sabha_search_members`). The last is the room-scoped name-resolution verb the SDK can't model — `ChannelDirectoryListParams` has no `roomId`, and `ChannelDirectoryListGroupMembersParams` has no `query`.
 
 **Sabha verdict: aligned with peers.** The earlier framing ("drift on the missing message adapter and directory misplacement") is fully resolved as of 2026.4.27. Highlights:
 
@@ -112,10 +112,10 @@ All three peers use the same SDK primitive Sabha uses — `createFinalizableDraf
 All four use the same internal `{ stopped, final }` state object shared with the SDK helper. The divergence is whether the dead‑state is exposed on the returned handle:
 
 - **Sabha** — exposes `isAlive(): boolean` (inverted polarity of the same flag)
-- **Slack** — exposes `isStopped(): boolean`
-- **Discord / Mattermost** — do not expose the flag; instead expose richer lifecycle controls (`discardPending()`, `seal()`) that let the caller drive finalization without peeking at state
+- **Slack** — exposes `isStopped(): boolean` **and** the `discardPending()` / `seal()` controls (superset)
+- **Discord / Mattermost** — expose only `discardPending()` / `seal()`; the dead-state flag is not surfaced on the returned handle
 
-Sabha needs the probe because the `deliver` callback (in `monitor.ts` and `index.ts` webhook path) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes the same flag Sabha does, just with the opposite name.
+Sabha needs the probe because the `deliver` callback (in `monitor.ts` and `index.ts` webhook path) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes both — `isStopped` is the same flag Sabha does, just with the opposite name.
 
 The polarity choice (`isAlive` over `isStopped`) is a readability call — `if (draftStream.isAlive())` reads better in the deliver branch than `if (!draftStream.isStopped())`. Neither is more "defensive" than the other; they're the same boolean.
 
@@ -154,7 +154,7 @@ The doc invariant in `CLAUDE.md` (don't gate the fast‑path on `messageId() !==
 
 ### 11. Setup wizard
 
-- **Sabha** — ~903 lines in `setup-wizard.ts`. Join URL → POST `/join/{code}` → server returns `{bot_key, webhook_secret, websocket_url, …}` → save config. Multi‑account‑aware (can register a new bot under a new account id).
+- **Sabha** — ~911 lines in `setup-wizard.ts`. Join URL → POST `/join/{code}` → server returns `{bot_key, webhook_secret, websocket_url, …}` → save config. Multi‑account‑aware (can register a new bot under a new account id).
 - **Mattermost** — ~94 lines. Manual token + server URL paste.
 - **Slack** — ~286 lines. OAuth flow + dual tokens (bot + app) + env var integration.
 - **Discord** — ~189 lines. Manual token paste + Discord Developer Portal walkthrough copy.
@@ -174,7 +174,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 
 ### 14. Tests
 
-- **Sabha** — 21 / 49 = 43%. Coverage: accounts, account-inspect, channel, dedup, directory, draft-stream, inbound, monitor, monitor-websocket, reconnect, retry, setup-contract, setup-wizard, ssrf-guard, typing, client, message-actions, outbound chunking + mention-rewrite + format, doctor.
+- **Sabha** — 22 / 49 = 45%. Coverage: accounts, account-inspect, channel, dedup, directory, draft-stream, inbound, monitor, monitor-websocket, reconnect, retry, setup-contract, setup-wizard, ssrf-guard, typing, client, message-actions, outbound chunking + mention-rewrite + format, doctor.
 - **Mattermost** — 37 / 98 = 38%.
 - **Slack** — 85 / 248 = 34%. Heavy emphasis on Block Kit rendering snapshots and action dispatch.
 - **Discord** — 124 / 351 = 35%. Heavy emphasis on component rendering and interaction routing.
@@ -187,7 +187,6 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 2. `accounts: Record<id, ...>` instead of one bot per instance.
 3. The mention‑syntax sermon in `messageToolHints` (Mattermost mentions are `<@id>`, agent priors work).
 4. Per‑bot `allowPrivateAttachmentHosts` (Mattermost has it per‑instance).
-5. Threads not streaming yet.
 
 ## What would a Discord/Slack developer find weird about Sabha
 
@@ -205,7 +204,6 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 | Buttons / select menus | +500–800 LOC, 4–5 files | **Slack's shorthand** (`[[slack_buttons:Label:value]]`), not Discord's raw component JSON |
 | Slash commands | +200–400 LOC, 2–3 files | Discord's slash‑command + interaction routing |
 | Pin / unpin / list-pins | +50 LOC | Add to `SUPPORTED_ACTIONS` + `handleAction` in `src/message-actions.ts` (the adapter slot is already wired) |
-| `readMessages` (fetch recent room history for context) | +100 LOC | Add a `readMessages` action with a time-bounded shape — `client.readMessages({ roomId, since?, before?, limit })` mapped onto `GET /api/bots/rooms/:id/messages?since=&before=&limit=`. **Do not reintroduce an unbounded `getMessages(roomId)` dump** — see `docs/READ-ENDPOINT-SCALE-PLAN.md`. |
 
 Inflection point for the codebase shape: at one new feature, file structure stays flat. Adding two of the above triggers `monitor/events/<namespace>.ts` reorganization and the action‑dispatcher pattern from Discord/Slack.
 
@@ -225,6 +223,7 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 
 ## Resolved drifts (kept for diff‑against‑history)
 
+- ~~**No `read` / `reactions` actions; agents could not summarize history or inspect reaction aggregates.**~~ ~~**Latent `client.search` cursor bug — `cursor=` URL param sent but server-side `CursorPaginated` concern only reads `before`, so cursor walks silently re-fetched page 1.**~~ **All resolved 2026.4.28** (this PR). Server endpoints already shipped via `sabha-co/sabha#50`. Plugin wired both as message-tool actions: `client.readMessages(opts)` + `client.listReactions(roomId, messageId)` with envelope guards (`parseReadMessagesResponse` / `parseReactionsResponse`) mirroring `parseSearchResponse`'s structural-only stance for in-file consistency. The `client.search` cursor mapping was corrected in the same PR — `cursor` rides on the dual-purpose `before` URL param now (intentional behavior change, called out in PR description). Newest-first ordering surfaced both in the dispatch response `note` and in `messageToolHints` so summarize-this-thread agents reorder client-side. Schema fragment broadened: `before`/`after`/`limit`/`cursor` field descriptions now cover both `search` and `read` (no new fragment — same fields, shared underlying `CursorPaginated` concern). See `docs/READ-AND-REACTIONS-ACTIONS-PLAN.md` for the full design record (server-side wire-shape verification + the v1-against-stale-base story).
 - ~~**Top‑level → new‑thread streaming was non‑streaming (Phase 2 gap).**~~ **Resolved 2026.4.28.** Added an optional `firstSend` callback to `createSabhaDraftStream`. When the deliver path detects `shouldThread === true` it wires `firstSend(text) → client.replyInThread(parentRoomId, userMessageId, text) → { roomId: r.thread.id, messageId: r.message.id }`. The stream rebinds its effective room id to the captured thread room so all subsequent `editMessage` / `deleteMessage` / recovery-edit / error-replace calls target the thread, not the parent. `shouldStreamReply` was deleted (every case streams now); both `monitor.ts` and `index.ts` create the stream unconditionally and configure `firstSend` only for the threading-on case. Sabha's `/thread` endpoint is idempotent via `find_or_create_for`, so a network-drop retry can't fork the thread. The case-(c) deliver fallback (stream dead with no preview ever sent) still honors `shouldThread`: `replyInThread` if we were supposed to thread, plain `sendMessage` otherwise. Closest peer pattern: Slack's `resolveThreadTs`.
 - ~~**No `ChannelMessageActionAdapter`; directory tools registered as agent tools.**~~ **Resolved 2026.4.27** (commits across the rename pass + #11 + `0ae9786` / `41ecefb` / `5e6dece`). `actions.handleAction` wired in `src/message-actions.ts` — 7 actions through the shared `message` tool. Directory adapter wires the canonical 3 slots (`listGroups`, `listPeers`, `listPeersLive`); the peer pair pulls from `GET /api/bots/users` (paginated, server-side scoped to bot-room-overlap). `sabha_list_rooms` / `sabha_search` / `sabha_list_members` removed from `src/tools.ts`. Directory adapter scopes to default account when `accountId` is null — Sabha is cross‑tenant (different `apiBaseUrl`s = separate workspaces with overlapping room ids), so unioning would collide ids.
 - ~~**`listGroupMembers` wired as a 4th directory slot.**~~ **Resolved 2026.4.27 same-day.** Briefly wired then dropped after a scale review against Slack/Discord. The slot's SDK signature `(groupId, limit)` is paginated-dump-only (no `query` field), and at Slack/Discord scale a 100k-member room can't be enumerated through a single agent call. All three peers skip this slot for the same reason. Sabha now matches: agents reach `member-info` for individual user lookups, `listPeers` for workspace-level search, or read mention metadata directly from inbound payloads. Both `listGroupMembers` and the underlying `client.listMembers` REST wrapper were removed; the `/api/bots/rooms/:id/members` server endpoint still exists but isn't called from the plugin. If sabha-the-platform ever needs an in-room membership primitive, the right shape is per-question (`member-in-room?(userId, roomId)`, `room-info` summary) rather than a list.
@@ -242,3 +241,4 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 - `docs/ARCHITECTURE.md` — Sabha plugin's own architecture
 - `docs/AGENT-PROMPT-CONTEXT.md` — peer survey of `messageToolHints` usage and the SDK gating issue
 - `docs/OUTBOUND-RICH-TEXT.md` — Sabha's markdown → Trix HTML pipeline
+- `docs/READ-AND-REACTIONS-ACTIONS-PLAN.md` — design record for `read` / `reactions` and the search-cursor fix

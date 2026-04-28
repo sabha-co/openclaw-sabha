@@ -480,7 +480,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).toContain("author_ids=99");
     });
 
-    it("threads before/after/limit/cursor through unchanged", async () => {
+    it("threads query/before/after/limit through unchanged when no cursor is set", async () => {
       searchMockFetch({ results: [], has_more: false, next_cursor: null });
       const client = new SabhaClient(API, BOT_KEY);
       await client.search({
@@ -488,7 +488,6 @@ describe("SabhaClient — bearer auth + URL shape", () => {
         before: "2026-04-28T00:00:00Z",
         after: "2026-04-01T00:00:00Z",
         limit: 100,
-        cursor: "2026-04-15T12:00:00Z|987",
       });
 
       const url = lastCall().url;
@@ -496,7 +495,43 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).toContain("before=2026-04-28T00%3A00%3A00Z");
       expect(url).toContain("after=2026-04-01T00%3A00%3A00Z");
       expect(url).toContain("limit=100");
-      expect(url).toContain("cursor=2026-04-15T12%3A00%3A00Z%7C987");
+    });
+
+    it("cursor preempts before and rides on the wire's `before` URL param", async () => {
+      // Regression for the latent cursor-mapping bug. The server's
+      // CursorPaginated concern only reads params[:before]; it ignores
+      // any `cursor=` URL param. Before the fix, `cursor` was sent as
+      // `cursor=` and the server silently fell back to filter mode (or
+      // re-fetched page 1 if no other filter was set).
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({
+        query: "hi",
+        before: "2026-04-28T00:00:00Z",
+        cursor: "2026-04-15T12:00:00Z|987",
+      });
+
+      const url = lastCall().url;
+      // Cursor wins over before — agent intent "continue paginating"
+      // beats "filter older than X".
+      expect(url).toContain("before=2026-04-15T12%3A00%3A00Z%7C987");
+      // Original `before` value must NOT appear on the wire.
+      expect(url).not.toContain("before=2026-04-28T00%3A00%3A00Z");
+      // Server has no separate `cursor` URL param — it must not appear.
+      expect(url).not.toContain("cursor=");
+    });
+
+    it("cursor-only call sends `before=<cursor>` (no separate `cursor=` URL param)", async () => {
+      searchMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.search({
+        query: "hi",
+        cursor: "2026-04-15T12:00:00Z|987",
+      });
+
+      const url = lastCall().url;
+      expect(url).toContain("before=2026-04-15T12%3A00%3A00Z%7C987");
+      expect(url).not.toContain("cursor=");
     });
 
     it("omits empty arrays from the URL", async () => {
@@ -549,6 +584,234 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       const out = await client.search({ query: "hi" });
 
       expect(out.nextCursor).toBeNull();
+    });
+  });
+
+  describe("readMessages — envelope + dual-purpose `before`", () => {
+    function readMockFetch(json: {
+      results: { id: number }[];
+      has_more: boolean;
+      next_cursor?: string | null;
+    }) {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify(json), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+    }
+
+    it("hits /rooms/:id/messages with no query string when no opts beyond roomId are passed", async () => {
+      readMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.readMessages({ roomId: 5 });
+
+      expect(lastCall().url).toBe(`${API}/rooms/5/messages`);
+    });
+
+    it("threads before/after/limit through to the wire", async () => {
+      readMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.readMessages({
+        roomId: 5,
+        before: "2026-04-28T00:00:00Z",
+        after: "2026-04-27T00:00:00Z",
+        limit: 25,
+      });
+
+      const url = new URL(lastCall().url);
+      expect(url.pathname).toBe("/1000006/api/bots/rooms/5/messages");
+      expect(url.searchParams.get("before")).toBe("2026-04-28T00:00:00Z");
+      expect(url.searchParams.get("after")).toBe("2026-04-27T00:00:00Z");
+      expect(url.searchParams.get("limit")).toBe("25");
+    });
+
+    it("prefers cursor over before when both are passed (server has no separate `cursor` URL param)", async () => {
+      readMockFetch({ results: [], has_more: false, next_cursor: null });
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.readMessages({
+        roomId: 5,
+        before: "2026-04-28T00:00:00Z",
+        cursor: "2026-04-20T00:00:00Z|999",
+      });
+
+      const url = new URL(lastCall().url);
+      expect(url.searchParams.get("before")).toBe("2026-04-20T00:00:00Z|999");
+      expect(url.searchParams.get("cursor")).toBeNull();
+    });
+
+    it("normalizes has_more / next_cursor to camelCase", async () => {
+      readMockFetch({
+        results: [{ id: 100 }],
+        has_more: true,
+        next_cursor: "2026-04-20T00:00:00Z|999",
+      });
+      const client = new SabhaClient(API, BOT_KEY);
+      const out = await client.readMessages({ roomId: 5 });
+
+      expect(out.hasMore).toBe(true);
+      expect(out.nextCursor).toBe("2026-04-20T00:00:00Z|999");
+      expect(out.results).toHaveLength(1);
+    });
+
+    it("treats missing next_cursor as null", async () => {
+      readMockFetch({ results: [], has_more: false });
+      const client = new SabhaClient(API, BOT_KEY);
+      const out = await client.readMessages({ roomId: 5 });
+
+      expect(out.nextCursor).toBeNull();
+    });
+
+    it("throws on bare-array response (envelope-guard regression)", async () => {
+      mockFetch(
+        () =>
+          new Response("[]", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.readMessages({ roomId: 5 })).rejects.toThrow(
+        /unexpected shape/,
+      );
+    });
+
+    it("throws on a non-object body (defends against a misconfigured proxy returning HTML)", async () => {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify("<html>oops</html>"), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.readMessages({ roomId: 5 })).rejects.toThrow(
+        /unexpected shape/,
+      );
+    });
+
+    it("throws on a null body", async () => {
+      mockFetch(
+        () =>
+          new Response("null", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.readMessages({ roomId: 5 })).rejects.toThrow(
+        /unexpected shape/,
+      );
+    });
+
+    it("surfaces a 422 validation_failed body as SabhaApiError (malformed-cursor contract)", async () => {
+      mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              error: "'before' must be ISO8601 timestamp or composite cursor",
+              code: "validation_failed",
+            }),
+            {
+              status: 422,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(
+        client.readMessages({ roomId: 5, cursor: "garbage" }),
+      ).rejects.toMatchObject({
+        name: "SabhaApiError",
+        status: 422,
+      });
+    });
+  });
+
+  describe("listReactions", () => {
+    it("hits /rooms/:id/messages/:msg/boosts", async () => {
+      mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({ reactions: [], total: 0, truncated: false }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await client.listReactions(5, 100);
+
+      expect(lastCall().url).toBe(`${API}/rooms/5/messages/100/boosts`);
+    });
+
+    it("returns the typed shape verbatim", async () => {
+      const wire = {
+        reactions: [
+          {
+            content: "🚀",
+            count: 3,
+            boosters: [
+              { id: 1, name: "alice" },
+              { id: 2, name: "bob" },
+            ],
+            truncated: false,
+          },
+        ],
+        total: 3,
+        truncated: false,
+      };
+      mockFetch(
+        () =>
+          new Response(JSON.stringify(wire), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const out = await client.listReactions(5, 100);
+
+      expect(out).toEqual(wire);
+    });
+
+    it("throws when `total` is missing (envelope-guard regression)", async () => {
+      mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({ reactions: [], truncated: false }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.listReactions(5, 100)).rejects.toThrow(
+        /unexpected shape/,
+      );
+    });
+
+    it("surfaces a 404 as SabhaApiError (covers wrong room, missing message, and soft-deleted indistinguishably)", async () => {
+      mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              error: "Room or message not found",
+              code: "not_found",
+            }),
+            {
+              status: 404,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      await expect(client.listReactions(5, 100)).rejects.toMatchObject({
+        name: "SabhaApiError",
+        status: 404,
+      });
     });
   });
 });

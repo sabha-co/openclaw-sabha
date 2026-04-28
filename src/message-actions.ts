@@ -34,6 +34,8 @@ const SUPPORTED_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set([
   "thread-reply",
   "search",
   "member-info",
+  "read",
+  "reactions",
 ]);
 
 function buildClient(ctx: ChannelMessageActionContext): SabhaClient {
@@ -134,6 +136,38 @@ function ok(text: string, details: unknown = {}): AgentToolResult<unknown> {
   };
 }
 
+// Project Sabha's wire shape into the field names the shared formatter
+// (`openclaw/src/commands/message-format.ts`) reads. The formatter walks
+// `payload.messages[]` and pulls `id` / `timestamp` / `authorTag` /
+// `text`; rendering the raw `{ id, creator, body, attachment, created_at }`
+// shape produces blank Time/Author/Text columns. Numeric ids are stringified
+// because the formatter's user/author lookups gate on `typeof === "string"`.
+// See docs/READ-AND-REACTIONS-ACTIONS-PLAN.md postscript.
+function projectReadMessage(m: import("./types.js").SabhaReadMessage) {
+  return {
+    id: String(m.id),
+    timestamp: m.created_at,
+    author: { id: String(m.creator.id), username: m.creator.name },
+    authorTag: m.creator.name,
+    text: m.body.plain,
+    attachment: m.attachment,
+  };
+}
+
+// Same projection rationale as `projectReadMessage`. The formatter's
+// reaction renderer reads `entry.name` for the emoji label and `entry.users`
+// for booster identities (each entry stringly-keyed via `tag` / `username`
+// / `id`). Sabha's wire `{ content, boosters: [{id: number, name}] }`
+// would render as empty Emoji + empty Users without this remap.
+function projectReaction(r: import("./types.js").SabhaReaction) {
+  return {
+    name: r.content,
+    count: r.count,
+    users: r.boosters.map((b) => ({ id: String(b.id), username: b.name })),
+    truncated: r.truncated,
+  };
+}
+
 export const sabhaMessageActions: ChannelMessageActionAdapter = {
   // describeMessageTool stays in channel.ts so the discovery half lives next
   // to the rest of the plugin definition. handleAction owns dispatch only.
@@ -193,6 +227,76 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       }
       const profile = await client.getUser(userId);
       return ok(`Profile for ${profile.name} (id ${profile.id})`, { profile });
+    }
+
+    if (action === "read") {
+      // Single-room read. Match the canonical message-tool field naming
+      // (`channelId` first) so a cross-channel agent's natural call works
+      // verbatim — Sabha rooms ARE channels in the cross-channel sense.
+      // Same precedent as `search` above (which uses `readNumberList` for
+      // its multi-room scoping).
+      const roomId = readNumber(
+        params,
+        "channelId", "channel_id", "roomId", "room_id", "to", "target",
+      );
+      if (roomId == null) {
+        throw new Error(
+          "Sabha read requires a single room target ('channelId' or 'roomId').",
+        );
+      }
+      const response = await client.readMessages({
+        roomId,
+        before: readString(params, "before"),
+        after: readString(params, "after"),
+        limit: readNumber(params, "limit"),
+        cursor: readString(params, "cursor"),
+      });
+      const messages = response.results.map(projectReadMessage);
+      // "Newest first" baked into the note so the agent learns ordering
+      // from the first call's tool result, regardless of which prompt-hint
+      // slot is active for the current profile.
+      const note = response.hasMore
+        ? `Read ${messages.length} message(s), newest first (more available — pass cursor to walk)`
+        : `Read ${messages.length} message(s), newest first`;
+      return ok(note, {
+        messages,
+        hasMore: response.hasMore,
+        nextCursor: response.nextCursor,
+      });
+    }
+
+    if (action === "reactions") {
+      // Per-message lookup. Server returns 404 indistinguishably for
+      // wrong-room, wrong-message-id, and soft-deleted (messages.active
+      // scope) — surfaces verbatim as SabhaApiError, matching member-info.
+      const roomId = readNumber(
+        params,
+        "channelId", "channel_id", "roomId", "room_id", "to", "target",
+      );
+      const messageId = readNumber(
+        params,
+        "messageId", "message_id", "targetMessageId",
+      );
+      // Two `throw`s rather than a combined disjunctive message so each
+      // missing-field case can be tested specifically (the regex form
+      // matches either branch and tells you nothing).
+      if (roomId == null) {
+        throw new Error(
+          "Sabha reactions requires a single room target ('channelId' or 'roomId').",
+        );
+      }
+      if (messageId == null) {
+        throw new Error("Sabha reactions requires 'messageId'.");
+      }
+      const response = await client.listReactions(roomId, messageId);
+      const note = response.total === 0
+        ? `No reactions on message ${messageId}`
+        : `${response.total} reaction(s) on message ${messageId}`;
+      return ok(note, {
+        reactions: response.reactions.map(projectReaction),
+        total: response.total,
+        truncated: response.truncated,
+      });
     }
 
     const roomId = readNumber(params, "to", "room_id", "roomId", "target");

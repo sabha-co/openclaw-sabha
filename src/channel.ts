@@ -209,6 +209,27 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // sending replies through the inbound pipeline.
     actions: {
       ...sabhaMessageActions,
+      // Core's message-action runner gates the call on `actionHasTarget`
+      // before dispatching to `handleAction`: only `to`, `channelId`, and
+      // per-action aliases declared here are recognized as a valid target.
+      // Without this entry, an agent calling `{ action: "read", roomId: 5 }`
+      // would be rejected by core with "Action read requires a target." even
+      // though the dispatch handler in `src/message-actions.ts` accepts the
+      // alias. See `node_modules/openclaw/dist/message-action-runner-*.js`
+      // (`actionRequiresTarget` / `actionHasTarget`).
+      //
+      // We publish only the genuine room-target aliases — `to` and
+      // `channelId` are always accepted by core and `target` is the
+      // runner's synthetic post-normalization field, so neither belongs
+      // here. The pre-existing 6 actions (send/edit/unsend/react/
+      // thread-reply) have the same dead-code aliasing in their dispatch
+      // (`room_id`, `roomId`, `target` listed in `readNumber` calls) but
+      // agents reach them via `to` in practice; broadening their alias
+      // publishing is a separate PR's concern (see design doc).
+      messageActionTargetAliases: {
+        read: { aliases: ["roomId", "room_id", "channel_id"] },
+        reactions: { aliases: ["roomId", "room_id", "channel_id"] },
+      },
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the
         // implicit-target reply, and `thread-reply` covers the explicit one
@@ -222,39 +243,42 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "thread-reply",
           "search",
           "member-info",
+          "read",
+          "reactions",
         ],
         capabilities: [],
         schema: [
-          // search action — these fields are Sabha-specific and not in
+          // Used by `search` and `read` (both cursor-paginated read
+          // shapes). These four fields are Sabha-specific and not in
           // core's `buildChannelTargetSchema`. The canonical scoping
           // fields (`channelId`/`channelIds`/`authorId`/`authorIds`) are
           // already exposed by core; the message-action handler reads
           // them via readNumberList and unions them with Sabha's
-          // `roomId`/`roomIds` aliases. So we only need to advertise
-          // the genuinely-new fields here.
+          // `roomId`/`roomIds` aliases.
           {
             properties: {
               before: Type.Optional(
                 Type.String({
                   description:
-                    "Sabha search: ISO timestamp upper bound (older messages).",
+                    "ISO timestamp upper bound (used by `search` and `read` to fetch older messages).",
                 }),
               ),
               after: Type.Optional(
                 Type.String({
-                  description: "Sabha search: ISO timestamp lower bound.",
+                  description:
+                    "ISO timestamp lower bound (used by `search` and `read`).",
                 }),
               ),
               limit: Type.Optional(
                 Type.Number({
                   description:
-                    "Sabha search: max results to return. Default 50, server hard cap 200.",
+                    "Max results to return (used by `search` and `read`). Default 50, server hard cap 200.",
                 }),
               ),
               cursor: Type.Optional(
                 Type.String({
                   description:
-                    "Sabha search: opaque pagination cursor from a prior response's `nextCursor`. Pass to walk further; refining the query is usually preferable.",
+                    "Opaque pagination cursor from a prior response's `nextCursor` (used by `search` and `read`). Pass to walk further; refining the query is usually preferable for `search`.",
                 }),
               ),
             },
@@ -356,6 +380,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
             "when more matches exist beyond what was returned — refine the query or pass `channelId` / `channelIds` " +
             "(or Sabha's `roomIds` alias) and `authorId` / `authorIds` to scope, or pass `cursor` (from `nextCursor`) " +
             "to walk further. Time-bound with `before` / `after` (ISO timestamps).",
+          // `read` returns newest-first. Without this hint, agents
+          // summarizing a thread emit the messages in wire order and
+          // produce a reverse-chronological narrative.
+          "READING HISTORY: The `message` tool's `read` action returns messages newest-first. " +
+            "Reorder client-side before summarizing if you want chronological output. " +
+            "Pass `cursor` (from a prior page's `nextCursor`) to walk further back in time.",
         ];
       },
     },

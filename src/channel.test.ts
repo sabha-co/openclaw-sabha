@@ -131,6 +131,134 @@ describe("sabhaPlugin.meta", () => {
   });
 });
 
+describe("sabhaPlugin.actions.describeMessageTool", () => {
+  function discover() {
+    const fn = sabhaPlugin.actions!.describeMessageTool!;
+    return fn({
+      cfg: makeCfg(),
+      accountId: null,
+    } as unknown as Parameters<typeof fn>[0])!;
+  }
+
+  it("includes read and reactions in the actions enum (peer parity with Slack)", () => {
+    const discovery = discover();
+    expect(discovery.actions).toContain("read");
+    expect(discovery.actions).toContain("reactions");
+  });
+
+  it("retains the seven pre-existing actions alongside the new pair", () => {
+    const discovery = discover();
+    for (const a of [
+      "send",
+      "edit",
+      "unsend",
+      "react",
+      "thread-reply",
+      "search",
+      "member-info",
+    ]) {
+      expect(discovery.actions).toContain(a);
+    }
+  });
+
+  it("publishes the cursor-paginated read fields once, shared between search and read", () => {
+    // before/after/limit/cursor are the only Sabha-specific fields the
+    // plugin contributes; canonical scoping (channelId/channelIds/...)
+    // comes from core's buildChannelTargetSchema. The same four fields
+    // serve both `search` and `read` because the underlying server
+    // concern is shared. This test pins the property names so a future
+    // change that renames or removes one surfaces here.
+    const discovery = discover();
+    const fragments = Array.isArray(discovery.schema)
+      ? discovery.schema
+      : discovery.schema
+        ? [discovery.schema]
+        : [];
+    const properties = fragments.flatMap((f) => Object.keys(f.properties ?? {}));
+    expect(properties.sort()).toEqual(["after", "before", "cursor", "limit"]);
+  });
+
+  it("schema field descriptions cover both `search` and `read` (regression guard for the broadening)", () => {
+    // Before this PR the descriptions said "Sabha search:". Adding `read`
+    // as a second consumer of the same fields means the descriptions
+    // should mention both — otherwise an agent reading the field schema
+    // wouldn't connect them to `read`. Asserting on the description text
+    // for one representative field is enough to catch regressions.
+    const discovery = discover();
+    const fragments = Array.isArray(discovery.schema)
+      ? discovery.schema
+      : discovery.schema
+        ? [discovery.schema]
+        : [];
+    const cursorField = fragments
+      .flatMap((f) => Object.entries(f.properties ?? {}))
+      .find(([k]) => k === "cursor");
+    expect(cursorField).toBeDefined();
+    const desc = (cursorField![1] as { description?: string }).description ?? "";
+    expect(desc).toMatch(/search/);
+    expect(desc).toMatch(/read/);
+  });
+});
+
+describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
+  // The core message-action runner gates dispatch on `actionHasTarget`
+  // (`node_modules/openclaw/dist/message-action-runner-*.js`). Without these
+  // alias declarations, `{ action: "read", roomId: 5 }` would be rejected
+  // before reaching `handleAction` even though dispatch accepts roomId.
+  // These tests pin the publishing so a future drift (handler accepts an
+  // alias that core silently rejects) surfaces here.
+
+  it("publishes roomId / room_id / channel_id aliases for `read`", () => {
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.read?.aliases.sort()).toEqual([
+      "channel_id",
+      "roomId",
+      "room_id",
+    ]);
+  });
+
+  it("publishes roomId / room_id / channel_id aliases for `reactions`", () => {
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.reactions?.aliases.sort()).toEqual([
+      "channel_id",
+      "roomId",
+      "room_id",
+    ]);
+  });
+
+  it("does not publish `to`, `channelId`, or `target` (handled by core or as a synthetic field)", () => {
+    // `to` and `channelId` are always accepted by core's actionHasTarget;
+    // `target` is the runner's synthetic post-normalization field, which
+    // we don't want to short-circuit by claiming it as an alias.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    for (const action of ["read", "reactions"] as const) {
+      const list = aliases[action]?.aliases ?? [];
+      expect(list).not.toContain("to");
+      expect(list).not.toContain("channelId");
+      expect(list).not.toContain("target");
+    }
+  });
+});
+
+describe("sabhaPlugin.agentPrompt.messageToolHints", () => {
+  it("contains the newest-first read-history hint so agents reorder for chronological summaries", () => {
+    const fn = sabhaPlugin.agentPrompt!.messageToolHints!;
+    const cfg = makeCfg({
+      accounts: {
+        default: {
+          baseUrl: "https://sabha.example",
+          botKey: "1-Key",
+          botName: "Bot",
+        },
+      },
+    });
+    const hints = fn({ cfg } as Parameters<typeof fn>[0]);
+    const joined = (Array.isArray(hints) ? hints : [hints]).join("\n");
+    expect(joined).toMatch(/newest[- ]first/i);
+    expect(joined).toMatch(/cursor/i);
+  });
+});
+
 describe("sabhaPlugin.threading.resolveReplyToMode", () => {
   // The deliver callbacks in monitor.ts / index.ts read `account.replyToMode`
   // directly; the SDK reply planner reads through this adapter. They must

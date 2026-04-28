@@ -64,6 +64,8 @@ describe("sabhaMessageActions.handleAction", () => {
       "thread-reply",
       "search",
       "member-info",
+      "read",
+      "reactions",
     ]) {
       expect(
         supports({ action: a as ChannelMessageActionContext["action"] }),
@@ -321,7 +323,7 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).not.toContain("room_ids=abc");
   });
 
-  it("search propagates before/after/limit/cursor", async () => {
+  it("search propagates before/after/limit when no cursor is set", async () => {
     const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
     restore = mock.restore;
 
@@ -331,7 +333,6 @@ describe("sabhaMessageActions.handleAction", () => {
         before: "2026-04-28T00:00:00Z",
         after: "2026-04-01T00:00:00Z",
         limit: 100,
-        cursor: "2026-04-15T12:00:00Z|987",
       }),
     );
 
@@ -339,7 +340,27 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).toContain("before=2026-04-28T00%3A00%3A00Z");
     expect(url).toContain("after=2026-04-01T00%3A00%3A00Z");
     expect(url).toContain("limit=100");
-    expect(url).toContain("cursor=2026-04-15T12%3A00%3A00Z%7C987");
+  });
+
+  it("search cursor preempts before and rides on the wire's `before` URL param", async () => {
+    // The server's CursorPaginated concern only reads params[:before];
+    // sending `cursor=` was a no-op (silently re-fetched page 1). Pinning
+    // the corrected mapping here.
+    const mock = withMockedFetch({ results: [], has_more: false, next_cursor: null });
+    restore = mock.restore;
+
+    await sabhaMessageActions.handleAction!(
+      ctx("search", {
+        query: "hi",
+        before: "2026-04-28T00:00:00Z",
+        cursor: "2026-04-15T12:00:00Z|987",
+      }),
+    );
+
+    const url = String(mock.fetch.mock.calls[0][0]);
+    expect(url).toContain("before=2026-04-15T12%3A00%3A00Z%7C987");
+    expect(url).not.toContain("before=2026-04-28T00%3A00%3A00Z");
+    expect(url).not.toContain("cursor=");
   });
 
   it("search surfaces the hasMore + nextCursor signal back to the agent", async () => {
@@ -370,5 +391,181 @@ describe("sabhaMessageActions.handleAction", () => {
     await expect(handle(ctx("react", { to: 1, messageId: 2 }))).rejects.toThrow(/emoji/);
     await expect(handle(ctx("search", {}))).rejects.toThrow(/query/);
     await expect(handle(ctx("send", { message: "hi" }))).rejects.toThrow(/room/);
+  });
+
+  it("read → GET /rooms/:id/messages with the envelope returned verbatim", async () => {
+    const mock = withMockedFetch({
+      results: [
+        {
+          id: 100,
+          creator: { id: 1, name: "alice" },
+          body: { html: "<p>hi</p>", plain: "hi" },
+          attachment: null,
+          created_at: "2026-04-28T12:00:00Z",
+        },
+      ],
+      has_more: true,
+      next_cursor: "2026-04-28T12:00:00Z|100",
+    });
+    restore = mock.restore;
+
+    const result = await sabhaMessageActions.handleAction!(
+      ctx("read", { channelId: 5, limit: 25 }),
+    );
+
+    const url = new URL(String(mock.fetch.mock.calls[0][0]));
+    expect(url.pathname).toBe("/api/bots/rooms/5/messages");
+    expect(url.searchParams.get("limit")).toBe("25");
+    const details = result.details as {
+      results: unknown[];
+      hasMore: boolean;
+      nextCursor: string | null;
+    };
+    expect(details.results).toHaveLength(1);
+    expect(details.hasMore).toBe(true);
+    expect(details.nextCursor).toBe("2026-04-28T12:00:00Z|100");
+    // Newest-first hint must land in the user-visible note text so the
+    // agent learns the ordering from the first call without depending on
+    // the system-prompt hint (which is gated behind availableTools).
+    expect(result.content[0].text).toMatch(/newest first/);
+    expect(result.content[0].text).toMatch(/cursor/);
+  });
+
+  it("read accepts every canonical room-target alias on the URL pathname", async () => {
+    // Per-alias assertion — pinning each alias with a fresh mock so a
+    // future change that drops an alias surfaces as a specific failure
+    // rather than a general "no URL match" guess. The order matches
+    // src/message-actions.ts's readNumber call.
+    for (const key of [
+      "channelId",
+      "channel_id",
+      "roomId",
+      "room_id",
+      "to",
+      "target",
+    ] as const) {
+      const mock = withMockedFetch({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      });
+      restore = mock.restore;
+      await sabhaMessageActions.handleAction!(ctx("read", { [key]: 5 }));
+      const url = new URL(String(mock.fetch.mock.calls[0][0]));
+      expect(url.pathname).toBe("/api/bots/rooms/5/messages");
+      restore();
+      restore = null;
+    }
+  });
+
+  it("read with cursor sends the cursor on `before=` and omits `cursor=`", async () => {
+    const mock = withMockedFetch({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    });
+    restore = mock.restore;
+    await sabhaMessageActions.handleAction!(
+      ctx("read", {
+        channelId: 5,
+        cursor: "2026-04-20T00:00:00Z|999",
+        before: "2026-04-28T00:00:00Z",
+      }),
+    );
+    const url = new URL(String(mock.fetch.mock.calls[0][0]));
+    expect(url.searchParams.get("before")).toBe("2026-04-20T00:00:00Z|999");
+    expect(url.searchParams.get("cursor")).toBeNull();
+  });
+
+  it("read rejects when no room target is provided", async () => {
+    await expect(
+      sabhaMessageActions.handleAction!(ctx("read", { limit: 10 })),
+    ).rejects.toThrow(/single room target/);
+  });
+
+  it("reactions → GET /rooms/:id/messages/:msg/boosts with the wire shape verbatim", async () => {
+    const wire = {
+      reactions: [
+        {
+          content: "🚀",
+          count: 3,
+          boosters: [{ id: 1, name: "alice" }],
+          truncated: false,
+        },
+      ],
+      total: 3,
+      truncated: false,
+    };
+    const mock = withMockedFetch(wire);
+    restore = mock.restore;
+
+    const result = await sabhaMessageActions.handleAction!(
+      ctx("reactions", { channelId: 5, messageId: 100 }),
+    );
+
+    expect(String(mock.fetch.mock.calls[0][0])).toBe(
+      "https://sabha.example/api/bots/rooms/5/messages/100/boosts",
+    );
+    expect(result.details).toEqual(wire);
+    expect(result.content[0].text).toMatch(/3 reaction/);
+  });
+
+  it("reactions empty case returns total: 0 with the matching note", async () => {
+    const mock = withMockedFetch({
+      reactions: [],
+      total: 0,
+      truncated: false,
+    });
+    restore = mock.restore;
+
+    const result = await sabhaMessageActions.handleAction!(
+      ctx("reactions", { channelId: 5, messageId: 100 }),
+    );
+    const details = result.details as { total: number; reactions: unknown[] };
+    expect(details.total).toBe(0);
+    expect(details.reactions).toEqual([]);
+    expect(result.content[0].text).toMatch(/^No reactions/);
+  });
+
+  it("reactions throws the room-target error specifically when only messageId is given", async () => {
+    // Tightened from the original `regex|regex` form so each missing-field
+    // branch is pinned. The two `throw`s in dispatch (separate room and
+    // messageId checks) make this test meaningful.
+    await expect(
+      sabhaMessageActions.handleAction!(ctx("reactions", { messageId: 100 })),
+    ).rejects.toThrow(/single room target/);
+  });
+
+  it("reactions throws the messageId error specifically when only room is given", async () => {
+    await expect(
+      sabhaMessageActions.handleAction!(ctx("reactions", { channelId: 5 })),
+    ).rejects.toThrow(/messageId/);
+  });
+
+  it("reactions surfaces a 404 as SabhaApiError (deleted vs missing indistinguishable)", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: "Room or message not found",
+            code: "not_found",
+          }),
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+    ) as unknown as FetchMock;
+    const original = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    await expect(
+      sabhaMessageActions.handleAction!(
+        ctx("reactions", { channelId: 5, messageId: 100 }),
+      ),
+    ).rejects.toMatchObject({ name: "SabhaApiError", status: 404 });
   });
 });

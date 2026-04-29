@@ -24,15 +24,11 @@ describe("inspectSabhaAccount", () => {
 
     expect(result.accountId).toBe("default");
     expect(result.enabled).toBe(true);
-    expect(result.mode).toBe("websocket");
     expect(result.tokenStatus).toBe("available");
     expect(result.tokenSource).toBe("config");
     expect(result.baseUrlStatus).toBe("available");
     expect(result.apiBaseUrlStatus).toBe("available");
     expect(result.configured).toBe(true);
-    // WS mode → no webhookSecret fields surfaced.
-    expect(result.signingSecretStatus).toBeUndefined();
-    expect(result.signingSecretSource).toBeUndefined();
   });
 
   it("reports an empty botKey as missing + not configured", () => {
@@ -64,73 +60,6 @@ describe("inspectSabhaAccount", () => {
     expect(result.baseUrlStatus).toBe("missing");
     expect(result.apiBaseUrlStatus).toBe("missing");
     expect(result.configured).toBe(false);
-  });
-
-  it("does not report webhookSecret state in WS mode even when set", () => {
-    const result = inspectSabhaAccount({
-      cfg: cfg({
-        baseUrl: "https://sabha.co/1000006",
-        apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        accounts: {
-          default: {
-            botKey: "42-AbCdEfGhIjKl",
-            webhookSecret: "whsec_abc",
-            connectionMode: "websocket",
-          },
-        },
-      }),
-    });
-
-    expect(result.mode).toBe("websocket");
-    expect(result.signingSecretStatus).toBeUndefined();
-    expect(result.signingSecretSource).toBeUndefined();
-    // WS mode doesn't require the secret for `configured: true`.
-    expect(result.configured).toBe(true);
-  });
-
-  it("surfaces missing webhookSecret in webhook mode without blocking configured", () => {
-    const result = inspectSabhaAccount({
-      cfg: cfg({
-        baseUrl: "https://sabha.co/1000006",
-        apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        accounts: {
-          default: {
-            botKey: "42-AbCdEfGhIjKl",
-            connectionMode: "webhook",
-          },
-        },
-      }),
-    });
-
-    expect(result.mode).toBe("webhook");
-    expect(result.signingSecretStatus).toBe("missing");
-    expect(result.signingSecretSource).toBe("none");
-    // `webhookSecret` is captured for forward-compat HMAC verification
-    // but the current runtime accepts webhooks without it (see
-    // channel.ts:79 and types.ts:198: "future release — not yet
-    // used."). Audit/doctor must not falsely flag working webhook
-    // deployments as unconfigured.
-    expect(result.configured).toBe(true);
-  });
-
-  it("reports webhookSecret available in webhook mode when set", () => {
-    const result = inspectSabhaAccount({
-      cfg: cfg({
-        baseUrl: "https://sabha.co/1000006",
-        apiBaseUrl: "https://sabha.co/1000006/api/bots",
-        accounts: {
-          default: {
-            botKey: "42-AbCdEfGhIjKl",
-            webhookSecret: "whsec_abc",
-            connectionMode: "webhook",
-          },
-        },
-      }),
-    });
-
-    expect(result.signingSecretStatus).toBe("available");
-    expect(result.signingSecretSource).toBe("config");
-    expect(result.configured).toBe(true);
   });
 
   it("reflects channel-level disabled flag", () => {
@@ -212,20 +141,6 @@ describe("inspectSabhaAccount", () => {
     expect(inspectSabhaAccount({ cfg: config }).accountId).toBe("staging");
     expect(inspectSabhaAccount({ cfg: config, accountId: null }).accountId).toBe("staging");
     expect(inspectSabhaAccount({ cfg: config, accountId: "" }).accountId).toBe("staging");
-  });
-
-  it("returns a mode field that reflects connectionMode override", () => {
-    const ws = inspectSabhaAccount({
-      cfg: cfg({ accounts: { default: { botKey: "42-x" } } }),
-    });
-    expect(ws.mode).toBe("websocket");
-
-    const wh = inspectSabhaAccount({
-      cfg: cfg({
-        accounts: { default: { botKey: "42-x", connectionMode: "webhook" } },
-      }),
-    });
-    expect(wh.mode).toBe("webhook");
   });
 
   it("includes the full merged config so audit can reuse it", () => {

@@ -10,12 +10,11 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 // These tests pin the migration contract that
 // `moveSingleAccountChannelSectionToDefaultAccount` reads in
 // `index.ts:registerFull`. The SDK's static
-// `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set covers `webhookSecret`,
-// `dmPolicy`, `allowFrom` (etc.) but NOT Sabha's actual credentials —
-// so without these arrays the migration shim is a no-op for the very
-// fields it's supposed to promote. Regressing either list silently
-// breaks the rename's promise: every named account keeps inheriting
-// base-level creds.
+// `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set covers `dmPolicy`, `allowFrom`
+// (etc.) but NOT Sabha's actual credentials — so without these arrays the
+// migration shim is a no-op for the very fields it's supposed to promote.
+// Regressing either list silently breaks the rename's promise: every named
+// account keeps inheriting base-level creds.
 
 describe("sabhaSingleAccountKeysToMove", () => {
   it("includes the core credential fields the SDK common set misses", () => {
@@ -46,16 +45,10 @@ describe("sabhaSingleAccountKeysToMove", () => {
   });
 
   it("excludes schema-defaulted behavioral keys to avoid a config-rewrite loop", () => {
-    // `connectionMode`, `webhookPort`, `typingEnabled`, and `replyToMode`
-    // all have `default:` values in openclaw.plugin.json. The schema
-    // loader injects them into the in-memory config before the migration
-    // shim runs, so listing them here makes the shim "promote" defaults
-    // that were never on disk. The resulting write touches
-    // `meta.lastTouchedAt`, the file watcher fires SIGUSR1, and the
-    // gateway restarts into the same defaulted state — an infinite boot
-    // loop. Keep these out.
-    expect(sabhaSingleAccountKeysToMove).not.toContain("connectionMode");
-    expect(sabhaSingleAccountKeysToMove).not.toContain("webhookPort");
+    // `typingEnabled` and `replyToMode` have `default:` values in
+    // openclaw.plugin.json. The schema loader injects them before the
+    // migration shim runs, so listing them makes the shim "promote"
+    // defaults that were never on disk, causing an infinite boot loop.
     expect(sabhaSingleAccountKeysToMove).not.toContain("typingEnabled");
     expect(sabhaSingleAccountKeysToMove).not.toContain("replyToMode");
   });
@@ -82,7 +75,6 @@ describe("sabhaNamedAccountPromotionKeys", () => {
       expect.arrayContaining([
         "botKey",
         "botName",
-        "webhookSecret",
         "websocketUrl",
       ]),
     );

@@ -23,26 +23,6 @@ describe("resolveSabhaAccount", () => {
     expect(account.botId).toBe(42);
   });
 
-  it("defaults connectionMode to websocket", () => {
-    const cfg = makeCfg({
-      accounts: { default: { baseUrl: "https://chat.example.com", botKey: "1-xyz" } },
-    });
-    expect(resolveSabhaAccount({ cfg }).connectionMode).toBe("websocket");
-  });
-
-  it("respects explicit webhook connectionMode", () => {
-    const cfg = makeCfg({
-      accounts: {
-        default: {
-          baseUrl: "https://chat.example.com",
-          botKey: "1-xyz",
-          connectionMode: "webhook",
-        },
-      },
-    });
-    expect(resolveSabhaAccount({ cfg }).connectionMode).toBe("webhook");
-  });
-
   it("defaults dmPolicy to open", () => {
     const cfg = makeCfg({
       accounts: { default: { baseUrl: "x", botKey: "1-a" } },
@@ -350,68 +330,6 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
     );
   });
 
-  it("fails closed when a non-default account uses connectionMode webhook", async () => {
-    const account = {
-      ...resolveSabhaAccount({
-        cfg: makeCfg({
-          accounts: {
-            staging: { baseUrl: "https://x", botKey: "1-a", connectionMode: "webhook" },
-          },
-        }),
-        accountId: "staging",
-      }),
-    };
-    const logs: CapturedLog[] = [];
-    const ac = new AbortController();
-    const startPromise = sabhaPlugin.gateway!.startAccount!(
-      makeCtx(account, logs, ac.signal),
-    );
-    ac.abort();
-    await startPromise;
-
-    expect(
-      logs.some(
-        (l) =>
-          l.level === "error" &&
-          /webhook/i.test(l.message) &&
-          /default bot account/i.test(l.message),
-      ),
-    ).toBe(true);
-    expect(logs.some((l) => /Starting WebSocket monitor/.test(l.message))).toBe(
-      false,
-    );
-  });
-
-  it("allows the default account to run in webhook mode", async () => {
-    // Default account + webhook mode is the only supported webhook
-    // configuration. It should idle (no error), not fail-close.
-    const account = {
-      ...resolveSabhaAccount({
-        cfg: makeCfg({
-          accounts: {
-            default: { baseUrl: "https://x", botKey: "1-a", connectionMode: "webhook" },
-          },
-        }),
-      }),
-    };
-    const logs: CapturedLog[] = [];
-    const ac = new AbortController();
-    const startPromise = sabhaPlugin.gateway!.startAccount!(
-      makeCtx(account, logs, ac.signal),
-    );
-    ac.abort();
-    await startPromise;
-
-    expect(
-      logs.some((l) => l.level === "info" && /Webhook mode/.test(l.message)),
-    ).toBe(true);
-    // No error-level "Webhook mode is only supported" log
-    expect(
-      logs.some(
-        (l) => l.level === "error" && /only supported/.test(l.message),
-      ),
-    ).toBe(false);
-  });
 });
 
 describe("sabhaPlugin.status", () => {

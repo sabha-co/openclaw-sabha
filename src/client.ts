@@ -131,9 +131,7 @@ export class SabhaClient {
       body,
     });
 
-    return this.parseSendResponse(res, roomId, {
-      responseHasJsonBody: opts?.parentMessageId != null,
-    });
+    return this.parseSendResponse(res);
   }
 
   async sendAttachment(
@@ -149,43 +147,34 @@ export class SabhaClient {
       body: form,
     });
 
-    return this.parseSendResponse(res, roomId, { responseHasJsonBody: false });
+    return this.parseSendResponse(res);
   }
 
   /**
-   * Read the `{ id, roomId }` tuple from a `POST /messages` response. Two
-   * shapes coexist on the wire:
-   *
-   * - `responseHasJsonBody: true` — the controller rendered
-   *   `{ id, room_id }` because the resolved target room differed from
-   *   the URL room (today: only when `parent_message_id` was set and a
-   *   thread was created/found). The caller can't infer the resolved
-   *   room without reading the body.
-   * - `responseHasJsonBody: false` — the controller responded
-   *   `head :created` with just a Location header. The resolved room is
-   *   the input `roomId` and we project it through.
-   *
-   * The flag describes the **response** shape, not the request shape, so
-   * it stays correct if the server later returns a body for new request
-   * variants. `null` covers the rare case where neither surface yields
-   * a parseable id (network drop, malformed response).
+   * Read the `{ id, roomId }` tuple from a `POST /messages` response. The
+   * server always returns `{ id, room_id }` in the body — for non-thread
+   * sends `room_id` matches the URL room, for thread sends it's the
+   * resolved thread room. `null` covers the rare case where the body
+   * doesn't parse (network drop, malformed response).
    */
   private async parseSendResponse(
     res: Response,
-    inputRoomId: number,
-    opts: { responseHasJsonBody: boolean },
   ): Promise<{ id: number; roomId: number } | null> {
-    if (opts.responseHasJsonBody) {
-      const json = (await res.json()) as { id?: number; room_id?: number };
-      if (typeof json.id !== "number" || typeof json.room_id !== "number") {
-        return null;
-      }
-      return { id: json.id, roomId: json.room_id };
+    // `res.json()` throws SyntaxError on an empty or non-JSON body
+    // (stripped proxy response, server regression). Callers in
+    // message-actions.ts / channel.ts treat a missing id as a controlled
+    // null and surface a Sabha-specific error rather than crashing the
+    // send path with an uncaught parser exception — preserve that.
+    let json: { id?: number; room_id?: number };
+    try {
+      json = (await res.json()) as { id?: number; room_id?: number };
+    } catch {
+      return null;
     }
-    const location = res.headers.get("location");
-    if (!location) return null;
-    const match = location.match(/\/messages\/(\d+)/);
-    return match ? { id: Number(match[1]), roomId: inputRoomId } : null;
+    if (typeof json.id !== "number" || typeof json.room_id !== "number") {
+      return null;
+    }
+    return { id: json.id, roomId: json.room_id };
   }
 
   /**
@@ -269,18 +258,15 @@ export class SabhaClient {
    * Capped at 50 distinct emoji and 100 boosters per emoji
    * (`REACTIONS_CAP` / `BOOSTERS_CAP` in `boosts_controller.rb`).
    *
-   * 404 surfaces as `SabhaApiError` and is indistinguishable between
-   * "room not visible to bot," "message never existed," and "message was
-   * deleted" — the server scopes through `Current.user.rooms.find` plus
-   * `messages.active`, collapsing all three failure modes into one wire shape.
+   * Id-only on the wire — server resolves the room from the message id and
+   * authorizes via the bot's room access. 404 surfaces as `SabhaApiError`
+   * and is indistinguishable between "message not visible to bot,"
+   * "message never existed," and "message was deleted" — the server scopes
+   * through the bot's rooms plus `messages.active`, collapsing all three
+   * failure modes into one wire shape.
    */
-  async listReactions(
-    roomId: number,
-    messageId: number,
-  ): Promise<SabhaReactionsResponse> {
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/boosts`,
-    );
+  async listReactions(messageId: number): Promise<SabhaReactionsResponse> {
+    const res = await this.fetch(`/messages/${messageId}/boosts`);
     return parseReactionsResponse((await res.json()) as unknown);
   }
 

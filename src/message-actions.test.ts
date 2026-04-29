@@ -79,7 +79,9 @@ describe("sabhaMessageActions.handleAction", () => {
   });
 
   it("send → POST /rooms/:to/messages", async () => {
-    const mock = withMockedFetch({}, "/rooms/123/messages/456");
+    // Server always returns { id, room_id } on POST /messages (post canonical-surface
+    // cleanup); `room_id` matches the URL room for non-thread sends.
+    const mock = withMockedFetch({ id: 456, room_id: 123 });
     restore = mock.restore;
 
     const result = await sabhaMessageActions.handleAction!(
@@ -115,11 +117,10 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(details.roomId).toBe(9);
   });
 
-  it("send throws when the server response yields no message id (no Location, no body)", async () => {
-    // `parseSendResponse` returns null when neither the Location header
-    // (regular case) nor the JSON body (parentMessageId case) carries an
-    // id. The dispatch layer must fail loud so the agent doesn't chain
-    // on `messageId: null`.
+  it("send throws when the server response body has no id (malformed/network drop)", async () => {
+    // `parseSendResponse` returns null when the JSON body is well-formed
+    // but missing `id` or `room_id`. The dispatch layer must fail loud so
+    // the agent doesn't chain on `messageId: null`.
     const mock = withMockedFetch({});
     restore = mock.restore;
 
@@ -588,7 +589,7 @@ describe("sabhaMessageActions.handleAction", () => {
     ).rejects.toThrow(/single room target/);
   });
 
-  it("reactions → GET /rooms/:id/messages/:msg/boosts and projects into the formatter-friendly `{name, users}` shape", async () => {
+  it("reactions → GET /messages/:msg/boosts and projects into the formatter-friendly `{name, users}` shape", async () => {
     // Same rationale as `read` above: the shared formatter reads
     // `entry.name` for the emoji label and `entry.users[].id` /
     // `entry.users[].username`, gating each on `typeof === "string"`.
@@ -610,11 +611,11 @@ describe("sabhaMessageActions.handleAction", () => {
     restore = mock.restore;
 
     const result = await sabhaMessageActions.handleAction!(
-      ctx("reactions", { channelId: 5, messageId: 100 }),
+      ctx("reactions", { messageId: 100 }),
     );
 
     expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/api/bots/rooms/5/messages/100/boosts",
+      "https://sabha.example/api/bots/messages/100/boosts",
     );
     const details = result.details as {
       reactions: Array<{
@@ -661,7 +662,7 @@ describe("sabhaMessageActions.handleAction", () => {
     restore = mock.restore;
 
     const result = await sabhaMessageActions.handleAction!(
-      ctx("reactions", { channelId: 5, messageId: 100 }),
+      ctx("reactions", { messageId: 100 }),
     );
     const details = result.details as { total: number; reactions: unknown[] };
     expect(details.total).toBe(0);
@@ -669,16 +670,10 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(result.content[0].text).toMatch(/^No reactions/);
   });
 
-  it("reactions throws the room-target error specifically when only messageId is given", async () => {
-    // Tightened from the original `regex|regex` form so each missing-field
-    // branch is pinned. The two `throw`s in dispatch (separate room and
-    // messageId checks) make this test meaningful.
-    await expect(
-      sabhaMessageActions.handleAction!(ctx("reactions", { messageId: 100 })),
-    ).rejects.toThrow(/single room target/);
-  });
-
-  it("reactions throws the messageId error specifically when only room is given", async () => {
+  it("reactions throws when messageId is missing", async () => {
+    // The wire endpoint is id-only (server resolves the room from the
+    // message id), so `messageId` is the only required field. Passing a
+    // bare `channelId` with no `messageId` is the canonical mistake.
     await expect(
       sabhaMessageActions.handleAction!(ctx("reactions", { channelId: 5 })),
     ).rejects.toThrow(/messageId/);
@@ -689,7 +684,7 @@ describe("sabhaMessageActions.handleAction", () => {
       async () =>
         new Response(
           JSON.stringify({
-            error: "Room or message not found",
+            error: "Message not found",
             code: "not_found",
           }),
           {
@@ -706,7 +701,7 @@ describe("sabhaMessageActions.handleAction", () => {
 
     await expect(
       sabhaMessageActions.handleAction!(
-        ctx("reactions", { channelId: 5, messageId: 100 }),
+        ctx("reactions", { messageId: 100 }),
       ),
     ).rejects.toMatchObject({ name: "SabhaApiError", status: 404 });
   });

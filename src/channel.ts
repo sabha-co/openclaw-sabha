@@ -206,7 +206,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       // publishing is a separate PR's concern (see design doc).
       messageActionTargetAliases: {
         read: { aliases: ["roomId", "room_id", "channel_id"] },
-        reactions: { aliases: ["roomId", "room_id", "channel_id"] },
+        // `reactions` is id-only on the wire (server resolves the room
+        // from the message id), so the target alias is `messageId` —
+        // matching how core treats `edit` / `unsend` (both id-only).
+        // Agents can call `message({ action: "reactions", messageId: 100 })`
+        // without supplying a (now-ignored) roomId.
+        reactions: { aliases: ["messageId", "message_id"] },
       },
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the

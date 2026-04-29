@@ -197,7 +197,7 @@ describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
     ]);
   });
 
-  it("publishes messageId / message_id aliases for `reactions` (id-only on the wire, matches core's edit/unsend treatment)", () => {
+  it("publishes messageId / message_id aliases for `reactions` (id-only on the wire)", () => {
     const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
     expect(aliases.reactions?.aliases.sort()).toEqual([
       "messageId",
@@ -205,12 +205,62 @@ describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
     ]);
   });
 
+  it("publishes messageId / message_id aliases for `react` (id-only on the wire)", () => {
+    // Without this alias core's actionHasTarget gate rejects
+    // `{ action: "react", messageId, emoji }` as "Action react requires
+    // a target.", forcing the agent to fabricate a `target` field that
+    // then explodes downstream at the channel resolver.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.react?.aliases.sort()).toEqual([
+      "messageId",
+      "message_id",
+    ]);
+  });
+
+  it("publishes messageId / message_id aliases for `edit` (id-only on the wire)", () => {
+    // Same trap as `react`: core's gate would reject
+    // `{ action: "edit", messageId, text }` without a `to`/`channelId`,
+    // even though dispatch only reads `messageId` from params.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.edit?.aliases.sort()).toEqual([
+      "messageId",
+      "message_id",
+    ]);
+  });
+
+  it("publishes messageId / message_id aliases for `unsend` (id-only on the wire)", () => {
+    // Same trap as `react` / `edit`. `unsend` dispatch reads only
+    // `messageId`; core's gate must accept it without a phantom target.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases.unsend?.aliases.sort()).toEqual([
+      "messageId",
+      "message_id",
+    ]);
+  });
+
+  it("does not alias `thread-reply` — that one is room-scoped on the wire", () => {
+    // `client.sendMessage(parentRoomId, text, { parentMessageId })` posts
+    // to `POST /rooms/:room_id/messages?parent_message_id=:id`, and the
+    // dispatch handler at `src/message-actions.ts:336` throws if
+    // `roomId` is missing. Aliasing `messageId` here would let core's
+    // gate accept calls that the dispatch then rejects — worse UX than
+    // the current "agent must pass `to`" requirement.
+    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
+    expect(aliases["thread-reply"]).toBeUndefined();
+  });
+
   it("does not publish `to`, `channelId`, or `target` (handled by core or as a synthetic field)", () => {
     // `to` and `channelId` are always accepted by core's actionHasTarget;
     // `target` is the runner's synthetic post-normalization field, which
     // we don't want to short-circuit by claiming it as an alias.
     const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    for (const action of ["read", "reactions"] as const) {
+    for (const action of [
+      "read",
+      "reactions",
+      "react",
+      "edit",
+      "unsend",
+    ] as const) {
       const list = aliases[action]?.aliases ?? [];
       expect(list).not.toContain("to");
       expect(list).not.toContain("channelId");

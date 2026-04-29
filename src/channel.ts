@@ -197,22 +197,31 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       // alias. See `node_modules/openclaw/dist/message-action-runner-*.js`
       // (`actionRequiresTarget` / `actionHasTarget`).
       //
-      // We publish only the genuine room-target aliases — `to` and
-      // `channelId` are always accepted by core and `target` is the
-      // runner's synthetic post-normalization field, so neither belongs
-      // here. The pre-existing 6 actions (send/edit/unsend/react/
-      // thread-reply) have the same dead-code aliasing in their dispatch
-      // (`room_id`, `roomId`, `target` listed in `readNumber` calls) but
-      // agents reach them via `to` in practice; broadening their alias
-      // publishing is a separate PR's concern (see design doc).
+      // We publish only the genuine target aliases — `to` and `channelId`
+      // are always accepted by core and `target` is the runner's
+      // synthetic post-normalization field, so neither belongs here.
+      //
+      // For id-only mutating actions (`react` / `edit` / `unsend`) the
+      // wire is `/api/bots/messages/:id[...]` — the server resolves the
+      // room from the message id and authorizes via the bot's room
+      // access (see CLAUDE.md "Mutating message ops are id-only on the
+      // wire"). The dispatch handlers in `src/message-actions.ts` only
+      // read `messageId`, never `roomId`. Without the `messageId` alias
+      // here, core's `actionHasTarget` gate rejects
+      // `{ action: "react", messageId, emoji }` with "Action react
+      // requires a target." even though dispatch would accept the call;
+      // the agent then defensively fills `target` with a guessed name,
+      // which routes through the channel resolver and fails as
+      // "Unknown target". `thread-reply` is intentionally NOT aliased
+      // — the wire is room-scoped (`POST /rooms/:id/messages?parent_message_id=:id`)
+      // and the dispatch handler throws if `roomId` is missing, so the
+      // agent must keep passing `to` for that one.
       messageActionTargetAliases: {
         read: { aliases: ["roomId", "room_id", "channel_id"] },
-        // `reactions` is id-only on the wire (server resolves the room
-        // from the message id), so the target alias is `messageId` —
-        // matching how core treats `edit` / `unsend` (both id-only).
-        // Agents can call `message({ action: "reactions", messageId: 100 })`
-        // without supplying a (now-ignored) roomId.
         reactions: { aliases: ["messageId", "message_id"] },
+        react: { aliases: ["messageId", "message_id"] },
+        edit: { aliases: ["messageId", "message_id"] },
+        unsend: { aliases: ["messageId", "message_id"] },
       },
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the

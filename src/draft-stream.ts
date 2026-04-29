@@ -60,16 +60,19 @@ const DEFAULT_MAX_CHARS = 16_000;
  * `createSabhaDraftStream({ roomId: payload.room.id })` already targets the
  * right room.
  *
- * **Top-level replies that create a NEW thread stream via `firstSend`.** The
- * caller supplies a `firstSend` callback that posts the first partial via
- * `replyInThread`, captures the new thread room id from the response, and
- * returns it. The stream rebinds its room id to the captured value. After the
- * 2026.4.29 id-only migration the rebind no longer affects `editMessage` /
- * `deleteMessage` (those are id-only on the wire and resolve the room
- * server-side); it only matters for **fresh** sends issued by recovery /
- * error-replace paths (e.g. posting a new error message after the preview was
- * deleted). `roomId()` exposes the captured value so those fresh sends land
- * in the thread room, not the parent. See
+ * **Top-level replies that create a new thread stream via `parentMessageId`.**
+ * The caller passes `parentMessageId` to the stream; the first send becomes a
+ * normal `client.sendMessage(parentRoomId, text, { parentMessageId })` and
+ * the server routes the message into the parent's thread room (creating it
+ * idempotently via `Rooms::Thread.find_or_create_for`). The response body
+ * `{ id, room_id }` carries the resolved thread room id, which the stream
+ * captures into `previewRoomId`. The URL room for every send stays
+ * `params.roomId` (the parent) — the server validates `parent_message_id`
+ * against the URL room's messages — but `previewRoomId` (exposed via
+ * `roomId()`) tells fresh-send fallbacks where the preview actually
+ * landed so error replacements drop into the thread, not the parent.
+ * After the id-only migration `editMessage` / `deleteMessage` don't need
+ * either room id (server resolves from the message id). See
  * `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
  */
 export type SabhaDraftStream = {
@@ -81,11 +84,12 @@ export type SabhaDraftStream = {
   messageId: () => number | undefined;
   /**
    * Effective room id for the preview message. Equals the param `roomId`
-   * until `firstSend` is wired and resolves; after that, equals the captured
-   * thread room id. After the 2026.4.29 id-only migration this is no longer
-   * needed for editing or deleting the preview (both are id-only) — it only
-   * backs **fresh sends** issued by recovery / error-replace paths so they
-   * land in the thread room, not the parent.
+   * until the first send resolves; after that, equals the room id returned
+   * by the server (the input room when `parentMessageId` was unset, or the
+   * resolved thread room when it was). After the id-only migration this
+   * value is no longer needed for editing or deleting the preview (both
+   * are id-only) — it only backs **fresh sends** issued by recovery /
+   * error-replace paths so they land in the thread room, not the parent.
    */
   roomId: () => number;
   /**
@@ -115,25 +119,25 @@ export type CreateSabhaDraftStreamParams = {
   client: SabhaClient;
   roomId: number;
   /**
-   * Optional override for the very first send. When supplied, the first
-   * partial is routed through this callback instead of `client.sendMessage`,
-   * and the returned `{ roomId, messageId }` rebinds the stream's effective
-   * room for all subsequent edits and deletes.
+   * When set, the first send routes the message into the parent message's
+   * thread room via the unified `client.sendMessage(parentRoomId, text, {
+   * parentMessageId })` call. The URL room is the parent (which the server
+   * validates `parent_message_id` against); the server resolves the message
+   * into the thread room (idempotent via `Rooms::Thread.find_or_create_for`)
+   * and returns `{ id, room_id }` in the response body. The stream captures
+   * the resolved thread room id into `previewRoomId` so fresh-send
+   * fallbacks land alongside the preview.
    *
-   * Used by the threading-on streaming path: the callback posts via
-   * `client.replyInThread(parentRoomId, userMessageId, text)`, reads the
-   * new thread room id from the response (`r.thread.id`), and returns it
-   * along with `r.message.id`. Sabha's `/thread` endpoint is idempotent
-   * via `find_or_create_for`, so a network-drop retry can't fork the
-   * thread.
+   * For non-threading paths (in-thread inbounds, DMs, threading-off),
+   * leave this unset — the stream's first send is a regular
+   * `sendMessage(roomId, text)` and `previewRoomId` stays at the input
+   * `roomId`.
    *
-   * Returning `null` is treated like `sendMessage` returning `null`: the
-   * stream stops and the caller's `deliver` fast-path handles finalization
-   * via the dead-stream branches.
+   * Replaces the pre-2026.4.29 `firstSend` callback that wrapped the
+   * dedicated `replyInThread` endpoint. See
+   * `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md` Phase 2.
    */
-  firstSend?: (
-    text: string,
-  ) => Promise<{ roomId: number; messageId: number } | null>;
+  parentMessageId?: number;
   throttleMs?: number;
   maxChars?: number;
   logger?: DraftStreamLogger;
@@ -155,7 +159,7 @@ export function createSabhaDraftStream(
     );
   }
   const maxChars = params.maxChars ?? DEFAULT_MAX_CHARS;
-  const { client, logger, firstSend } = params;
+  const { client, logger, parentMessageId } = params;
 
   // `state` is shared by reference with the SDK helper — the helper reads
   // `stopped` / `final` on every flush tick, and our send-or-edit callback
@@ -163,16 +167,17 @@ export function createSabhaDraftStream(
   const state = { stopped: false, final: false };
   let streamMessageId: number | undefined;
   let lastSentText = "";
-  // `effectiveRoomId` starts at the configured room and gets rebound to the
-  // thread room id once `firstSend` resolves (see the threading-on streaming
-  // path). After the 2026.4.29 id-only migration, `editMessage` and
-  // `deleteMessage` no longer take a room id at all (the server resolves it
-  // from the message). `effectiveRoomId` stays around because it still
-  // backs the `roomId()` getter that `monitor.ts`'s recovery / error-replace
-  // paths read for **fresh** sends (sending a brand-new error message after
-  // the preview was deleted) — those need to land in the thread room, not
-  // the parent. See `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
-  let effectiveRoomId = params.roomId;
+  // Two separate room ids. `params.roomId` is the parent (URL room for every
+  // POST). `previewRoomId` is the room where the preview message actually
+  // landed — equals `params.roomId` for non-thread sends; equals the
+  // server-resolved thread room id for parentMessageId-routed sends. They
+  // diverge in the threading case because every POST has to target the
+  // parent room as the URL (server validates `parent_message_id` against
+  // `@room.messages.active`), but fresh-send fallbacks in `monitor.ts`
+  // (recovery / error-replace) need the resolved preview room so the new
+  // error message lands alongside (and replaces) the preview. `roomId()`
+  // exposes `previewRoomId`.
+  let previewRoomId = params.roomId;
 
   const sendOrEditStreamMessage = async (text: string): Promise<boolean> => {
     // The final flush runs even after an explicit stop (e.g. `clear()`),
@@ -209,36 +214,34 @@ export function createSabhaDraftStream(
         lastSentText = trimmed;
         return true;
       }
-      if (firstSend) {
-        // First-send override (threading-on path). The callback posts the
-        // initial partial via `replyInThread` and returns the new thread's
-        // room id along with the first message id. Subsequent ticks fall
-        // into the `streamMessageId !== undefined` branch above and target
-        // `effectiveRoomId` (the captured thread room).
-        const sent = await firstSend(trimmed);
-        if (sent == null) {
-          state.stopped = true;
-          logger?.warn?.(
-            "sabha draft stream stopped (firstSend returned null)",
-          );
-          return false;
-        }
-        effectiveRoomId = sent.roomId;
-        streamMessageId = sent.messageId;
-        lastSentText = trimmed;
-        return true;
-      }
-      const sentId = await client.sendMessage(effectiveRoomId, trimmed);
-      if (sentId == null) {
-        // Sabha's `sendMessage` returns `null` when the Location header
-        // is missing. We can't edit a preview we can't address, so stop.
+      // Unified first send. When `parentMessageId` is set, the URL room
+      // is still `params.roomId` (the parent) — the server validates
+      // `parent_message_id` against the URL room's messages — and the
+      // server resolves the routing into the thread room internally
+      // (idempotent via `Rooms::Thread.find_or_create_for`). The
+      // response body carries the resolved room id, which we capture
+      // into `previewRoomId` so fresh-send fallbacks land alongside
+      // the preview. When `parentMessageId` is unset, the resolved
+      // room is just the input room and the capture is a no-op.
+      const sent =
+        parentMessageId != null
+          ? await client.sendMessage(params.roomId, trimmed, {
+              parentMessageId,
+            })
+          : await client.sendMessage(params.roomId, trimmed);
+      if (sent == null) {
+        // Sabha's `sendMessage` returns `null` when neither the response
+        // body (parentMessageId case) nor the Location header (regular
+        // case) yields a usable message id. We can't edit a preview we
+        // can't address, so stop.
         state.stopped = true;
         logger?.warn?.(
           "sabha draft stream stopped (sendMessage returned no id)",
         );
         return false;
       }
-      streamMessageId = sentId;
+      previewRoomId = sent.roomId;
+      streamMessageId = sent.id;
       lastSentText = trimmed;
       return true;
     } catch (err) {
@@ -280,14 +283,14 @@ export function createSabhaDraftStream(
   };
 
   logger?.debug?.(
-    `sabha draft stream ready (room=${params.roomId}, throttleMs=${throttleMs}, maxChars=${maxChars}${firstSend ? ", firstSend=on" : ""})`,
+    `sabha draft stream ready (room=${params.roomId}, throttleMs=${throttleMs}, maxChars=${maxChars}${parentMessageId != null ? `, parentMessageId=${parentMessageId}` : ""})`,
   );
 
   return {
     update,
     flush: loop.flush,
     messageId: readMessageId,
-    roomId: () => effectiveRoomId,
+    roomId: () => previewRoomId,
     isAlive: () => !state.stopped,
     clear,
     stop,

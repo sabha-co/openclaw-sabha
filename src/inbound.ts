@@ -71,7 +71,8 @@ type InboundDeps = {
    * `dispatchInboundReplyWithBase`'s `replyOptions.onPartialReply` so the
    * draft stream can PATCH the preview message in place. Always defined
    * now — every inbound case streams, whether the target room is known
-   * up front or resolved lazily through the stream's `firstSend` hook.
+   * up front or resolved on the first send via the stream's
+   * `parentMessageId` option (threading-on path).
    */
   onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
 };

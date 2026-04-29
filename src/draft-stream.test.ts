@@ -17,7 +17,14 @@ function makeStubClient(overrides: Partial<SabhaClient> = {}): {
   editMessage: ReturnType<typeof vi.fn>;
   deleteMessage: ReturnType<typeof vi.fn>;
 } {
-  const sendMessage = vi.fn().mockResolvedValue(42);
+  // Default mock returns the unified `{ id, roomId }` shape introduced in
+  // 2026.4.29 Phase 2. Individual tests override roomId to model the
+  // threading case (server-resolved thread room id) vs the regular case
+  // (input room id passes through).
+  const sendMessage = vi
+    .fn<(roomId: number, text: string, opts?: { parentMessageId?: number }) =>
+      Promise<{ id: number; roomId: number } | null>>()
+    .mockImplementation(async (roomId) => ({ id: 42, roomId }));
   const editMessage = vi
     .fn()
     .mockResolvedValue({ html: "", plain: "" });
@@ -206,8 +213,8 @@ describe("createSabhaDraftStream", () => {
   it("forceNewMessage resets so the next update sends a fresh message", async () => {
     const { client, sendMessage } = makeStubClient();
     sendMessage
-      .mockResolvedValueOnce(42)
-      .mockResolvedValueOnce(43);
+      .mockResolvedValueOnce({ id: 42, roomId: 10 })
+      .mockResolvedValueOnce({ id: 43, roomId: 10 });
     const stream = createSabhaDraftStream({ client, roomId: 10 });
 
     stream.update("first");
@@ -248,16 +255,20 @@ describe("createSabhaDraftStream", () => {
     // observable preview message containing the final text — no second
     // send, no stale partial.
     const { client, sendMessage, editMessage } = makeStubClient();
-    let resolveFirstSend: (id: number | null) => void = () => {};
-    const firstSendPromise = new Promise<number | null>((resolve) => {
+    let resolveFirstSend: (
+      sent: { id: number; roomId: number } | null,
+    ) => void = () => {};
+    const deferredFirstSend = new Promise<
+      { id: number; roomId: number } | null
+    >((resolve) => {
       resolveFirstSend = resolve;
     });
-    sendMessage.mockReset().mockReturnValueOnce(firstSendPromise);
+    sendMessage.mockReset().mockReturnValueOnce(deferredFirstSend);
 
     const stream = createSabhaDraftStream({ client, roomId: 10 });
 
     // Partial arrives. This kicks off `sendMessage("Hel")` which is
-    // now pending on `firstSendPromise`.
+    // now pending on `deferredFirstSend`.
     stream.update("Hel");
     // Let the microtask queue run so the SDK loop actually starts the send.
     await Promise.resolve();
@@ -274,7 +285,7 @@ describe("createSabhaDraftStream", () => {
     const stopPromise = stream.stop();
 
     // stop() is waiting on `inFlightPromise`. Resolve the partial send.
-    resolveFirstSend(42);
+    resolveFirstSend({ id: 42, roomId: 10 });
     await stopPromise;
 
     // Exactly one send (the partial), exactly one edit (the final text),
@@ -358,16 +369,15 @@ describe("createSabhaDraftStream", () => {
     });
   });
 
-  describe("firstSend (threading-on path)", () => {
-    it("routes the first send through firstSend, captures roomId+messageId, edits the thread on follow-ups", async () => {
+  describe("parentMessageId (threading-on path)", () => {
+    it("passes parentMessageId on the first send, captures the resolved thread room from the response, edits the thread on follow-ups", async () => {
       const { client, sendMessage, editMessage } = makeStubClient();
-      const firstSend = vi
-        .fn()
-        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      // Server resolves to thread room 99 when parent_message_id is set.
+      sendMessage.mockResolvedValue({ id: 7, roomId: 99 });
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
       });
 
       expect(stream.roomId()).toBe(10);
@@ -375,130 +385,126 @@ describe("createSabhaDraftStream", () => {
       stream.update("partial 1");
       await stream.flush();
 
-      // First send went through firstSend, not client.sendMessage.
-      expect(firstSend).toHaveBeenCalledExactlyOnceWith("partial 1");
-      expect(sendMessage).not.toHaveBeenCalled();
+      // First send included parentMessageId; server returned the thread room.
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "partial 1", {
+        parentMessageId: 5,
+      });
       expect(stream.messageId()).toBe(7);
-      // roomId rebound to the captured thread room.
+      // roomId rebound to the resolved thread room from the response.
       expect(stream.roomId()).toBe(99);
 
       stream.update("partial 1 plus more");
       await stream.flush();
 
-      // Subsequent edit is id-only (server resolves the room from the
-      // message). The rebound roomId() is no longer needed for editing,
-      // but stays exposed for fresh-send fallbacks in monitor.ts.
+      // Subsequent edit is id-only. parentMessageId is a one-shot — the
+      // stream only wires it on the first send, not on follow-ups, since
+      // we already have the message id.
       expect(editMessage).toHaveBeenCalledExactlyOnceWith(7, "partial 1 plus more");
-      // firstSend was a one-shot.
-      expect(firstSend).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("treats firstSend returning null like sendMessage returning null — stops the stream, no captured id", async () => {
+    it("treats sendMessage returning null (under threading) the same as the regular path — stops the stream, no captured id", async () => {
       const { client, sendMessage, editMessage } = makeStubClient();
-      const firstSend = vi.fn().mockResolvedValue(null);
+      sendMessage.mockResolvedValue(null);
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
         logger: { warn: vi.fn() },
       });
 
       stream.update("partial");
       await stream.flush();
 
-      expect(firstSend).toHaveBeenCalledTimes(1);
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "partial", {
+        parentMessageId: 5,
+      });
       expect(editMessage).not.toHaveBeenCalled();
       expect(stream.isAlive()).toBe(false);
       expect(stream.messageId()).toBeUndefined();
       // roomId stays at the parent — caller's case-(c) fallback uses
-      // shouldThread to decide what to do.
+      // its own shouldThread to decide what to do.
       expect(stream.roomId()).toBe(10);
     });
 
-    it("stops the stream when firstSend throws (mirrors the sendMessage-throws path)", async () => {
+    it("stops the stream when the first send throws (mirrors the regular sendMessage-throws path)", async () => {
       const { client, sendMessage } = makeStubClient();
-      const firstSend = vi.fn().mockRejectedValue(new Error("thread create 500"));
+      sendMessage.mockRejectedValue(new Error("thread create 500"));
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
         logger: { warn: vi.fn() },
       });
 
       stream.update("partial");
       await stream.flush();
 
-      expect(firstSend).toHaveBeenCalledTimes(1);
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledTimes(1);
       expect(stream.isAlive()).toBe(false);
       expect(stream.messageId()).toBeUndefined();
     });
 
-    it("routes the final-only path (no partials, only update + stop) through firstSend", async () => {
+    it("routes the final-only path (no partials, only update + stop) with parentMessageId on the first send", async () => {
       // Models the case where the model emitted no partials and the
       // deliver callback finalizes through `update(final) + stop()`.
-      // The first send is the final text and must still go through
-      // firstSend (i.e. create the thread) so the reply is threaded.
+      // The first send is the final text and must still carry
+      // parentMessageId so the reply is threaded.
       const { client, sendMessage, editMessage } = makeStubClient();
-      const firstSend = vi
-        .fn()
-        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      sendMessage.mockResolvedValue({ id: 7, roomId: 99 });
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
       });
 
       stream.update("final answer");
       await stream.stop();
 
-      expect(firstSend).toHaveBeenCalledExactlyOnceWith("final answer");
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "final answer", {
+        parentMessageId: 5,
+      });
       expect(editMessage).not.toHaveBeenCalled();
       expect(stream.messageId()).toBe(7);
       expect(stream.roomId()).toBe(99);
     });
 
     it("clear() deletes the preview by id (server resolves thread room internally)", async () => {
-      const { client, deleteMessage } = makeStubClient();
-      const firstSend = vi
-        .fn()
-        .mockResolvedValue({ roomId: 99, messageId: 7 });
+      const { client, sendMessage, deleteMessage } = makeStubClient();
+      sendMessage.mockResolvedValue({ id: 7, roomId: 99 });
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
       });
 
       stream.update("partial");
       await stream.flush();
       await stream.clear();
 
-      // Delete is id-only post-2026.4.29: callers no longer thread the
-      // room through. Server resolves room from message id, so the
-      // thread vs. parent disambiguation happens server-side.
+      // Delete is id-only: callers no longer thread the room through.
+      // Server resolves room from message id, so the thread vs. parent
+      // disambiguation happens server-side.
       expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(7);
       // The rebound roomId is still exposed for monitor.ts fresh-send
       // fallbacks, even though deleteMessage no longer needs it.
       expect(stream.roomId()).toBe(99);
     });
 
-    it("forceNewMessage re-routes through firstSend (idempotent thread append on the server)", async () => {
+    it("forceNewMessage re-sends with parentMessageId (idempotent thread append on the server)", async () => {
       // After forceNewMessage, the stream forgets its preview id and the
-      // next update is a fresh "first" send. With firstSend wired, that
-      // re-enters the threading path. Sabha's /thread is idempotent via
-      // find_or_create_for, so this re-creates inside the same thread —
-      // intentional behavior for chunk handoffs.
+      // next update is a fresh "first" send. With parentMessageId still
+      // set, that re-enters the threading path. Sabha's POST /messages
+      // with parent_message_id is idempotent via find_or_create_for, so
+      // this lands inside the same thread — intentional for chunk handoffs.
       const { client, sendMessage } = makeStubClient();
-      const firstSend = vi
-        .fn()
-        .mockResolvedValueOnce({ roomId: 99, messageId: 7 })
-        .mockResolvedValueOnce({ roomId: 99, messageId: 8 });
+      sendMessage
+        .mockResolvedValueOnce({ id: 7, roomId: 99 })
+        .mockResolvedValueOnce({ id: 8, roomId: 99 });
       const stream = createSabhaDraftStream({
         client,
         roomId: 10,
-        firstSend,
+        parentMessageId: 5,
       });
 
       stream.update("first chunk");
@@ -507,17 +513,23 @@ describe("createSabhaDraftStream", () => {
       stream.update("second chunk");
       await stream.flush();
 
-      expect(firstSend).toHaveBeenCalledTimes(2);
-      expect(firstSend).toHaveBeenNthCalledWith(1, "first chunk");
-      expect(firstSend).toHaveBeenNthCalledWith(2, "second chunk");
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sendMessage).toHaveBeenNthCalledWith(1, 10, "first chunk", {
+        parentMessageId: 5,
+      });
+      expect(sendMessage).toHaveBeenNthCalledWith(2, 10, "second chunk", {
+        parentMessageId: 5,
+      });
       expect(stream.messageId()).toBe(8);
     });
 
-    it("without firstSend, behavior is unchanged (sendMessage on first, editMessage on follow-ups)", async () => {
-      // Regression guard: the firstSend path must NOT engage when callers
-      // don't pass one. This is the path used for in-thread, DM, and
-      // threading-off cases.
+    it("without parentMessageId, sendMessage is called without the opts arg (regular non-thread path)", async () => {
+      // Regression guard: when parentMessageId isn't passed, the stream
+      // must not include the opts arg at all — vitest's exact-match
+      // semantics on toHaveBeenCalledWith would fail otherwise, and
+      // server-side `params[:parent_message_id].present?` would still
+      // return false either way, so the difference is purely a wire
+      // shape concern (no useless query string).
       const { client, sendMessage, editMessage } = makeStubClient();
       const stream = createSabhaDraftStream({ client, roomId: 10 });
 

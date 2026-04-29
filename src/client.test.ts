@@ -372,7 +372,8 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           new Blob(["x"], { type: "text/plain" }),
           "x.txt",
         ),
-      () => client.replyInThread(5, 10, "hi").catch(() => {}),
+      () =>
+        client.sendMessage(5, "hi", { parentMessageId: 10 }).catch(() => {}),
       () => client.addReaction(10, "👍").catch(() => {}),
       () => client.createDm([1, 2]).catch(() => {}),
       () => client.search("q").catch(() => {}),

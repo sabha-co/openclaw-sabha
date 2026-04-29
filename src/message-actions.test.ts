@@ -93,8 +93,8 @@ describe("sabhaMessageActions.handleAction", () => {
     expect((result.details as { messageId: number }).messageId).toBe(456);
   });
 
-  it("send with replyToId → POST .../messages/:msg/thread", async () => {
-    const mock = withMockedFetch({ thread: { id: 9 }, message: { id: 99 } });
+  it("send with replyToId → POST .../messages?parent_message_id (unified inline thread-reply)", async () => {
+    const mock = withMockedFetch({ id: 99, room_id: 9 });
     restore = mock.restore;
 
     await sabhaMessageActions.handleAction!(
@@ -102,7 +102,9 @@ describe("sabhaMessageActions.handleAction", () => {
     );
 
     const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toBe("https://sabha.example/api/bots/rooms/123/messages/42/thread");
+    expect(url).toBe(
+      "https://sabha.example/api/bots/rooms/123/messages?parent_message_id=42",
+    );
   });
 
   it("edit → PATCH /messages/:msg (id-only path; server resolves the room)", async () => {
@@ -147,8 +149,8 @@ describe("sabhaMessageActions.handleAction", () => {
     expect((result.details as { boostId: number }).boostId).toBe(7);
   });
 
-  it("thread-reply → POST .../messages/:msg/thread", async () => {
-    const mock = withMockedFetch({ thread: { id: 9 }, message: { id: 99 } });
+  it("thread-reply → POST .../messages?parent_message_id (unified inline thread-reply)", async () => {
+    const mock = withMockedFetch({ id: 99, room_id: 9 });
     restore = mock.restore;
 
     await sabhaMessageActions.handleAction!(
@@ -157,7 +159,7 @@ describe("sabhaMessageActions.handleAction", () => {
 
     const call = mock.fetch.mock.calls[0];
     expect(String(call[0])).toBe(
-      "https://sabha.example/api/bots/rooms/123/messages/42/thread",
+      "https://sabha.example/api/bots/rooms/123/messages?parent_message_id=42",
     );
     expect(call[1]?.method).toBe("POST");
   });

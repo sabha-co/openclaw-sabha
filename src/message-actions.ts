@@ -310,15 +310,21 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
         throw new Error("Sabha send requires 'message' text.");
       }
       const replyToId = readNumber(params, "replyToId", "replyTo");
+      const sent = await client.sendMessage(
+        roomId,
+        text,
+        replyToId != null ? { parentMessageId: replyToId } : undefined,
+      );
       if (replyToId != null) {
-        const result = await client.replyInThread(roomId, replyToId, text);
         return ok(`Replied to message ${replyToId}`, {
-          messageId: result.message.id,
-          roomId,
+          messageId: sent?.id ?? null,
+          roomId: sent?.roomId ?? roomId,
         });
       }
-      const messageId = await client.sendMessage(roomId, text);
-      return ok(`Sent message`, { messageId, roomId });
+      return ok(`Sent message`, {
+        messageId: sent?.id ?? null,
+        roomId: sent?.roomId ?? roomId,
+      });
     }
 
     if (action === "thread-reply") {
@@ -327,10 +333,12 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (text == null || messageId == null) {
         throw new Error("Sabha thread-reply requires 'message' and 'messageId'.");
       }
-      const result = await client.replyInThread(roomId, messageId, text);
+      const sent = await client.sendMessage(roomId, text, {
+        parentMessageId: messageId,
+      });
       return ok(`Replied in thread on message ${messageId}`, {
-        messageId: result.message.id,
-        roomId,
+        messageId: sent?.id ?? null,
+        roomId: sent?.roomId ?? roomId,
       });
     }
 

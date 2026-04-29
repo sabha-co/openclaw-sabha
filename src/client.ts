@@ -6,7 +6,6 @@ import type {
   SabhaReadMessagesResponse,
   SabhaSearchResponse,
   SabhaSearchResult,
-  SabhaThreadReply,
   SabhaMessageBody,
   SabhaUser,
   SabhaUserDetail,
@@ -101,23 +100,45 @@ export class SabhaClient {
    * POST. Sabha stores message bodies as rich text via `has_rich_text :body`
    * — every wire-level write has to be Trix-compatible HTML, and that's a
    * wire fact the client owns alongside authentication and URL shape.
+   *
+   * **Inline thread-reply.** When `opts.parentMessageId` is set, the server
+   * routes the message into the parent's thread room (creating it via
+   * `Rooms::Thread.find_or_create_for` if needed) and returns a JSON body
+   * `{ id, room_id }` so the caller knows where the message landed. Without
+   * `parentMessageId` the server keeps the legacy `head :created` shape with
+   * just a `Location` header; the resolved room is the input `roomId`. Both
+   * cases come back through this method as the uniform `{ id, roomId }`
+   * tuple so callers don't have to branch on threading. The wire transport
+   * for `parentMessageId` is a query string parameter, not a JSON body —
+   * Sabha's POST /messages reads the request body as raw markdown.
+   *
+   * Returns `null` when neither the response body nor the Location header
+   * yields a usable message id (network drop, malformed response).
    */
-  async sendMessage(roomId: number, text: string): Promise<number | null> {
+  async sendMessage(
+    roomId: number,
+    text: string,
+    opts?: { parentMessageId?: number },
+  ): Promise<{ id: number; roomId: number } | null> {
     const body = this.toRichText(text);
-    const res = await this.fetch(`/rooms/${roomId}/messages`, {
+    const path =
+      opts?.parentMessageId != null
+        ? `/rooms/${roomId}/messages?parent_message_id=${opts.parentMessageId}`
+        : `/rooms/${roomId}/messages`;
+    const res = await this.fetch(path, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body,
     });
 
-    return this.extractMessageId(res);
+    return this.parseSendResponse(res, roomId, opts?.parentMessageId != null);
   }
 
   async sendAttachment(
     roomId: number,
     file: Blob,
     filename: string,
-  ): Promise<number | null> {
+  ): Promise<{ id: number; roomId: number } | null> {
     const form = new FormData();
     form.append("attachment", file, filename);
 
@@ -126,14 +147,33 @@ export class SabhaClient {
       body: form,
     });
 
-    return this.extractMessageId(res);
+    return this.parseSendResponse(res, roomId, false);
   }
 
-  private extractMessageId(res: Response): number | null {
+  /**
+   * Read the `{ id, roomId }` tuple from a `POST /messages` response. The
+   * server returns a JSON body only when `parent_message_id` was passed
+   * (so the caller learns the resolved thread room id); otherwise it
+   * sends `head :created` with just a Location header and we project the
+   * input `roomId` through. `null` covers the rare case where neither
+   * surface yields a parseable id.
+   */
+  private async parseSendResponse(
+    res: Response,
+    inputRoomId: number,
+    expectBody: boolean,
+  ): Promise<{ id: number; roomId: number } | null> {
+    if (expectBody) {
+      const json = (await res.json()) as { id?: number; room_id?: number };
+      if (typeof json.id !== "number" || typeof json.room_id !== "number") {
+        return null;
+      }
+      return { id: json.id, roomId: json.room_id };
+    }
     const location = res.headers.get("location");
     if (!location) return null;
     const match = location.match(/\/messages\/(\d+)/);
-    return match ? Number(match[1]) : null;
+    return match ? { id: Number(match[1]), roomId: inputRoomId } : null;
   }
 
   /**
@@ -171,27 +211,6 @@ export class SabhaClient {
       `/messages/${messageId}`,
       { method: "DELETE" },
     );
-  }
-
-  /**
-   * Post a reply inside a message's thread. `text` is treated as markdown
-   * and converted to Trix HTML before the POST, same as `sendMessage`.
-   */
-  async replyInThread(
-    roomId: number,
-    messageId: number,
-    text: string,
-  ): Promise<SabhaThreadReply> {
-    const body = this.toRichText(text);
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/thread`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body,
-      },
-    );
-    return (await res.json()) as SabhaThreadReply;
   }
 
   /**

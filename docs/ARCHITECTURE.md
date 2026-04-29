@@ -325,14 +325,27 @@ Since the bearer-auth refactor (`2026.4.25`), Sabha authenticates bots via `Auth
 
 ### Channel context in the agent system prompt
 
-`src/channel.ts` ships two `agentPrompt` adapters into the SDK:
+`src/channel.ts` ships two `agentPrompt` adapters into the SDK that cover **different render paths**:
 
-- `messageToolHints` — platform identity preamble (`YOU ARE ON SABHA — NOT Discord, Slack, …`) plus Sabha mention syntax (`@{user_id}` curly-brace form). Defends against model priors that default to Discord-style `<@id>` or Slack-style `@username`, both of which Sabha's `format_mentions` regex silently drops.
-- `inboundFormattingHints` — `text_markup: "markdown"` plus three rules. Lands in the per-turn `## Inbound Context` JSON block.
+- `inboundFormattingHints` — rendered by `buildInboundMetaSystemPrompt` (`openclaw/src/auto-reply/reply/inbound-meta.ts`) on the **inbound auto-reply path only**. Carries the fuller Sabha identity stub, `@{USER_ID}` mention rule, and markdown rules. Lands in the per-turn `## Inbound Context` JSON block. Defends against model priors that default to Discord-style `<@id>` or Slack-style `@username`, both of which Sabha's server-side `format_mentions` regex silently drops. Renders regardless of tool profile because it sits outside the SDK's `availableTools.has("message")` gate.
+- `messageToolHints` — rendered by `buildMessagingSection` (`openclaw/src/agents/system-prompt.ts`) on **every agent system prompt** where the `message` tool is in scope, including proactive (non-inbound) agent runs (e.g. a user-initiated agent that uses the message tool to send a Sabha message). Carries a one-line minimal identity + mention reminder for that path, plus advisory planning hints (search-truncation note, `read` newest-first ordering). Gated by the SDK behind `availableTools.has("message")`.
 
-The OpenClaw SDK gates `messageToolHints` behind `availableTools.has("message")` (`openclaw/src/agents/system-prompt.ts:buildMessagingSection`). Operators on tool profiles that don't include `message` (e.g. `coding`) get the inbound formatting rules but not the identity preamble. The README's "Tool profile" section documents `tools.alsoAllow: ["message"]` as the per-operator workaround.
+Coverage matrix:
 
-The plugin previously fetched Sabha's `/skill` endpoint (an LLM-readable API reference) on startup and injected the 19 KB cached body into `messageToolHints`. That subsystem was removed in 2026.4.26 — see `docs/AGENT-PROMPT-CONTEXT.md` for the peer-plugin survey and decision record. The `/skill` endpoint is still consumed at setup time by `setup-wizard.ts:probeBaseUrl` to verify a `baseUrl` actually points at a Sabha server (response body discarded after the URL classification check).
+| Path | `inboundFormattingHints` | `messageToolHints` | Identity available |
+|---|---|---|---|
+| Inbound auto-reply, `messaging` profile | ✓ | ✓ | both |
+| Inbound auto-reply, `coding` profile | ✓ | gate fires | inbound hook only |
+| Proactive run, `messaging` profile | ✗ (not inbound) | ✓ | message-tool hook only |
+| Proactive run, `coding` profile | ✗ | gate fires | none (degenerate case) |
+| Inbound + fast-reply, `messaging` profile | skipped | ✓ | message-tool hook only |
+| Inbound + fast-reply, `coding` profile | skipped | gate fires | **none** |
+
+Before 2026.4.29 the identity + mention syntax lived only in `messageToolHints` and silently disappeared on `coding`-profile inbound runs (cell 2). The 2026.4.29 split lifted identity into `inboundFormattingHints` to fix that, but a pre-merge review caught that a pure "move out" would regress cell 3 (proactive on `messaging`). The final shape keeps a minimal identity reminder in `messageToolHints` so cell 3 stays covered. See `docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md` for the full rationale.
+
+**Known residual gap.** The bottom-right cell (inbound + fast-reply + `coding`) is uncovered by either hook. Workarounds: `tools.alsoAllow: ["message"]` in `~/.openclaw/openclaw.json` (re-enables `messageToolHints` even on `coding`) or per-room `systemPrompt`. Closing the fast-reply gap entirely with a plugin-only change isn't possible today; revisit only if real-world impact materializes.
+
+The plugin previously fetched Sabha's `/skill` endpoint (an LLM-readable API reference) on startup and injected the 19 KB cached body into `messageToolHints`. That subsystem was removed in 2026.4.26. The `/skill` endpoint is still consumed at setup time by `setup-wizard.ts:probeBaseUrl` to verify a `baseUrl` actually points at a Sabha server (response body discarded after the URL classification check).
 
 If you add a new agent-visible Sabha capability, pick the right SDK slot rather than expanding the `messageToolHints` payload (peer channel plugins keep that hook to ~3 lines):
 

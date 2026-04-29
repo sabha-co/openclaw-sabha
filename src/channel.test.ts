@@ -220,22 +220,68 @@ describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
   });
 });
 
+describe("sabhaPlugin.agentPrompt.inboundFormattingHints", () => {
+  // Identity + mention syntax live here (not in messageToolHints) so they
+  // survive on non-`messaging` tool profiles where core's gate would
+  // otherwise drop the entire `### message tool` subsection. See
+  // docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md.
+  const fn = sabhaPlugin.agentPrompt!.inboundFormattingHints!;
+  const rules = (fn() as { rules: string[] }).rules;
+
+  it("declares Sabha identity so the agent does not default to Discord/Slack priors", () => {
+    expect(rules.some((r) => /\bSabha\b/.test(r) && /Discord|Slack|Teams/.test(r))).toBe(true);
+  });
+
+  it("declares the @{USER_ID} mention syntax so server-side format_mentions does not silently drop the mention", () => {
+    expect(rules.some((r) => r.includes("@{USER_ID}"))).toBe(true);
+  });
+
+  it("retains the standard markdown rule so outbound rendering still routes through Trix", () => {
+    expect(rules.some((r) => /standard Markdown/i.test(r))).toBe(true);
+  });
+});
+
 describe("sabhaPlugin.agentPrompt.messageToolHints", () => {
-  it("contains the newest-first read-history hint so agents reorder for chronological summaries", () => {
-    const fn = sabhaPlugin.agentPrompt!.messageToolHints!;
-    const cfg = makeCfg({
-      accounts: {
-        default: {
-          baseUrl: "https://sabha.example",
-          botKey: "1-Key",
-          botName: "Bot",
-        },
+  // This hook renders on every agent system prompt that has the `message`
+  // tool — including proactive (non-inbound) runs that
+  // `inboundFormattingHints` does not reach. Identity + mention syntax
+  // are kept here as a minimal stub for that path; the fuller version
+  // lives in `inboundFormattingHints` for the inbound auto-reply path.
+  // Plus advisory planning hints (search truncation, read newest-first).
+  const fn = sabhaPlugin.agentPrompt!.messageToolHints!;
+  const cfg = makeCfg({
+    accounts: {
+      default: {
+        baseUrl: "https://sabha.example",
+        botKey: "1-Key",
+        botName: "Bot",
       },
-    });
-    const hints = fn({ cfg } as Parameters<typeof fn>[0]);
-    const joined = (Array.isArray(hints) ? hints : [hints]).join("\n");
+    },
+  });
+  const joined = fn({ cfg } as Parameters<typeof fn>[0]).join("\n");
+
+  it("retains a minimal identity reminder so proactive agent runs know they're on Sabha", () => {
+    expect(joined).toMatch(/Sabha/);
+    expect(joined).toMatch(/Discord|Slack|Teams/);
+  });
+
+  it("retains the @{USER_ID} mention rule so proactive sends do not regress to Discord/Slack syntax", () => {
+    expect(joined).toMatch(/@\{USER_ID\}/);
+    expect(joined).toMatch(/silently dropped/);
+  });
+
+  it("retains the newest-first read-history hint so agents reorder for chronological summaries", () => {
     expect(joined).toMatch(/newest[- ]first/i);
     expect(joined).toMatch(/cursor/i);
+  });
+
+  it("retains the search-truncation hint so agents do not summarize a 200-cap slice as complete", () => {
+    expect(joined).toMatch(/hasMore/);
+  });
+
+  it("does not carry the verbose pre-2026.4.29 identity preamble (moved to inboundFormattingHints)", () => {
+    expect(joined).not.toMatch(/YOU ARE ON SABHA/);
+    expect(joined).not.toMatch(/Conversations happen in rooms/);
   });
 });
 

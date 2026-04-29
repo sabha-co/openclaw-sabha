@@ -62,6 +62,8 @@ There are **five** outbound code paths, and new features often need to touch the
 
 All five ultimately go through `SabhaClient` (`src/client.ts`), which authenticates by sending `Authorization: Bearer ${botKey}` on every request. Endpoints live under `apiBaseUrl` (e.g. `https://sabha.co/1000006/api/bots`), which the server returns in the registration response. The WebSocket at `/cable?bot_key=…` still authenticates via query string — that path is unchanged.
 
+**Mutating message ops are id-only on the wire** as of 2026.4.29 — `editMessage(messageId, text)`, `deleteMessage(messageId)`, `addReaction(messageId, emoji)`, `removeReaction(messageId, boostId)` all hit `/api/bots/messages/:id[...]` paths instead of room-scoped paths. The server resolves the room from the message and authorizes via the bot's room access. This kills the mid-stream room rebind requirement on the editing path: `draft-stream.ts`'s `effectiveRoomId` no longer flows into `editMessage`/`deleteMessage` calls, only into fresh-send fallbacks (recovery / error-replace paths in `monitor.ts` that post a brand-new error message after the preview was deleted). `sendMessage`, `replyInThread`, `listReactions`, and read endpoints stay room-scoped — id-only POSTs and GETs aren't part of server Phase 1. See `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
+
 ### Session routing
 
 Sabha rooms/threads/DMs map to OpenClaw session keys in `src/session.ts`:

@@ -63,10 +63,14 @@ const DEFAULT_MAX_CHARS = 16_000;
  * **Top-level replies that create a NEW thread stream via `firstSend`.** The
  * caller supplies a `firstSend` callback that posts the first partial via
  * `replyInThread`, captures the new thread room id from the response, and
- * returns it. The stream rebinds its room id to the captured value so all
- * subsequent `editMessage` / `deleteMessage` calls target the thread, not the
- * parent room. `roomId()` exposes the captured value to callers (recovery /
- * error-replace paths) so they don't reach for the parent room id and 404.
+ * returns it. The stream rebinds its room id to the captured value. After the
+ * 2026.4.29 id-only migration the rebind no longer affects `editMessage` /
+ * `deleteMessage` (those are id-only on the wire and resolve the room
+ * server-side); it only matters for **fresh** sends issued by recovery /
+ * error-replace paths (e.g. posting a new error message after the preview was
+ * deleted). `roomId()` exposes the captured value so those fresh sends land
+ * in the thread room, not the parent. See
+ * `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
  */
 export type SabhaDraftStream = {
   /** Set the current accumulated text. The loop throttles the actual send. */
@@ -78,8 +82,10 @@ export type SabhaDraftStream = {
   /**
    * Effective room id for the preview message. Equals the param `roomId`
    * until `firstSend` is wired and resolves; after that, equals the captured
-   * thread room id (so callers can `editMessage` / `deleteMessage` against
-   * the right room in recovery / error-replace paths).
+   * thread room id. After the 2026.4.29 id-only migration this is no longer
+   * needed for editing or deleting the preview (both are id-only) — it only
+   * backs **fresh sends** issued by recovery / error-replace paths so they
+   * land in the thread room, not the parent.
    */
   roomId: () => number;
   /**
@@ -159,9 +165,13 @@ export function createSabhaDraftStream(
   let lastSentText = "";
   // `effectiveRoomId` starts at the configured room and gets rebound to the
   // thread room id once `firstSend` resolves (see the threading-on streaming
-  // path). All `editMessage` / `deleteMessage` calls below MUST read this
-  // variable, not the original `params.roomId`, otherwise post-thread edits
-  // and the `clear()` deletion would target the parent room.
+  // path). After the 2026.4.29 id-only migration, `editMessage` and
+  // `deleteMessage` no longer take a room id at all (the server resolves it
+  // from the message). `effectiveRoomId` stays around because it still
+  // backs the `roomId()` getter that `monitor.ts`'s recovery / error-replace
+  // paths read for **fresh** sends (sending a brand-new error message after
+  // the preview was deleted) — those need to land in the thread room, not
+  // the parent. See `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
   let effectiveRoomId = params.roomId;
 
   const sendOrEditStreamMessage = async (text: string): Promise<boolean> => {
@@ -195,7 +205,7 @@ export function createSabhaDraftStream(
 
     try {
       if (streamMessageId !== undefined) {
-        await client.editMessage(effectiveRoomId, streamMessageId, trimmed);
+        await client.editMessage(streamMessageId, trimmed);
         lastSentText = trimmed;
         return true;
       }
@@ -248,7 +258,7 @@ export function createSabhaDraftStream(
   const isValidMessageId = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value);
   const deleteMessage = async (messageId: number) => {
-    await client.deleteMessage(effectiveRoomId, messageId);
+    await client.deleteMessage(messageId);
   };
 
   const { loop, update, stop, clear } = createFinalizableDraftLifecycle<number>({

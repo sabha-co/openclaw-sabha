@@ -105,7 +105,7 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).toBe("https://sabha.example/api/bots/rooms/123/messages/42/thread");
   });
 
-  it("edit → PATCH .../messages/:msg", async () => {
+  it("edit → PATCH /messages/:msg (id-only path; server resolves the room)", async () => {
     const mock = withMockedFetch({ id: 42, body: { html: "", plain: "" } });
     restore = mock.restore;
 
@@ -114,11 +114,11 @@ describe("sabhaMessageActions.handleAction", () => {
     );
 
     const call = mock.fetch.mock.calls[0];
-    expect(String(call[0])).toBe("https://sabha.example/api/bots/rooms/123/messages/42");
+    expect(String(call[0])).toBe("https://sabha.example/api/bots/messages/42");
     expect(call[1]?.method).toBe("PATCH");
   });
 
-  it("unsend → DELETE .../messages/:msg", async () => {
+  it("unsend → DELETE /messages/:msg (id-only path)", async () => {
     const mock = withMockedFetch();
     restore = mock.restore;
 
@@ -127,11 +127,11 @@ describe("sabhaMessageActions.handleAction", () => {
     );
 
     const call = mock.fetch.mock.calls[0];
-    expect(String(call[0])).toBe("https://sabha.example/api/bots/rooms/123/messages/42");
+    expect(String(call[0])).toBe("https://sabha.example/api/bots/messages/42");
     expect(call[1]?.method).toBe("DELETE");
   });
 
-  it("react → POST .../boosts with emoji", async () => {
+  it("react → POST /messages/:msg/boosts with emoji (id-only path)", async () => {
     const mock = withMockedFetch({ id: 7 });
     restore = mock.restore;
 
@@ -141,7 +141,7 @@ describe("sabhaMessageActions.handleAction", () => {
 
     const call = mock.fetch.mock.calls[0];
     expect(String(call[0])).toBe(
-      "https://sabha.example/api/bots/rooms/123/messages/42/boosts",
+      "https://sabha.example/api/bots/messages/42/boosts",
     );
     expect(call[1]?.method).toBe("POST");
     expect((result.details as { boostId: number }).boostId).toBe(7);

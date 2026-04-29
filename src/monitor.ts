@@ -443,16 +443,15 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 }
                 if (draftStream.messageId() !== undefined) {
                   const previewId = draftStream.messageId()!;
-                  const previewRoom = draftStream.roomId();
                   try {
-                    await client.editMessage(previewRoom, previewId, text);
+                    await client.editMessage(previewId, text);
                     return;
                   } catch (err) {
                     logger?.error?.(
                       `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
                     );
                     await client
-                      .deleteMessage(previewRoom, previewId)
+                      .deleteMessage(previewId)
                       .catch(() => undefined);
                   }
                 }
@@ -491,10 +490,9 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             await draftStream.flush().catch(() => undefined);
             if (draftStream.messageId() !== undefined) {
               const previewId = draftStream.messageId()!;
-              const previewRoom = draftStream.roomId();
               const safe = formatStreamError(err);
               await client
-                .editMessage(previewRoom, previewId, safe)
+                .editMessage(previewId, safe)
                 .catch((replaceErr) => {
                   logger?.error?.(
                     `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,

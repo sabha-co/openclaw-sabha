@@ -313,7 +313,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
     await client.sendMessage(5, "hello");
     expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
 
-    await client.editMessage(5, 10, "hi").catch(() => {
+    await client.editMessage(10, "hi").catch(() => {
       /* body parsing differs per-mock; auth assertion is what we care about */
     });
     expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
@@ -373,7 +373,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           "x.txt",
         ),
       () => client.replyInThread(5, 10, "hi").catch(() => {}),
-      () => client.addReaction(5, 10, "👍").catch(() => {}),
+      () => client.addReaction(10, "👍").catch(() => {}),
       () => client.createDm([1, 2]).catch(() => {}),
       () => client.search("q").catch(() => {}),
       () => client.updateSettings({ name: "x" }),

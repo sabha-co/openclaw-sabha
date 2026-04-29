@@ -340,7 +340,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (messageId == null || text == null) {
         throw new Error("Sabha edit requires 'messageId' and 'message'.");
       }
-      await client.editMessage(roomId, messageId, text);
+      await client.editMessage(messageId, text);
       return ok(`Edited message ${messageId}`, { messageId, roomId });
     }
 
@@ -349,7 +349,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (messageId == null) {
         throw new Error("Sabha unsend requires 'messageId'.");
       }
-      await client.deleteMessage(roomId, messageId);
+      await client.deleteMessage(messageId);
       return ok(`Deleted message ${messageId}`, { messageId, roomId });
     }
 
@@ -359,7 +359,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       if (messageId == null || emoji == null) {
         throw new Error("Sabha react requires 'messageId' and 'emoji'.");
       }
-      const boostId = await client.addReaction(roomId, messageId, emoji);
+      const boostId = await client.addReaction(messageId, emoji);
       return ok(`Reacted with ${emoji} on message ${messageId}`, {
         boostId,
         messageId,

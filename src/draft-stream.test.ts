@@ -57,8 +57,8 @@ describe("createSabhaDraftStream", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(editMessage).toHaveBeenCalledTimes(2);
-    expect(editMessage).toHaveBeenNthCalledWith(1, 10, 42, "hello world");
-    expect(editMessage).toHaveBeenNthCalledWith(2, 10, 42, "hello world again");
+    expect(editMessage).toHaveBeenNthCalledWith(1, 42, "hello world");
+    expect(editMessage).toHaveBeenNthCalledWith(2, 42, "hello world again");
   });
 
   it("deduplicates identical snapshots", async () => {
@@ -173,7 +173,7 @@ describe("createSabhaDraftStream", () => {
 
     await stream.clear();
 
-    expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(10, 42);
+    expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(42);
     expect(stream.messageId()).toBeUndefined();
   });
 
@@ -198,7 +198,6 @@ describe("createSabhaDraftStream", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(editMessage).toHaveBeenCalledExactlyOnceWith(
-      10,
       42,
       "hello world (final)",
     );
@@ -281,7 +280,7 @@ describe("createSabhaDraftStream", () => {
     // Exactly one send (the partial), exactly one edit (the final text),
     // exactly one preview message. No double-post.
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(editMessage).toHaveBeenCalledExactlyOnceWith(10, 42, "Hello world");
+    expect(editMessage).toHaveBeenCalledExactlyOnceWith(42, "Hello world");
     expect(stream.messageId()).toBe(42);
   });
 
@@ -386,8 +385,10 @@ describe("createSabhaDraftStream", () => {
       stream.update("partial 1 plus more");
       await stream.flush();
 
-      // Subsequent edit targets the thread room (99), not the parent (10).
-      expect(editMessage).toHaveBeenCalledExactlyOnceWith(99, 7, "partial 1 plus more");
+      // Subsequent edit is id-only (server resolves the room from the
+      // message). The rebound roomId() is no longer needed for editing,
+      // but stays exposed for fresh-send fallbacks in monitor.ts.
+      expect(editMessage).toHaveBeenCalledExactlyOnceWith(7, "partial 1 plus more");
       // firstSend was a one-shot.
       expect(firstSend).toHaveBeenCalledTimes(1);
     });
@@ -459,7 +460,7 @@ describe("createSabhaDraftStream", () => {
       expect(stream.roomId()).toBe(99);
     });
 
-    it("clear() deletes the preview against the captured thread room, not the parent", async () => {
+    it("clear() deletes the preview by id (server resolves thread room internally)", async () => {
       const { client, deleteMessage } = makeStubClient();
       const firstSend = vi
         .fn()
@@ -474,8 +475,13 @@ describe("createSabhaDraftStream", () => {
       await stream.flush();
       await stream.clear();
 
-      // Delete uses the rebound effectiveRoomId (99 = thread), not 10 (parent).
-      expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(99, 7);
+      // Delete is id-only post-2026.4.29: callers no longer thread the
+      // room through. Server resolves room from message id, so the
+      // thread vs. parent disambiguation happens server-side.
+      expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(7);
+      // The rebound roomId is still exposed for monitor.ts fresh-send
+      // fallbacks, even though deleteMessage no longer needs it.
+      expect(stream.roomId()).toBe(99);
     });
 
     it("forceNewMessage re-routes through firstSend (idempotent thread append on the server)", async () => {
@@ -521,7 +527,7 @@ describe("createSabhaDraftStream", () => {
       await stream.flush();
 
       expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "hello");
-      expect(editMessage).toHaveBeenCalledExactlyOnceWith(10, 42, "hello world");
+      expect(editMessage).toHaveBeenCalledExactlyOnceWith(42, "hello world");
       expect(stream.roomId()).toBe(10);
     });
   });

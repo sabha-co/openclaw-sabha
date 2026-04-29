@@ -141,15 +141,20 @@ export class SabhaClient {
    * to Trix HTML before the PATCH, same as `sendMessage`. This is the only
    * edit entry point (draft-stream.ts uses it for streaming previews), so
    * the converter must run here too.
+   *
+   * Uses the id-only wire path `PATCH /messages/:id` — the server resolves
+   * the room from the message and authorizes via the bot's room access. No
+   * room id needs to flow through callers, which means streaming clients
+   * don't have to track room rebinds across thread creates. See
+   * `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
    */
   async editMessage(
-    roomId: number,
     messageId: number,
     text: string,
   ): Promise<SabhaMessageBody> {
     const body = this.toRichText(text);
     const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
+      `/messages/${messageId}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "text/plain" },
@@ -161,9 +166,9 @@ export class SabhaClient {
     return json.body;
   }
 
-  async deleteMessage(roomId: number, messageId: number): Promise<void> {
+  async deleteMessage(messageId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
+      `/messages/${messageId}`,
       { method: "DELETE" },
     );
   }
@@ -248,13 +253,9 @@ export class SabhaClient {
     return parseReactionsResponse((await res.json()) as unknown);
   }
 
-  async addReaction(
-    roomId: number,
-    messageId: number,
-    emoji: string,
-  ): Promise<number> {
+  async addReaction(messageId: number, emoji: string): Promise<number> {
     const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/boosts`,
+      `/messages/${messageId}/boosts`,
       {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -266,13 +267,9 @@ export class SabhaClient {
     return json.id;
   }
 
-  async removeReaction(
-    roomId: number,
-    messageId: number,
-    boostId: number,
-  ): Promise<void> {
+  async removeReaction(messageId: number, boostId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/boosts/${boostId}`,
+      `/messages/${messageId}/boosts/${boostId}`,
       { method: "DELETE" },
     );
   }

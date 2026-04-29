@@ -7,14 +7,13 @@ import {
 import { resolveSabhaAccount } from "./accounts.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
-// These tests pin the migration contract that
-// `moveSingleAccountChannelSectionToDefaultAccount` reads in
-// `index.ts:registerFull`. The SDK's static
+// These tests pin the migration contract consumed by the SDK's setup wizard
+// (`setup-wizard-helpers-*.js` calls `moveSingleAccountChannelSectionToDefaultAccount`
+// during `openclaw configure`). The SDK's static
 // `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set covers `dmPolicy`, `allowFrom`
 // (etc.) but NOT Sabha's actual credentials — so without these arrays the
-// migration shim is a no-op for the very fields it's supposed to promote.
-// Regressing either list silently breaks the rename's promise: every named
-// account keeps inheriting base-level creds.
+// wizard's promotion step is a no-op for the very fields it's supposed to
+// promote when an operator runs setup against a legacy single-account config.
 
 describe("sabhaSingleAccountKeysToMove", () => {
   it("includes the core credential fields the SDK common set misses", () => {
@@ -44,11 +43,12 @@ describe("sabhaSingleAccountKeysToMove", () => {
     );
   });
 
-  it("excludes schema-defaulted behavioral keys to avoid a config-rewrite loop", () => {
+  it("excludes schema-defaulted behavioral keys", () => {
     // `typingEnabled` and `replyToMode` have `default:` values in
-    // openclaw.plugin.json. The schema loader injects them before the
-    // migration shim runs, so listing them makes the shim "promote"
-    // defaults that were never on disk, causing an infinite boot loop.
+    // openclaw.plugin.json. The schema loader injects them into the
+    // in-memory cfg before the SDK's wizard-time promotion runs — listing
+    // them here would make the wizard "promote" defaults that were never
+    // on disk, churning the file shape during setup.
     expect(sabhaSingleAccountKeysToMove).not.toContain("typingEnabled");
     expect(sabhaSingleAccountKeysToMove).not.toContain("replyToMode");
   });

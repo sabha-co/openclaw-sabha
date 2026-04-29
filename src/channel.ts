@@ -156,10 +156,11 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       media: true,
       blockStreaming: true,
     },
-    // Setup-promotion contract for the SDK's
-    // `moveSingleAccountChannelSectionToDefaultAccount` migration shim
-    // (called from `index.ts:registerFull`). Without these arrays, the
-    // shim only promotes keys in the SDK's static common set
+    // Setup-promotion contract for the SDK's setup wizard
+    // (`setup-wizard-helpers-*.js` calls
+    // `moveSingleAccountChannelSectionToDefaultAccount` during
+    // `openclaw configure`). Without these arrays, the wizard's
+    // promotion step only moves keys in the SDK's static common set
     // (`dmPolicy`, `allowFrom`, etc.) — none of which include Sabha's
     // actual credentials. See `src/setup-contract.ts`.
     setup: {

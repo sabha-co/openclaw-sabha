@@ -175,7 +175,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       reply: true,
       threads: true,
       media: true,
-      groupManagement: true,
       blockStreaming: true,
     },
     // Setup-promotion contract for the SDK's

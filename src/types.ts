@@ -110,7 +110,7 @@ export type SabhaReadMessagesResponse = {
 };
 
 /**
- * One reaction group from `GET /api/bots/rooms/:id/messages/:msg_id/boosts`.
+ * One reaction group from `GET /api/bots/messages/:msg_id/boosts`.
  * `boosters` is server-capped at 100 (`BOOSTERS_CAP` in
  * `boosts_controller.rb`); `truncated` indicates the cap was hit for this
  * specific reaction.

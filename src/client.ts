@@ -103,17 +103,15 @@ export class SabhaClient {
    *
    * **Inline thread-reply.** When `opts.parentMessageId` is set, the server
    * routes the message into the parent's thread room (creating it via
-   * `Rooms::Thread.find_or_create_for` if needed) and returns a JSON body
-   * `{ id, room_id }` so the caller knows where the message landed. Without
-   * `parentMessageId` the server keeps the legacy `head :created` shape with
-   * just a `Location` header; the resolved room is the input `roomId`. Both
-   * cases come back through this method as the uniform `{ id, roomId }`
-   * tuple so callers don't have to branch on threading. The wire transport
-   * for `parentMessageId` is a query string parameter, not a JSON body —
-   * Sabha's POST /messages reads the request body as raw markdown.
+   * `Rooms::Thread.find_or_create_for` if needed) — the response body's
+   * `room_id` is the resolved thread room, which may differ from the URL
+   * room. For non-thread sends the body's `room_id` matches the URL room.
+   * The wire transport for `parentMessageId` is a query string parameter,
+   * not a JSON body — Sabha's POST /messages reads the request body as
+   * raw markdown.
    *
-   * Returns `null` when neither the response body nor the Location header
-   * yields a usable message id (network drop, malformed response).
+   * Returns `null` when the response body is empty or malformed (network
+   * drop, server regression).
    */
   async sendMessage(
     roomId: number,

@@ -2,7 +2,7 @@
  * Markdown → Sabha rich text (ActionText / Trix-compatible HTML) converter.
  *
  * Sabha stores message bodies as ActionText rich text (`has_rich_text :body`
- * on `Message`). When the plugin posts to `POST /rooms/{id}/{bot_key}/messages`,
+ * on `Message`). When the plugin posts to `POST /api/bots/rooms/:id/messages`,
  * the server reads the request body as a UTF-8 string and stores it directly
  * as the rich-text body — no markdown parsing, no rendering step. If the
  * plugin sends literal markdown (`**bold**`, `- item`, ` ``` `), users see

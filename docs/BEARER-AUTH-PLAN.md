@@ -174,3 +174,7 @@ Against a local Sabha checkout on `bot-api-header-auth`:
 - [ ] Build + tests + lint green.
 - [ ] Manual e2e green.
 - [ ] Version bumped, tag `2026.4.25` created.
+
+---
+
+**Postscript 2026.4.29:** `webhookSecret` and `connectionMode` were removed from the config schema in the webhook-mode removal (branch `drop-webhook-mode`). References to those fields in this historical plan doc are accurate for the time of writing but no longer reflect the current schema.

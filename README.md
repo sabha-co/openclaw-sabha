@@ -7,8 +7,7 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 
 ## Features
 
-- WebSocket mode (default) — connects outbound to Sabha, no tunnels needed
-- Webhook mode (fallback) — for deployments that prefer inbound push
+- WebSocket mode — connects outbound to Sabha, no tunnels needed
 - Supports DMs, group chat, threads, reactions, attachments, search
 - 12 agent tools for room and member management
 - Sabha self-host support (single-tenant and multi-tenant SaaS)
@@ -72,7 +71,6 @@ Edit `~/.openclaw/openclaw.json`:
       accounts: {
         default: {
           botKey: "42-AbCdEfGhIjKl",
-          webhookSecret: "whsec_..."  // captured at registration; reserved for HMAC signature verification in a future release
         }
       }
     }
@@ -80,9 +78,9 @@ Edit `~/.openclaw/openclaw.json`:
 }
 ```
 
-The join-URL flow auto-populates `apiBaseUrl` and `webhookSecret` from the server's registration response — manual config only needs these when pasting credentials by hand.
+The join-URL flow auto-populates `apiBaseUrl` and `websocketUrl` from the server's registration response — manual config only needs these when pasting credentials by hand.
 
-> **Bearer-auth refactor (2026.4.25 release).** Bot API auth moved from path-embedded `bot_key` to `Authorization: Bearer`, and endpoints now live under `/api/bots/*`. Plugin releases ≥ 2026.4.25 require a Sabha server that includes the bearer-auth refactor; the legacy 0.9.x line will not work against newer servers. Outbound webhooks are HMAC-signed by the server (headers `X-Sabha-Signature`, `X-Sabha-Timestamp`, `X-Sabha-Event`, `X-Sabha-Delivery`); the plugin captures the per-bot `webhook_secret` at registration time but defers signature verification to a future release.
+> **Bearer-auth refactor (2026.4.25 release).** Bot API auth moved from path-embedded `bot_key` to `Authorization: Bearer`, and endpoints now live under `/api/bots/*`. Plugin releases ≥ 2026.4.25 require a Sabha server that includes the bearer-auth refactor; the legacy 0.9.x line will not work against newer servers.
 
 Then restart the gateway:
 
@@ -90,27 +88,10 @@ Then restart the gateway:
 openclaw gateway restart
 ```
 
-## Connection Modes
-
-*WebSocket (default)* — connects outbound to Sabha via ActionCable or AnyCable. No reverse proxy or tunnel needed.
-
-*Webhook (fallback)* — Sabha pushes events to the plugin's HTTP endpoint. Requires OpenClaw to be network-reachable.
-
-```json5
-{
-  channels: {
-    sabha: {
-      connectionMode: "webhook",  // default: "websocket"
-      webhookPort: 8787
-    }
-  }
-}
-```
-
 ## How it works
 
 1. A user @mentions the bot in Sabha (or DMs it)
-2. Sabha delivers the event via WebSocket (or webhook)
+2. Sabha delivers the event via WebSocket
 3. The plugin dispatches to OpenClaw's agent
 4. The agent processes the message with an LLM
 5. The plugin replies via Sabha's REST API

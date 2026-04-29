@@ -18,18 +18,13 @@ import {
 // a dedicated CLI subcommand instead so operators can run it on demand.
 //
 // Check inventory:
-//   1. Config — baseUrl + apiBaseUrl non-empty, botKey matches `\d+-.+`,
-//      connectionMode is one of the two supported values.
+//   1. Config — baseUrl + apiBaseUrl non-empty, botKey matches `\d+-.+`.
 //   2. API   — `listRooms()` round-trips successfully against the bearer
 //      auth endpoint. Covers bot_key validity, HTTP reachability, and the
 //      retry runner in one call. (Sabha does not expose a cheaper probe
 //      like `GET /api/bots/profile`, so this is the lightest available.)
-//   3. WS    — (only when connectionMode === "websocket") open a
-//      connection, wait for `welcome`, subscribe to BotEventsChannel,
-//      wait for `confirm_subscription`, close cleanly.
-//   4. Webhook — (only when connectionMode === "webhook") soft warning:
-//      reachability from Sabha to this host cannot be verified from
-//      inside the plugin, so we emit a note and move on.
+//   3. WS    — open a connection, wait for `welcome`, subscribe to
+//      BotEventsChannel, wait for `confirm_subscription`, close cleanly.
 
 export type DoctorCheckStatus = "ok" | "fail" | "skip" | "warn";
 
@@ -75,13 +70,11 @@ export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
       status: "skip",
       message: "Skipped: config check failed.",
     });
-    if (account.connectionMode === "websocket") {
-      checks.push({
-        name: "WebSocket subscribe",
-        status: "skip",
-        message: "Skipped: config check failed.",
-      });
-    }
+    checks.push({
+      name: "WebSocket subscribe",
+      status: "skip",
+      message: "Skipped: config check failed.",
+    });
     return finalize(account.accountId, checks);
   }
 
@@ -90,23 +83,14 @@ export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
     await probeApi(account, opts.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS),
   );
 
-  // --- Check 3 or 4: Transport ---
-  if (account.connectionMode === "websocket") {
-    checks.push(
-      await probeWebSocket(
-        account,
-        opts.wsTimeoutMs ?? DEFAULT_WS_TIMEOUT_MS,
-        opts.webSocketFactory ?? defaultWebSocketFactory,
-      ),
-    );
-  } else {
-    checks.push({
-      name: "Webhook transport",
-      status: "warn",
-      message:
-        "Webhook reachability cannot be verified from the plugin. Ensure Sabha can reach this host on the configured webhook port.",
-    });
-  }
+  // --- Check 3: WebSocket subscribe ---
+  checks.push(
+    await probeWebSocket(
+      account,
+      opts.wsTimeoutMs ?? DEFAULT_WS_TIMEOUT_MS,
+      opts.webSocketFactory ?? defaultWebSocketFactory,
+    ),
+  );
 
   return finalize(account.accountId, checks);
 }
@@ -134,12 +118,6 @@ function validateConfig(account: ResolvedSabhaAccount): DoctorCheck {
   } else if (!/^\d+-.+$/.test(account.botKey)) {
     problems.push(`botKey does not match "<id>-<token>" shape`);
   }
-  if (
-    account.connectionMode !== "websocket" &&
-    account.connectionMode !== "webhook"
-  ) {
-    problems.push(`connectionMode "${account.connectionMode}" is invalid`);
-  }
   if (problems.length > 0) {
     return {
       name: "Config",
@@ -150,7 +128,7 @@ function validateConfig(account: ResolvedSabhaAccount): DoctorCheck {
   return {
     name: "Config",
     status: "ok",
-    message: `apiBaseUrl=${account.apiBaseUrl}, mode=${account.connectionMode}`,
+    message: `apiBaseUrl=${account.apiBaseUrl}`,
   };
 }
 

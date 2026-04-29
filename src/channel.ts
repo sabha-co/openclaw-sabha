@@ -8,7 +8,6 @@ import {
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
 import { Type } from "@sinclair/typebox";
 
@@ -407,7 +406,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       startAccount: async (ctx) => {
         const account = ctx.account;
         const logPrefix = `[sabha:${account.accountId}]`;
-        const isDefaultAccount = account.accountId === DEFAULT_ACCOUNT_ID;
 
         // Skip disabled accounts entirely — the SDK still calls
         // startAccount for every listed account, not just enabled ones,
@@ -421,24 +419,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           return;
         }
 
-        // Webhook mode uses a single plugin-level HTTP route, which
-        // cannot disambiguate events for more than one bot account.
-        // Fail-closed for named accounts so a multi-account config cannot
-        // silently misroute events through the default bot's client
-        // (wrong botId for mention detection, wrong credentials for
-        // replies). Multi-account webhook routing will require a path
-        // prefix scheme — deferred to v1.1.
-        if (account.connectionMode === "webhook" && !isDefaultAccount) {
-          ctx.log?.error?.(
-            `${logPrefix} Webhook mode is only supported for the default bot account. ` +
-              `Named accounts must use connectionMode: "websocket". Skipping this account.`,
-          );
-          await waitForAbort(ctx.abortSignal);
-          return;
-        }
-
         const shouldMonitor =
-          account.connectionMode === "websocket" &&
           account.baseUrl &&
           account.apiBaseUrl &&
           account.botKey &&
@@ -458,7 +439,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           });
         } else {
           ctx.log?.info?.(
-            `${logPrefix} ${account.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
+            `${logPrefix} Not configured — waiting for shutdown`,
           );
           await waitForAbort(ctx.abortSignal);
         }

@@ -200,26 +200,25 @@ src/
                         ({action: "start"|"stop", user}) on the same
                         WebSocket. Rails never sees these frames.
 
-  tools.ts              Agent tools registered via api.registerTool
-                        Room CRUD, join/leave, member management,
-                        DM-open, list-joinable-rooms (paginated
-                        with optional query), sabha_search_members
-                        (room-scoped name → id; the verb no SDK
-                        directory slot models because
-                        ChannelDirectoryListParams has no roomId
-                        and ChannelDirectoryListGroupMembersParams
-                        has no query). 10 tools total — all
-                        operations without cross-channel analogs.
-                        `sabha_list_rooms` / `sabha_search` /
-                        `sabha_list_members` were removed in 2026.4.27
-                        and now live behind the directory adapter and
-                        the shared `message` tool's `search` action
-                        respectively. Tool factories read
-                        `ctx.agentAccountId` at execute time and route
-                        through a shared `getClientForTool` helper
-                        that resolves the right bot account's client.
-                        The bot account id is NOT exposed in tool
-                        schemas — the LLM never has to pick one.
+  tools.ts              Agent tools registered via api.registerTool.
+                        Two tools total: sabha_search_members
+                        (room-scoped name → id; no SDK directory slot
+                        models roomId + query) and sabha_create_dm
+                        (explicit DM materialization; Sabha doesn't
+                        auto-create on first send). Channel/member
+                        admin (create / archive / join / leave / add /
+                        remove / list-joinable) was dropped in
+                        2026.4.29 — see docs/CHANNEL-ADMIN-DROP-PLAN.md.
+                        sabha_list_rooms / sabha_search /
+                        sabha_list_members were removed earlier
+                        (2026.4.27) and now live behind the directory
+                        adapter and the shared `message` tool's
+                        `search` action. Tool factories read
+                        ctx.agentAccountId at execute time and route
+                        through a shared getClientForTool helper that
+                        resolves the right bot account's client. The
+                        bot account id is NOT exposed in tool schemas
+                        — the LLM never has to pick one.
 
   message-actions.ts    ChannelMessageActionAdapter dispatch half
                         Agent-callable message ops on Sabha via core's
@@ -358,11 +357,11 @@ Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every op
 
 ### Outbound capability split: message actions, directory, agent tools
 
-The SDK splits outbound capability into three slots, and Sabha uses all three deliberately:
+The SDK splits outbound capability into three slots, and Sabha uses all three:
 
 - **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info` / `read` / `reactions`. `search` and `read` both return the envelope `{ results, hasMore, nextCursor }` capped at 200 server-side; both accept the canonical `channelId`/`channelIds`/`authorId`/`authorIds` scoping fields from core's `buildChannelTargetSchema` plus Sabha-native `roomId`/`roomIds` aliases. `read` is the cursor-paginated single-room history shape (`GET /rooms/:id/messages`, newest-first); `reactions` returns aggregated boosts on a single message (`GET /rooms/:id/messages/:msg/boosts`). The `describeMessageTool` schema contribution publishes the genuinely Sabha-specific cursor-paginated read params (`before`/`after`/`limit`/`cursor`) — these serve both `search` and `read` because the underlying server concern is shared. Channel/author scoping is already advertised by core. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
 - **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms, server-side paginated via `?query=&page=&per_page=` with a 100-page × 100-per-page = 10k ceiling), `listPeers` (bot-reachable users via `GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocompletable variant trimmed to ≤20). Replaces the old `sabha_list_rooms` / `sabha_search` agent tools. **`listGroupMembers` is intentionally NOT wired** — peers (Slack/Discord/Mattermost) don't wire it either; a full-room roster dump can't scale (a 100k-member room can't be paginated through a single agent call). Room-scoped name resolution (`given a roomId + partial name, find the user`) lives on the `sabha_search_members` agent tool — no SDK directory slot models `roomId + query`. Workspace-level name → id lives on `resolver.resolveTargets` (peer-parity with Discord / Slack / Telegram).
-- **`api.registerTool(factory)`** (`src/tools.ts`) — 9 agent tools for room/member admin (`sabha_create_room`, archive / join / leave / update_room, `add_member` / `remove_member`, `create_dm`, `list_joinable_rooms`). These are workspace-level operations without cross-channel analogs — Slack/Discord/Mattermost expose **zero** `registerTool` calls because they don't let agents create channels at runtime; Sabha intentionally does, and `registerTool` is the right slot for that.
+- **`api.registerTool(factory)`** (`src/tools.ts`) — **two** tools, both verbs the SDK can't model: `sabha_search_members` (room-scoped name → user; no `roomId + query` directory slot exists) and `sabha_create_dm` (Sabha doesn't auto-create DMs on first send the way Slack/Discord do). Channel and member admin (create / archive / join / leave / add / remove / list-joinable) was dropped in 2026.4.29 to reduce the maintained code surface — humans handle those operations through the Sabha UI. See `docs/CHANNEL-ADMIN-DROP-PLAN.md`. Peers (Slack/Discord/Mattermost) wire **zero** `registerTool` factories; Sabha is one slot above zero, by design.
 
 Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
 
@@ -459,7 +458,7 @@ There are **five** outbound code paths and they all end up in `SabhaClient`. New
 - **B. `outbound.attachedResults.sendText` / `sendMedia`** — plugin-level adapters in `channel.ts` invoked by OpenClaw core's shared `message` tool when no channel-specific action is selected. `sendMedia` fetches the remote URL into a Blob and calls `client.sendAttachment`.
 - **C. `actions.handleAction`** (`src/message-actions.ts`) — Sabha's contribution to the shared `message` tool. The agent reaches this by selecting `action: "send" | "edit" | "unsend" | "react" | "thread-reply" | "search" | "member-info" | "read" | "reactions"` on the canonical message tool. Lets the agent target Sabha messages by id (edit, react, delete), read room history (cursor-paginated, newest-first), inspect aggregated reactions on a message, and look up individual user profiles instead of only sending replies.
 - **D. `directory` listings** (`src/directory.ts`) — `listGroups` (rooms), `listPeers` (bot-reachable users), `listPeersLive` (autocomplete-friendly). Read-only; agents discover rooms/users via core's directory layer rather than channel-specific tools. `listGroupMembers` is deliberately omitted — see the Outbound capability split section.
-- **E. Agent tools** in `tools.ts` — invoked directly by the LLM for workspace admin (`sabha_create_room`, `sabha_add_member`, `sabha_archive_room`, …). These bypass the reply pipeline and the message-action adapter entirely; reserved for room/member admin without cross-channel analogs.
+- **E. Agent tools** in `tools.ts` — `sabha_search_members` (room-scoped name → user lookup) and `sabha_create_dm` (explicit DM materialization). Two SDK-gap verbs only; broader room/member admin was dropped in 2026.4.29.
 
 ### Session routing
 

@@ -119,20 +119,14 @@ In DMs, the bot responds to every message. In rooms, only when @mentioned.
 
 ## Agent Tools
 
+The plugin registers **two** Sabha-specific agent tools. Everything else (sending, editing, reacting, reading, searching, listing rooms, listing or resolving users) flows through OpenClaw's shared `message` tool, the channel directory adapter, and the resolver — peer-parity with Slack/Discord/Mattermost.
+
 | Tool | Description |
 |------|-------------|
-| `sabha_list_rooms` | List rooms the bot is in |
-| `sabha_list_joinable_rooms` | Discover open rooms to join |
-| `sabha_create_room` | Create an open or closed room |
-| `sabha_update_room` | Rename a room |
-| `sabha_archive_room` | Archive a room |
-| `sabha_join_room` | Join an open room |
-| `sabha_leave_room` | Leave a room |
-| `sabha_list_members` | List room members |
-| `sabha_add_member` | Add a user to a room |
-| `sabha_remove_member` | Remove a user from a room |
-| `sabha_search` | Search messages across all rooms |
-| `sabha_create_dm` | Start a DM with a user |
+| `sabha_search_members` | Find a user by partial name within a specific room |
+| `sabha_create_dm` | Open a direct message with a user |
+
+These two are kept because the SDK has no slot for room-scoped name → user lookup, and Sabha doesn't auto-create DMs on first send. Channel/member admin (create / archive / join / leave / add / remove) is intentionally **not** exposed to agents — humans run those operations through the Sabha UI. See `docs/CHANNEL-ADMIN-DROP-PLAN.md` for the rationale.
 
 ## Multi-tenant
 

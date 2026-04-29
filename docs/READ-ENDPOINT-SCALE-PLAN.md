@@ -2,6 +2,8 @@
 
 A decision record for the read-shaped methods in `src/client.ts` (and the agent-visible verbs that surface them). Use this when adding a new read endpoint, reshaping an existing one, or pushing back on a feature request that would re-introduce an unbounded dump.
 
+> **Postscript (2026.4.29):** the `sabha_list_joinable_rooms` agent tool referenced throughout §4 was dropped — see `docs/CHANNEL-ADMIN-DROP-PLAN.md`. The underlying `client.listRooms({ joinable })` shape this section motivated stays as designed; `setup-wizard.ts` is now its only caller. The cardinality argument and the "right shape" reshape decision are unchanged for the client method itself.
+
 Scope: read-shaped methods only (`list*`, `get*`, `search*`). Write methods (`send*`, `create*`, `update*`, `delete*`, `archive*`, `add*`, `remove*`) don't have the cardinality concern and are out of scope. Drafted 2026‑04‑27 against `src/client.ts` HEAD = `8828a05`. Updated same-day to assume the server-side companion ([`sabha-co/sabha#49`](https://github.com/sabha-co/sabha/pull/49)) is merged — the bot is not yet in production, so the plan describes the target state directly without migration phasing or lockstep-coordination ceremony.
 
 ## Why this doc exists

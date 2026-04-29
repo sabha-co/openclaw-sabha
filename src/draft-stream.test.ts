@@ -370,7 +370,7 @@ describe("createSabhaDraftStream", () => {
   });
 
   describe("parentMessageId (threading-on path)", () => {
-    it("passes parentMessageId on the first send, captures the resolved thread room from the response, edits the thread on follow-ups", async () => {
+    it("passes parentMessageId on the first send and edits by message id on follow-ups", async () => {
       const { client, sendMessage, editMessage } = makeStubClient();
       // Server resolves to thread room 99 when parent_message_id is set.
       sendMessage.mockResolvedValue({ id: 7, roomId: 99 });
@@ -380,18 +380,16 @@ describe("createSabhaDraftStream", () => {
         parentMessageId: 5,
       });
 
-      expect(stream.roomId()).toBe(10);
-
       stream.update("partial 1");
       await stream.flush();
 
-      // First send included parentMessageId; server returned the thread room.
+      // First send included parentMessageId; the URL room is the parent
+      // (10) — server validates parent_message_id against @room.messages
+      // and resolves the thread room internally.
       expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "partial 1", {
         parentMessageId: 5,
       });
       expect(stream.messageId()).toBe(7);
-      // roomId rebound to the resolved thread room from the response.
-      expect(stream.roomId()).toBe(99);
 
       stream.update("partial 1 plus more");
       await stream.flush();
@@ -422,9 +420,6 @@ describe("createSabhaDraftStream", () => {
       expect(editMessage).not.toHaveBeenCalled();
       expect(stream.isAlive()).toBe(false);
       expect(stream.messageId()).toBeUndefined();
-      // roomId stays at the parent — caller's case-(c) fallback uses
-      // its own shouldThread to decide what to do.
-      expect(stream.roomId()).toBe(10);
     });
 
     it("stops the stream when the first send throws (mirrors the regular sendMessage-throws path)", async () => {
@@ -466,7 +461,6 @@ describe("createSabhaDraftStream", () => {
       });
       expect(editMessage).not.toHaveBeenCalled();
       expect(stream.messageId()).toBe(7);
-      expect(stream.roomId()).toBe(99);
     });
 
     it("clear() deletes the preview by id (server resolves thread room internally)", async () => {
@@ -486,9 +480,6 @@ describe("createSabhaDraftStream", () => {
       // Server resolves room from message id, so the thread vs. parent
       // disambiguation happens server-side.
       expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(7);
-      // The rebound roomId is still exposed for monitor.ts fresh-send
-      // fallbacks, even though deleteMessage no longer needs it.
-      expect(stream.roomId()).toBe(99);
     });
 
     it("forceNewMessage re-sends with parentMessageId (idempotent thread append on the server)", async () => {
@@ -540,7 +531,6 @@ describe("createSabhaDraftStream", () => {
 
       expect(sendMessage).toHaveBeenCalledExactlyOnceWith(10, "hello");
       expect(editMessage).toHaveBeenCalledExactlyOnceWith(42, "hello world");
-      expect(stream.roomId()).toBe(10);
     });
   });
 

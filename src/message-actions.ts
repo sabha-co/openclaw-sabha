@@ -299,12 +299,20 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       });
     }
 
+    // Room-target resolution. Required for `send` and `thread-reply`
+    // (the wire endpoint takes a room id in the URL path); optional for
+    // the id-only verbs `edit` / `unsend` / `react` (the wire resolves
+    // the room from the message id, so the agent can call them with
+    // just `messageId` — matching how core's shared `message` tool
+    // treats `messageId` as a valid target alias for those verbs).
+    // When provided on an id-only call, the value is echoed back into
+    // `details.roomId` for agent context but never sent on the wire.
     const roomId = readNumber(params, "to", "room_id", "roomId", "target");
-    if (roomId == null) {
-      throw new Error(`Sabha ${action} requires a numeric room target ('to' or 'room_id').`);
-    }
 
     if (action === "send") {
+      if (roomId == null) {
+        throw new Error("Sabha send requires a numeric room target ('to' or 'room_id').");
+      }
       const text = readString(params, "message", "text", "body");
       if (text == null) {
         throw new Error("Sabha send requires 'message' text.");
@@ -315,19 +323,31 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
         text,
         replyToId != null ? { parentMessageId: replyToId } : undefined,
       );
+      // `sendMessage` returns null when neither the response body
+      // (parentMessageId case) nor the Location header (regular case)
+      // yields a usable id. The wire write succeeded but we can't
+      // surface the resulting message id to the agent — fail loud
+      // instead of returning `messageId: null`, which the agent might
+      // chain on (e.g. `react messageId=null`).
+      if (sent == null) {
+        throw new Error("Sabha send: server returned no message id.");
+      }
       if (replyToId != null) {
         return ok(`Replied to message ${replyToId}`, {
-          messageId: sent?.id ?? null,
-          roomId: sent?.roomId ?? roomId,
+          messageId: sent.id,
+          roomId: sent.roomId,
         });
       }
       return ok(`Sent message`, {
-        messageId: sent?.id ?? null,
-        roomId: sent?.roomId ?? roomId,
+        messageId: sent.id,
+        roomId: sent.roomId,
       });
     }
 
     if (action === "thread-reply") {
+      if (roomId == null) {
+        throw new Error("Sabha thread-reply requires a numeric room target ('to' or 'room_id').");
+      }
       const text = readString(params, "message", "text", "body");
       const messageId = readNumber(params, "messageId", "message_id", "replyToId", "replyTo");
       if (text == null || messageId == null) {
@@ -336,9 +356,12 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       const sent = await client.sendMessage(roomId, text, {
         parentMessageId: messageId,
       });
+      if (sent == null) {
+        throw new Error("Sabha thread-reply: server returned no message id.");
+      }
       return ok(`Replied in thread on message ${messageId}`, {
-        messageId: sent?.id ?? null,
-        roomId: sent?.roomId ?? roomId,
+        messageId: sent.id,
+        roomId: sent.roomId,
       });
     }
 
@@ -349,7 +372,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
         throw new Error("Sabha edit requires 'messageId' and 'message'.");
       }
       await client.editMessage(messageId, text);
-      return ok(`Edited message ${messageId}`, { messageId, roomId });
+      return ok(`Edited message ${messageId}`, { messageId, roomId: roomId ?? null });
     }
 
     if (action === "unsend") {
@@ -358,7 +381,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
         throw new Error("Sabha unsend requires 'messageId'.");
       }
       await client.deleteMessage(messageId);
-      return ok(`Deleted message ${messageId}`, { messageId, roomId });
+      return ok(`Deleted message ${messageId}`, { messageId, roomId: roomId ?? null });
     }
 
     if (action === "react") {
@@ -371,7 +394,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
       return ok(`Reacted with ${emoji} on message ${messageId}`, {
         boostId,
         messageId,
-        roomId,
+        roomId: roomId ?? null,
       });
     }
 

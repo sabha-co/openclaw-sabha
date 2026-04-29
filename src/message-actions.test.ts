@@ -97,7 +97,7 @@ describe("sabhaMessageActions.handleAction", () => {
     const mock = withMockedFetch({ id: 99, room_id: 9 });
     restore = mock.restore;
 
-    await sabhaMessageActions.handleAction!(
+    const result = await sabhaMessageActions.handleAction!(
       ctx("send", { to: 123, message: "hi", replyToId: 42 }),
     );
 
@@ -105,6 +105,29 @@ describe("sabhaMessageActions.handleAction", () => {
     expect(url).toBe(
       "https://sabha.example/api/bots/rooms/123/messages?parent_message_id=42",
     );
+    // Server returns `{ id, room_id }` when parent_message_id resolves to
+    // a different (thread) room — the agent learns the resolved room id
+    // so it can target follow-ups. Pin both fields so a `parseSendResponse`
+    // regression that drops the body branch (or projects the input room
+    // through) surfaces here, not as a silent `messageId: null` to the agent.
+    const details = result.details as { messageId: number; roomId: number };
+    expect(details.messageId).toBe(99);
+    expect(details.roomId).toBe(9);
+  });
+
+  it("send throws when the server response yields no message id (no Location, no body)", async () => {
+    // `parseSendResponse` returns null when neither the Location header
+    // (regular case) nor the JSON body (parentMessageId case) carries an
+    // id. The dispatch layer must fail loud so the agent doesn't chain
+    // on `messageId: null`.
+    const mock = withMockedFetch({});
+    restore = mock.restore;
+
+    await expect(
+      sabhaMessageActions.handleAction!(
+        ctx("send", { to: 123, message: "hi" }),
+      ),
+    ).rejects.toThrow(/no message id/);
   });
 
   it("edit → PATCH /messages/:msg (id-only path; server resolves the room)", async () => {
@@ -153,7 +176,7 @@ describe("sabhaMessageActions.handleAction", () => {
     const mock = withMockedFetch({ id: 99, room_id: 9 });
     restore = mock.restore;
 
-    await sabhaMessageActions.handleAction!(
+    const result = await sabhaMessageActions.handleAction!(
       ctx("thread-reply", { to: 123, messageId: 42, message: "in thread" }),
     );
 
@@ -162,6 +185,10 @@ describe("sabhaMessageActions.handleAction", () => {
       "https://sabha.example/api/bots/rooms/123/messages?parent_message_id=42",
     );
     expect(call[1]?.method).toBe("POST");
+    // Same return-shape pin as `send with replyToId` above.
+    const details = result.details as { messageId: number; roomId: number };
+    expect(details.messageId).toBe(99);
+    expect(details.roomId).toBe(9);
   });
 
   it("member-info → GET /users/:id and returns the rich profile", async () => {
@@ -392,7 +419,53 @@ describe("sabhaMessageActions.handleAction", () => {
     await expect(handle(ctx("edit", { to: 1, messageId: 2 }))).rejects.toThrow(/message/);
     await expect(handle(ctx("react", { to: 1, messageId: 2 }))).rejects.toThrow(/emoji/);
     await expect(handle(ctx("search", {}))).rejects.toThrow(/query/);
+    // Wire-required room target: send (POST /rooms/:id) and thread-reply
+    // (POST /rooms/:id?parent_message_id=...) both need the URL room.
     await expect(handle(ctx("send", { message: "hi" }))).rejects.toThrow(/room/);
+    await expect(
+      handle(ctx("thread-reply", { messageId: 5, message: "hi" })),
+    ).rejects.toThrow(/room/);
+  });
+
+  it("edit / unsend / react accept just messageId — id-only wire doesn't need a room target", async () => {
+    // After the 2026.4.29 id-only migration, edit/unsend/react resolve
+    // the room from the message id server-side. The handler used to
+    // gate every action behind a roomId throw, blocking callers that
+    // legitimately wanted to act on `{ messageId }` alone — including
+    // core's shared `message` tool, which treats `messageId` as a
+    // valid target alias for these verbs. Pin the new permissive shape.
+
+    const editMock = withMockedFetch({ id: 42, body: { html: "", plain: "" } });
+    restore = editMock.restore;
+    const editResult = await sabhaMessageActions.handleAction!(
+      ctx("edit", { messageId: 42, message: "fixed" }),
+    );
+    expect(String(editMock.fetch.mock.calls[0][0])).toBe(
+      "https://sabha.example/api/bots/messages/42",
+    );
+    // No roomId was supplied; details echo it as null so agents can
+    // distinguish "wasn't told" from "told and matches".
+    expect((editResult.details as { roomId: number | null }).roomId).toBeNull();
+    restore();
+
+    const unsendMock = withMockedFetch();
+    restore = unsendMock.restore;
+    await sabhaMessageActions.handleAction!(
+      ctx("unsend", { messageId: 42 }),
+    );
+    expect(String(unsendMock.fetch.mock.calls[0][0])).toBe(
+      "https://sabha.example/api/bots/messages/42",
+    );
+    restore();
+
+    const reactMock = withMockedFetch({ id: 7 });
+    restore = reactMock.restore;
+    await sabhaMessageActions.handleAction!(
+      ctx("react", { messageId: 42, emoji: "👍" }),
+    );
+    expect(String(reactMock.fetch.mock.calls[0][0])).toBe(
+      "https://sabha.example/api/bots/messages/42/boosts",
+    );
   });
 
   it("read → GET /rooms/:id/messages and projects results into the formatter-friendly `messages[]` shape", async () => {

@@ -131,7 +131,9 @@ export class SabhaClient {
       body,
     });
 
-    return this.parseSendResponse(res, roomId, opts?.parentMessageId != null);
+    return this.parseSendResponse(res, roomId, {
+      responseHasJsonBody: opts?.parentMessageId != null,
+    });
   }
 
   async sendAttachment(
@@ -147,23 +149,33 @@ export class SabhaClient {
       body: form,
     });
 
-    return this.parseSendResponse(res, roomId, false);
+    return this.parseSendResponse(res, roomId, { responseHasJsonBody: false });
   }
 
   /**
-   * Read the `{ id, roomId }` tuple from a `POST /messages` response. The
-   * server returns a JSON body only when `parent_message_id` was passed
-   * (so the caller learns the resolved thread room id); otherwise it
-   * sends `head :created` with just a Location header and we project the
-   * input `roomId` through. `null` covers the rare case where neither
-   * surface yields a parseable id.
+   * Read the `{ id, roomId }` tuple from a `POST /messages` response. Two
+   * shapes coexist on the wire:
+   *
+   * - `responseHasJsonBody: true` — the controller rendered
+   *   `{ id, room_id }` because the resolved target room differed from
+   *   the URL room (today: only when `parent_message_id` was set and a
+   *   thread was created/found). The caller can't infer the resolved
+   *   room without reading the body.
+   * - `responseHasJsonBody: false` — the controller responded
+   *   `head :created` with just a Location header. The resolved room is
+   *   the input `roomId` and we project it through.
+   *
+   * The flag describes the **response** shape, not the request shape, so
+   * it stays correct if the server later returns a body for new request
+   * variants. `null` covers the rare case where neither surface yields
+   * a parseable id (network drop, malformed response).
    */
   private async parseSendResponse(
     res: Response,
     inputRoomId: number,
-    expectBody: boolean,
+    opts: { responseHasJsonBody: boolean },
   ): Promise<{ id: number; roomId: number } | null> {
-    if (expectBody) {
+    if (opts.responseHasJsonBody) {
       const json = (await res.json()) as { id?: number; room_id?: number };
       if (typeof json.id !== "number" || typeof json.room_id !== "number") {
         return null;

@@ -347,13 +347,11 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         // For the threading-on case we pass `parentMessageId`: the stream's
         // first send becomes a normal `sendMessage(roomId, text, {
         // parentMessageId })`. The server resolves the thread room (creates
-        // it idempotently) and returns the resolved room id in the response
-        // body; the stream captures that into `effectiveRoomId` so the
-        // recovery / error-replace paths that read `draftStream.roomId()`
-        // still target the thread, not the parent. After the id-only
-        // migration `editMessage` / `deleteMessage` no longer need the
-        // captured room id (server resolves from the message id), so the
-        // capture only matters for **fresh** error-message sends.
+        // it idempotently via `Rooms::Thread.find_or_create_for`). After the
+        // id-only migration we don't have to track which room the preview
+        // landed in — `editMessage` / `deleteMessage` are id-only, and the
+        // case-(c) fallback below routes through the parent + parentMessageId,
+        // which idempotently lands in the same thread.
         const draftStream = createSabhaDraftStream({
           client,
           roomId: payload.room.id,

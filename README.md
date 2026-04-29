@@ -109,6 +109,22 @@ The plugin registers **two** Sabha-specific agent tools. Everything else (sendin
 
 These two are kept because the SDK has no slot for room-scoped name → user lookup, and Sabha doesn't auto-create DMs on first send. Channel/member admin (create / archive / join / leave / add / remove) is intentionally **not** exposed to agents — humans run those operations through the Sabha UI. See `docs/CHANNEL-ADMIN-DROP-PLAN.md` for the rationale.
 
+## Tool profile guidance
+
+Sabha identity and `@{USER_ID}` mention syntax reach the agent through two parallel paths so coverage is robust across deployment shapes:
+
+- **Inbound auto-reply** (a user @mentions the bot or DMs it): identity + mention syntax arrive via OpenClaw's `inboundFormattingHints` hook on every reply, regardless of tool profile.
+- **Proactive runs** (an agent is invoked outside the inbound pipeline and uses the `message` tool to send to Sabha): a minimal identity + mention reminder arrives via `messageToolHints`, gated on whether your tool profile includes the `message` tool.
+
+This is the **baseline** — no operator action needed for either path on a `messaging` profile, and the inbound path works on any profile.
+
+Two stronger options if you want richer Sabha context in the system prompt:
+
+- **`tools.alsoAllow: ["message"]`** in `~/.openclaw/openclaw.json`. Layers the `message` tool onto your selected profile so OpenClaw renders the `### message tool` subsection with Sabha's hints (advisory search/read planning notes plus the minimal identity reminder). Useful when running a non-`messaging` profile but you still want guidance about Sabha's message actions on proactive paths.
+- **Per-room `systemPrompt`** in your `accounts.<id>.rooms.<roomId>` config. Most powerful override — anything you put here is injected verbatim for that room's conversations. Use for room-specific behavior or when you need stricter Sabha context than the baseline provides.
+
+**Known limitation.** Fast-reply mode skips `inboundFormattingHints` entirely. The inbound + fast-reply combination on a `coding`-style profile loses both hooks — use one of the two options above to compensate.
+
 ## Multi-tenant
 
 For multi-tenant Sabha instances, include the workspace ID in the URL:

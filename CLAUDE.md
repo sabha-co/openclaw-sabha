@@ -101,14 +101,20 @@ Recovery / error-replace paths in `deliver` MUST read `draftStream.roomId()` rat
 
 ### Agent prompt hints
 
-`src/channel.ts` ships two `agentPrompt` adapters:
+`src/channel.ts` ships two `agentPrompt` adapters that cover **different render paths**, not redundant copies of the same path:
 
-- `messageToolHints` — platform identity preamble (`YOU ARE ON SABHA — NOT Discord, Slack, …`) + Sabha mention syntax (`@{user_id}` curly-brace form). **The OpenClaw SDK gates these behind `availableTools.has("message")`** — they vanish from the system prompt on profiles that don't include the `message` tool (e.g. `coding`). Operators on non-`messaging` profiles need `tools.alsoAllow: ["message"]` in `~/.openclaw/openclaw.json`.
-- `inboundFormattingHints` — markdown rules (always rendered, except in fast-reply mode).
+- `inboundFormattingHints` — rendered by `buildInboundMetaSystemPrompt` on the **inbound auto-reply path only**. Carries the fuller Sabha identity stub (`You are on Sabha — NOT Discord, Slack, Teams, or Telegram`), `@{USER_ID}` mention rule, and standard markdown rules. Survives non-`messaging` tool profiles because it sits outside the SDK's `availableTools.has("message")` gate.
+- `messageToolHints` — rendered by `buildMessagingSection` on **every agent system prompt** where the `message` tool is in scope, including proactive (non-inbound) agent runs. Carries a single-line minimal identity + mention reminder for that path, plus advisory hints (search-truncation note, `read` newest-first ordering). **Gated by the SDK** behind `availableTools.has("message")` — disappears on `coding`-profile gateways.
 
-The plugin previously fetched `/skill` (Sabha's LLM-readable API reference) on startup and injected the 19 KB cached text into `messageToolHints`. That was removed in 2026.4.26 because (a) the SDK gate dropped the entire payload on `coding`-profile gateways, and (b) no other channel plugin in the ecosystem injects platform docs that way — Discord/MSTeams/Feishu/Slack/etc. keep `messageToolHints` to ~3 lines of narrow tool/format hints. The setup wizard still probes `{baseUrl}/skill` to verify a URL points at a Sabha server (response body discarded). See `docs/AGENT-PROMPT-CONTEXT.md` for the full survey + decision record.
+The two hooks together cover four distinct cells: (a) inbound + `messaging`, (b) inbound + `coding`, (c) proactive + `messaging`, (d) proactive + `coding`. Cells (a)–(c) get identity/mention coverage. Cell (d) is uncovered (no slot reaches it) but is also a degenerate case for Sabha — a `coding`-profile agent with no inbound trigger and no `message` tool is unlikely to be sending Sabha messages.
 
-If you add a new agent-visible capability, surface it as an agent tool (`src/tools.ts`) — don't try to inject API docs through `messageToolHints`.
+This split was finalized on 2026.4.29 after a pre-merge review caught that an initial "move not duplicate" approach would regress proactive Sabha sends on `messaging` profile. See `docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md` for the full rationale.
+
+**Known residual gap:** fast-reply mode skips `inboundFormattingHints` entirely. On the inbound + fast-reply combination, identity falls back to `messageToolHints` if the profile has the `message` tool; if not, it's lost. Workarounds: `tools.alsoAllow: ["message"]` in `~/.openclaw/openclaw.json` or per-room `systemPrompt`.
+
+The plugin previously fetched `/skill` (Sabha's LLM-readable API reference) on startup and injected the 19 KB cached text into `messageToolHints`. That was removed in 2026.4.26 because (a) the SDK gate dropped the entire payload on `coding`-profile gateways, and (b) no other channel plugin in the ecosystem injects platform docs that way. The setup wizard still probes `{baseUrl}/skill` to verify a URL points at a Sabha server (response body discarded).
+
+If you add a new agent-visible capability, surface it as an agent tool (`src/tools.ts`) — don't try to inject API docs through `messageToolHints`. Anything correctness-load-bearing for an action belongs in the action schema or result envelope, not in prompt prose.
 
 ### Design decisions worth knowing before changing things
 
@@ -125,5 +131,5 @@ The user's auto-memory records that `/Users/ashwin/dev/openclaw/extensions` cont
 
 - `docs/ARCHITECTURE.md` — longer-form architecture, including a Sabha↔plugin diagram.
 - `docs/TYPING.md` — whisper protocol, channel lifecycle, future presence-indicator plan.
-- `docs/AGENT-PROMPT-CONTEXT.md` — how channel context reaches the agent system prompt, peer-plugin survey, why the `/skill` injection was removed.
+- `docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md` — the 2026.4.29 plan that split `inboundFormattingHints` (correctness) from `messageToolHints` (advisory) to reduce SDK-gate dependency.
 - `docs/sdk-overview.md`, `sdk-channel-plugins.md`, `sdk-entrypoints.md` — vendored snapshots of the OpenClaw plugin SDK docs. Consult these before guessing at SDK surface; the live SDK types in `node_modules/openclaw/plugin-sdk/*` are authoritative if the two disagree.

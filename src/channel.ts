@@ -302,9 +302,29 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
         await resolveSabhaTargets({ cfg, accountId, inputs, kind }),
     },
     agentPrompt: {
+      // `inboundFormattingHints` carries the fuller Sabha identity +
+      // mention-syntax stub on the inbound auto-reply path. It renders
+      // via `buildInboundMetaSystemPrompt` regardless of tool profile,
+      // so it survives `coding`-profile gateways where `messageToolHints`
+      // would be gated out. It does NOT render for proactive (non-inbound)
+      // agent runs — those are covered by the parallel reminder in
+      // `messageToolHints` below. Both hooks are needed; they cover
+      // different render paths. Fast-reply mode skips this hook entirely
+      // — accepted residual gap. See
+      // docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md.
       inboundFormattingHints: () => ({
         text_markup: "markdown",
         rules: [
+          // Identity. Defends against Kimi/GPT priors that default to
+          // Discord/Slack when they see "thread" or "mention".
+          "You are on Sabha — a team chat platform. NOT Discord, Slack, Teams, or Telegram.",
+          // Mention syntax. Sabha's server-side `format_mentions` regex
+          // is `/@\{(.+?)\}/`, so only the curly-brace form triggers the
+          // rewrite. Discord-style `<@id>` and Slack-style `@username`
+          // are silently dropped — no pill, no notification, no
+          // mentionees[] entry. The sender's id is shown in the inbound
+          // envelope's `from` field as `Name (@{id})`; copy verbatim.
+          "To mention a user, emit `@{USER_ID}` (curly braces). Discord-style `<@id>` and Slack-style `@username` are silently dropped.",
           "Write standard Markdown. Sabha converts it to rich text automatically.",
           "Headings, bold, italic, code blocks, and bullet lists all work.",
           "Pipe tables are not supported — use a code block or plain list instead.",
@@ -314,41 +334,25 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
         level: "minimal" as const,
         channelLabel: "Sabha",
       }),
-      messageToolHints: (params: { cfg: OpenClawConfig }) => {
-        const account = resolveSabhaAccount({ cfg: params.cfg });
+      // `messageToolHints` is rendered by `buildMessagingSection` on
+      // every agent system prompt where the `message` tool is in scope —
+      // including proactive (non-inbound) agent runs that
+      // `inboundFormattingHints` does not reach. So identity + mention
+      // syntax need a minimal copy here too, not just in
+      // `inboundFormattingHints` (which only renders on the inbound
+      // auto-reply path via `buildInboundMetaSystemPrompt`). The two
+      // hooks cover different render paths, not the same one twice.
+      // See docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md.
+      messageToolHints: () => {
         return [
-          // Platform context — gives the agent a working mental model of
-          // Sabha's structure. IMPORTANT: Kimi/GPT-style models default to
-          // Discord/Slack priors when they see "thread" or "mention", so
-          // this hint explicitly names the platform and tells the agent
-          // what NOT to assume.
-          `YOU ARE ON SABHA — NOT Discord, Slack, Teams, or Telegram. Sabha is a team chat platform (server: ${account.baseUrl}). ` +
-            `You are connected as the bot named "${account.botName}". ` +
-            "Conversations happen in rooms (Open — anyone can join, or Closed — invite-only), " +
-            "direct messages (1-on-1), and threads (which are nested replies within a room). " +
-            "THREADS IN SABHA: A new thread is created automatically when you reply to someone's message with replyToId set — " +
-            "the Sabha server creates the thread on the first reply. You do NOT have a tool to create a thread explicitly; " +
-            "the channel plugin handles this based on config. If a user asks you to 'create a thread,' tell them " +
-            "that threading happens automatically when you reply to their mention — it's configured by the operator, not by you. " +
-            "Users have roles: administrator, moderator, member, or bot. " +
-            "Messages support rich text (Markdown), file attachments, emoji reactions, and @mentions. " +
-            "Never suggest Discord/Slack/Teams instructions — those platforms don't apply here.",
-          // Sabha mention syntax is deliberately NOT the same as Discord /
-          // Slack. Without this reinforcement, agents default to `<@id>`
-          // (Discord prior) or `@username` (Slack/plain text) and
-          // server-side format_mentions silently drops the mention — no
-          // pill, no notification, no mentionees[] entry. Sabha's
-          // `format_mentions` regex is `/@\{(.+?)\}/`, so only the
-          // curly-brace form triggers the rewrite. We surface the sender
-          // id as `Name (@{id})` in the inbound envelope's `from` field
-          // (see `src/inbound.ts`), and this hint tells the agent how to
-          // use it.
-          "MENTIONS IN SABHA: To mention a user, emit the literal token `@{USER_ID}` (curly braces, numeric id). " +
-            "Do NOT use Discord-style `<@USER_ID>` or Slack-style `@username` — Sabha's server will NOT rewrite those, " +
-            "and the user will see the raw text with no pill and no notification. The sender's id is shown in the " +
-            "incoming message envelope's `from` field as `Name (@{id})` — copy the `@{id}` token verbatim to reply-mention " +
-            "them. For example, if the envelope shows `From: Alice (@{42})`, reply with `Thanks @{42}, on it!` to produce " +
-            "a real mention pill.",
+          // Identity + mention reminder. Kept short — the longer
+          // version lives in `inboundFormattingHints` for the inbound
+          // path. This single line covers proactive agent runs (e.g.
+          // an agent on `messaging` profile invoked by the user to
+          // send a Sabha message) where the inbound hooks don't fire.
+          "SABHA MENTIONS: You're on Sabha (not Discord/Slack/Teams). " +
+            "Mention users with `@{USER_ID}` (curly braces, numeric id) — Discord-style `<@id>` " +
+            "and Slack-style `@username` are silently dropped by Sabha's server.",
           // Search returns at most 200 hits regardless of caller. The
           // explicit `hasMore` signal closes the silent-truncation gap —
           // without it the agent would summarize the visible slice as if

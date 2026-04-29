@@ -328,12 +328,13 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         // Sabha models threads as Room subclasses. When the inbound is
         // already in a thread, `payload.room.id` is the thread's room id
         // and plain `sendMessage(roomId, ...)` posts into the thread —
-        // calling `replyInThread` would create a nested thread, wrong.
+        // passing `parentMessageId` would create a nested thread, wrong.
         //
-        // Sabha's /thread endpoint is idempotent via `find_or_create_for`:
-        // calling `replyInThread(roomId, userMessageId)` multiple times in
-        // a turn appends to the same thread. So "first" and "all" modes
-        // collapse on Sabha — thread the reply or don't.
+        // Server thread routing (`POST /messages?parent_message_id=...`)
+        // is idempotent via `Rooms::Thread.find_or_create_for`: posting
+        // with the same `parentMessageId` multiple times in a turn appends
+        // to the same thread. So "first" and "all" modes collapse on
+        // Sabha — thread the reply or don't.
         const isInThread = payload.message.thread != null;
         const isDm = payload.room.type === "Direct";
         const replyToMode = account.replyToMode ?? "first";
@@ -343,27 +344,18 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         // inbound turn and is shared between `onPartialReply` (per-token
         // updates) and `deliver` (final edit).
         //
-        // For the threading-on case we wire a `firstSend` hook: the very
-        // first partial is posted via `replyInThread`, which creates the
-        // thread server-side and returns the new thread room id. The
-        // stream rebinds its room id to that captured value so all
-        // subsequent edits (and the recovery / error-replace paths via
-        // `draftStream.roomId()`) target the thread, not the parent.
+        // For the threading-on case we pass `parentMessageId`: the stream's
+        // first send becomes a normal `sendMessage(roomId, text, {
+        // parentMessageId })`. The server resolves the thread room (creates
+        // it idempotently via `Rooms::Thread.find_or_create_for`). After the
+        // id-only migration we don't have to track which room the preview
+        // landed in — `editMessage` / `deleteMessage` are id-only, and the
+        // case-(c) fallback below routes through the parent + parentMessageId,
+        // which idempotently lands in the same thread.
         const draftStream = createSabhaDraftStream({
           client,
           roomId: payload.room.id,
-          ...(shouldThread
-            ? {
-                firstSend: async (text) => {
-                  const r = await client.replyInThread(
-                    payload.room.id,
-                    payload.message.id,
-                    text,
-                  );
-                  return { roomId: r.thread.id, messageId: r.message.id };
-                },
-              }
-            : {}),
+          ...(shouldThread ? { parentMessageId: payload.message.id } : {}),
           logger: {
             debug: (msg) => logger?.info?.(`${logPrefix} ${msg}`),
             warn: (msg) => logger?.error?.(`${logPrefix} ${msg}`),
@@ -413,7 +405,8 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 //       writing its id. `isAlive()` gates on "can the
                 //       loop still accept updates," which is what we
                 //       need. For the threading-on case the in-flight
-                //       send may be `firstSend` (creating the thread);
+                //       send may be the threading first-send (creating
+                //       the thread server-side via `parentMessageId`);
                 //       `stop()` still awaits it correctly.
                 //
                 //   (b) Stream is dead but a preview exists — the SDK's
@@ -421,21 +414,19 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 //       once stopped, so `update + stop` would no-op
                 //       and leave the preview stuck on partial N-1.
                 //       Bypass the loop and PATCH the final text
-                //       directly via the client. The preview lives at
-                //       `draftStream.roomId()` (which equals the thread
-                //       room when `firstSend` already resolved, or the
-                //       parent room otherwise). If even the direct edit
-                //       fails, delete the stale preview and fall through.
+                //       directly via the id-only `editMessage`. If even
+                //       the direct edit fails, delete the stale preview
+                //       and fall through.
                 //
                 //   (c) Stream is dead with no preview (first send
                 //       failed, or no partials ever arrived) — fall
                 //       through to a final fallback that honors the
-                //       threading decision: `replyInThread` if we were
-                //       supposed to thread, plain `sendMessage`
-                //       otherwise. Without the `shouldThread` branch
-                //       here, a thread-on conversation that hit a
-                //       streaming failure would land in the parent room
-                //       instead of being threaded.
+                //       threading decision: a unified `sendMessage` with
+                //       `parentMessageId` when we were supposed to
+                //       thread, plain `sendMessage` otherwise. Without
+                //       the `shouldThread` branch here, a thread-on
+                //       conversation that hit a streaming failure would
+                //       land in the parent room instead of being threaded.
                 if (draftStream.isAlive()) {
                   draftStream.update(text);
                   await draftStream.stop();
@@ -443,22 +434,23 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
                 }
                 if (draftStream.messageId() !== undefined) {
                   const previewId = draftStream.messageId()!;
-                  const previewRoom = draftStream.roomId();
                   try {
-                    await client.editMessage(previewRoom, previewId, text);
+                    await client.editMessage(previewId, text);
                     return;
                   } catch (err) {
                     logger?.error?.(
                       `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
                     );
                     await client
-                      .deleteMessage(previewRoom, previewId)
+                      .deleteMessage(previewId)
                       .catch(() => undefined);
                   }
                 }
 
                 if (shouldThread) {
-                  await client.replyInThread(roomId, payload.message.id, text);
+                  await client.sendMessage(roomId, text, {
+                    parentMessageId: payload.message.id,
+                  });
                   return;
                 }
                 await client.sendMessage(roomId, text);
@@ -491,10 +483,9 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             await draftStream.flush().catch(() => undefined);
             if (draftStream.messageId() !== undefined) {
               const previewId = draftStream.messageId()!;
-              const previewRoom = draftStream.roomId();
               const safe = formatStreamError(err);
               await client
-                .editMessage(previewRoom, previewId, safe)
+                .editMessage(previewId, safe)
                 .catch((replaceErr) => {
                   logger?.error?.(
                     `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,

@@ -62,11 +62,6 @@ export type SabhaThreadInfo = {
   parent_message_id: number;
 };
 
-export type SabhaThreadReply = {
-  thread: SabhaThreadInfo;
-  message: { id: number };
-};
-
 export type SabhaSearchResult = {
   id: number;
   creator: { id: number; name: string };

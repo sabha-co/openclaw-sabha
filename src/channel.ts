@@ -462,17 +462,14 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
         const client = getClient(account);
         const roomId = Number(ctx.to);
 
-        if (ctx.replyToId != null) {
-          const result = await client.replyInThread(
-            roomId,
-            Number(ctx.replyToId),
-            ctx.text,
-          );
-          return { messageId: String(result.message.id) };
-        }
-
-        const messageId = await client.sendMessage(roomId, ctx.text);
-        return { messageId: messageId != null ? String(messageId) : "" };
+        const sent = await client.sendMessage(
+          roomId,
+          ctx.text,
+          ctx.replyToId != null
+            ? { parentMessageId: Number(ctx.replyToId) }
+            : undefined,
+        );
+        return { messageId: sent != null ? String(sent.id) : "" };
       },
       async sendMedia(ctx) {
         const account = resolveSabhaAccount({
@@ -493,8 +490,8 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           );
           const filename =
             fetched.fileName ?? ctx.mediaUrl.split("/").pop() ?? "attachment";
-          const messageId = await client.sendAttachment(roomId, blob, filename);
-          return { messageId: messageId != null ? String(messageId) : "" };
+          const sent = await client.sendAttachment(roomId, blob, filename);
+          return { messageId: sent != null ? String(sent.id) : "" };
         }
 
         return { messageId: "" };

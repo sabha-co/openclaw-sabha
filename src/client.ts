@@ -6,7 +6,6 @@ import type {
   SabhaReadMessagesResponse,
   SabhaSearchResponse,
   SabhaSearchResult,
-  SabhaThreadReply,
   SabhaMessageBody,
   SabhaUser,
   SabhaUserDetail,
@@ -101,23 +100,47 @@ export class SabhaClient {
    * POST. Sabha stores message bodies as rich text via `has_rich_text :body`
    * — every wire-level write has to be Trix-compatible HTML, and that's a
    * wire fact the client owns alongside authentication and URL shape.
+   *
+   * **Inline thread-reply.** When `opts.parentMessageId` is set, the server
+   * routes the message into the parent's thread room (creating it via
+   * `Rooms::Thread.find_or_create_for` if needed) and returns a JSON body
+   * `{ id, room_id }` so the caller knows where the message landed. Without
+   * `parentMessageId` the server keeps the legacy `head :created` shape with
+   * just a `Location` header; the resolved room is the input `roomId`. Both
+   * cases come back through this method as the uniform `{ id, roomId }`
+   * tuple so callers don't have to branch on threading. The wire transport
+   * for `parentMessageId` is a query string parameter, not a JSON body —
+   * Sabha's POST /messages reads the request body as raw markdown.
+   *
+   * Returns `null` when neither the response body nor the Location header
+   * yields a usable message id (network drop, malformed response).
    */
-  async sendMessage(roomId: number, text: string): Promise<number | null> {
+  async sendMessage(
+    roomId: number,
+    text: string,
+    opts?: { parentMessageId?: number },
+  ): Promise<{ id: number; roomId: number } | null> {
     const body = this.toRichText(text);
-    const res = await this.fetch(`/rooms/${roomId}/messages`, {
+    const path =
+      opts?.parentMessageId != null
+        ? `/rooms/${roomId}/messages?parent_message_id=${opts.parentMessageId}`
+        : `/rooms/${roomId}/messages`;
+    const res = await this.fetch(path, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body,
     });
 
-    return this.extractMessageId(res);
+    return this.parseSendResponse(res, roomId, {
+      responseHasJsonBody: opts?.parentMessageId != null,
+    });
   }
 
   async sendAttachment(
     roomId: number,
     file: Blob,
     filename: string,
-  ): Promise<number | null> {
+  ): Promise<{ id: number; roomId: number } | null> {
     const form = new FormData();
     form.append("attachment", file, filename);
 
@@ -126,14 +149,43 @@ export class SabhaClient {
       body: form,
     });
 
-    return this.extractMessageId(res);
+    return this.parseSendResponse(res, roomId, { responseHasJsonBody: false });
   }
 
-  private extractMessageId(res: Response): number | null {
+  /**
+   * Read the `{ id, roomId }` tuple from a `POST /messages` response. Two
+   * shapes coexist on the wire:
+   *
+   * - `responseHasJsonBody: true` — the controller rendered
+   *   `{ id, room_id }` because the resolved target room differed from
+   *   the URL room (today: only when `parent_message_id` was set and a
+   *   thread was created/found). The caller can't infer the resolved
+   *   room without reading the body.
+   * - `responseHasJsonBody: false` — the controller responded
+   *   `head :created` with just a Location header. The resolved room is
+   *   the input `roomId` and we project it through.
+   *
+   * The flag describes the **response** shape, not the request shape, so
+   * it stays correct if the server later returns a body for new request
+   * variants. `null` covers the rare case where neither surface yields
+   * a parseable id (network drop, malformed response).
+   */
+  private async parseSendResponse(
+    res: Response,
+    inputRoomId: number,
+    opts: { responseHasJsonBody: boolean },
+  ): Promise<{ id: number; roomId: number } | null> {
+    if (opts.responseHasJsonBody) {
+      const json = (await res.json()) as { id?: number; room_id?: number };
+      if (typeof json.id !== "number" || typeof json.room_id !== "number") {
+        return null;
+      }
+      return { id: json.id, roomId: json.room_id };
+    }
     const location = res.headers.get("location");
     if (!location) return null;
     const match = location.match(/\/messages\/(\d+)/);
-    return match ? Number(match[1]) : null;
+    return match ? { id: Number(match[1]), roomId: inputRoomId } : null;
   }
 
   /**
@@ -141,15 +193,20 @@ export class SabhaClient {
    * to Trix HTML before the PATCH, same as `sendMessage`. This is the only
    * edit entry point (draft-stream.ts uses it for streaming previews), so
    * the converter must run here too.
+   *
+   * Uses the id-only wire path `PATCH /messages/:id` — the server resolves
+   * the room from the message and authorizes via the bot's room access. No
+   * room id needs to flow through callers, which means streaming clients
+   * don't have to track room rebinds across thread creates. See
+   * `docs/plans/ID-ONLY-CLIENT-MIGRATION-PLAN.md`.
    */
   async editMessage(
-    roomId: number,
     messageId: number,
     text: string,
   ): Promise<SabhaMessageBody> {
     const body = this.toRichText(text);
     const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
+      `/messages/${messageId}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "text/plain" },
@@ -161,32 +218,11 @@ export class SabhaClient {
     return json.body;
   }
 
-  async deleteMessage(roomId: number, messageId: number): Promise<void> {
+  async deleteMessage(messageId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}`,
+      `/messages/${messageId}`,
       { method: "DELETE" },
     );
-  }
-
-  /**
-   * Post a reply inside a message's thread. `text` is treated as markdown
-   * and converted to Trix HTML before the POST, same as `sendMessage`.
-   */
-  async replyInThread(
-    roomId: number,
-    messageId: number,
-    text: string,
-  ): Promise<SabhaThreadReply> {
-    const body = this.toRichText(text);
-    const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/thread`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body,
-      },
-    );
-    return (await res.json()) as SabhaThreadReply;
   }
 
   /**
@@ -248,13 +284,9 @@ export class SabhaClient {
     return parseReactionsResponse((await res.json()) as unknown);
   }
 
-  async addReaction(
-    roomId: number,
-    messageId: number,
-    emoji: string,
-  ): Promise<number> {
+  async addReaction(messageId: number, emoji: string): Promise<number> {
     const res = await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/boosts`,
+      `/messages/${messageId}/boosts`,
       {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -266,13 +298,9 @@ export class SabhaClient {
     return json.id;
   }
 
-  async removeReaction(
-    roomId: number,
-    messageId: number,
-    boostId: number,
-  ): Promise<void> {
+  async removeReaction(messageId: number, boostId: number): Promise<void> {
     await this.fetch(
-      `/rooms/${roomId}/messages/${messageId}/boosts/${boostId}`,
+      `/messages/${messageId}/boosts/${boostId}`,
       { method: "DELETE" },
     );
   }

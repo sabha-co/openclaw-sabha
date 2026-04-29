@@ -16,7 +16,7 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | `api.registerTool` calls | 2 (`sabha_search_members`, `sabha_create_dm` — SDK-gap verbs) | 0 | 0 | 0 |
 | Connection mode | WS (AnyCable) | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
-| Thread streaming | yes (in‑thread direct; top‑level→new thread via `firstSend` hook) | yes | yes (`thread_ts` injected) | yes (native) |
+| Thread streaming | yes (in‑thread direct; top‑level→new thread via `parentMessageId` on `sendMessage`) | yes (`root_id`) | yes (`thread_ts` injected) | yes (native) |
 | Multi‑account | `accounts` map (canonical SDK keys) | single bot | per‑workspace OAuth installs | single bot per app |
 | Rich UI primitives | none | none | Block Kit (modals, buttons, selects) | Carbon components (17 types, modals) |
 | Setup ceremony | join‑URL POST → bot key | manual token paste | OAuth + dual tokens (bot + app) | manual token + Dev Portal walkthrough |
@@ -121,7 +121,7 @@ The polarity choice (`isAlive` over `isStopped`) is a readability call — `if (
 
 The doc invariant in `CLAUDE.md` (don't gate the fast‑path on `messageId() !== undefined`) is anchored by `src/draft-stream.test.ts`. `messageId()` returns `undefined` during the in‑flight window of the first `sendMessage`, so it can't distinguish "not sent yet" from "stream dead" — that's why the dedicated probe exists at all.
 
-**Thread streaming:** Discord native, Slack via `thread_ts` injection on each flush, Mattermost yes. **Sabha:** in‑thread inbounds stream into the thread room directly (Sabha emits `payload.room.id == payload.message.thread.id`, so the existing draft stream already targets the right room). **Top‑level replies that create a new thread stream via a `firstSend` hook on `createSabhaDraftStream`** — the first partial posts via `client.replyInThread(parentRoomId, userMessageId, text)`, captures the new thread room id from the response (`r.thread.id`), and rebinds the stream's effective room id so all subsequent edits + recovery paths target the thread, not the parent. Closest peer pattern is Slack's `resolveThreadTs` callback; same idea, different surface.
+**Thread streaming:** Discord native, Slack via `thread_ts` injection on each flush, Mattermost yes via `root_id`. **Sabha:** as of 2026.4.29 (Phase 2), shape‑identical to Mattermost on the streaming reply path. In‑thread inbounds stream into the thread room directly. Top‑level replies that need a new thread pass `parentMessageId` to the stream config; the first partial flows through the regular `client.sendMessage(parentRoomId, text, { parentMessageId })` and the server routes the message into the parent's thread room (creating it idempotently via `Rooms::Thread.find_or_create_for`). The response body `{ id, room_id }` carries the resolved thread room id, which the stream captures into `previewRoomId` so `monitor.ts`'s recovery / error‑replace paths can post fresh error messages into the thread room rather than the parent. Subsequent edits use the id‑only `editMessage(messageId, text)`. The dedicated `replyInThread` endpoint and the `firstSend` callback (the pre‑Phase 2 thread‑creation shape) are gone. Closest peer pattern is Mattermost's `rootId` parameter on `sendMessage`.
 
 **Sabha verdict: in line with peers; ship thread streaming when it's worth the complexity.**
 

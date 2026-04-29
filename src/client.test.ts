@@ -313,7 +313,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
     await client.sendMessage(5, "hello");
     expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
 
-    await client.editMessage(5, 10, "hi").catch(() => {
+    await client.editMessage(10, "hi").catch(() => {
       /* body parsing differs per-mock; auth assertion is what we care about */
     });
     expect(lastCall().auth).toBe(`Bearer ${BOT_KEY}`);
@@ -372,8 +372,9 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           new Blob(["x"], { type: "text/plain" }),
           "x.txt",
         ),
-      () => client.replyInThread(5, 10, "hi").catch(() => {}),
-      () => client.addReaction(5, 10, "👍").catch(() => {}),
+      () =>
+        client.sendMessage(5, "hi", { parentMessageId: 10 }).catch(() => {}),
+      () => client.addReaction(10, "👍").catch(() => {}),
       () => client.createDm([1, 2]).catch(() => {}),
       () => client.search("q").catch(() => {}),
       () => client.updateSettings({ name: "x" }),
@@ -386,6 +387,88 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).not.toContain(BOT_KEY);
       expect(url.startsWith(API)).toBe(true);
     }
+  });
+
+  describe("sendMessage — return shape", () => {
+    // Pin both branches of `parseSendResponse`. Without these, a regression
+    // that returns null on a valid body (or strips `roomId` from the
+    // Location-header branch) would only surface as a `messageId: null`
+    // in agent details — the entire reason `sendMessage` returns
+    // `{ id, roomId }` instead of `number` is the threading case where
+    // the resolved room differs from the input.
+
+    it("Location-header branch (no parentMessageId) returns the input roomId and the id parsed from Location", async () => {
+      mockFetch(
+        () =>
+          new Response("", {
+            status: 201,
+            headers: { Location: "/rooms/5/messages/123" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi");
+
+      expect(result).toEqual({ id: 123, roomId: 5 });
+    });
+
+    it("Location-header branch returns null when the Location is missing", async () => {
+      mockFetch(
+        () =>
+          new Response("", {
+            status: 201,
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi");
+
+      expect(result).toBeNull();
+    });
+
+    it("body branch (parentMessageId set) returns { id, roomId } from the JSON body", async () => {
+      // Server's body shape is `{ id, room_id }` (snake_case wire),
+      // returned only when `parent_message_id` is set and the resolved
+      // thread room differs from the input room. The plugin remaps
+      // room_id → roomId.
+      mockFetch(
+        () =>
+          new Response(JSON.stringify({ id: 99, room_id: 9 }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi", { parentMessageId: 10 });
+
+      expect(result).toEqual({ id: 99, roomId: 9 });
+    });
+
+    it("body branch returns null when the JSON is well-formed but missing id", async () => {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify({ room_id: 9 }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi", { parentMessageId: 10 });
+
+      expect(result).toBeNull();
+    });
+
+    it("body branch returns null when the JSON is well-formed but missing room_id", async () => {
+      mockFetch(
+        () =>
+          new Response(JSON.stringify({ id: 99 }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi", { parentMessageId: 10 });
+
+      expect(result).toBeNull();
+    });
   });
 
   describe("listRooms — pagination + filter params", () => {

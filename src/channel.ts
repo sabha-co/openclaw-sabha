@@ -42,11 +42,8 @@ const SabhaAccountSchema = z.object({
   baseUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),
   botKey: z.string().optional(),
-  webhookSecret: z.string().optional(),
   botName: z.string().optional(),
-  connectionMode: z.enum(["websocket", "webhook"]).optional(),
   websocketUrl: z.string().optional(),
-  webhookPort: z.number().optional(),
   typingEnabled: z.boolean().optional(),
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
@@ -84,37 +81,21 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       sensitive: true,
       help: "Bot key from registration via join code",
     },
-    webhookSecret: {
-      label: "Webhook secret",
-      placeholder: "whsec_…",
-      sensitive: true,
-      advanced: true,
-      help: "Captured at registration. Reserved for webhook HMAC verification in a future release — not yet used.",
-    },
     botName: {
       label: "Bot display name",
       placeholder: "OpenClaw",
       advanced: true,
       help: "Shown to users in typing indicators",
     },
-    connectionMode: {
-      label: "Connection mode",
-      help: "WebSocket (recommended) or webhook",
-    },
     typingEnabled: {
       label: "Typing indicators",
       advanced: true,
-      help: "Show 'Bot is typing...' while processing (WebSocket mode only)",
+      help: "Show 'Bot is typing...' while processing",
     },
     websocketUrl: {
       label: "WebSocket URL",
       advanced: true,
       help: "Auto-detected from registration",
-    },
-    webhookPort: {
-      label: "Webhook port",
-      advanced: true,
-      help: "Webhook mode only",
     },
     dmPolicy: { label: "DM policy" },
     allowFrom: {
@@ -180,8 +161,8 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // `moveSingleAccountChannelSectionToDefaultAccount` migration shim
     // (called from `index.ts:registerFull`). Without these arrays, the
     // shim only promotes keys in the SDK's static common set
-    // (`webhookSecret`, `dmPolicy`, `allowFrom`) — none of which include
-    // Sabha's actual credentials. See `src/setup-contract.ts`.
+    // (`dmPolicy`, `allowFrom`, etc.) — none of which include Sabha's
+    // actual credentials. See `src/setup-contract.ts`.
     setup: {
       ...sabhaSetupAdapter,
       singleAccountKeysToMove: sabhaSingleAccountKeysToMove,

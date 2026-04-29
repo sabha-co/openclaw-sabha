@@ -9,9 +9,9 @@ import { setSabhaAccountConfig } from "./setup-wizard.js";
 // `moveSingleAccountChannelSectionToDefaultAccount` migration helper.
 //
 // The SDK ships a static `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set
-// (`webhookSecret`, `dmPolicy`, `allowFrom`, plus generic auth keys like
-// `token`/`accessToken`) — anything Sabha-specific must be declared here
-// or the migration shim won't promote it. See
+// (`dmPolicy`, `allowFrom`, plus generic auth keys like `token`/`accessToken`)
+// — anything Sabha-specific must be declared here or the migration shim
+// won't promote it. See
 // `openclaw/src/channels/plugins/setup-promotion-helpers.ts`.
 
 /**
@@ -21,20 +21,18 @@ import { setSabhaAccountConfig } from "./setup-wizard.js";
  * (`enabled`, `accounts`, `defaultAccount`) — the SDK helper filters
  * those automatically.
  *
- * Static-set keys (`webhookSecret`, `dmPolicy`, `allowFrom`) are omitted
- * because the SDK already promotes them; listing them again is harmless
- * but adds noise.
+ * Static-set keys (`dmPolicy`, `allowFrom`) are omitted because the SDK
+ * already promotes them; listing them again is harmless but adds noise.
  *
- * Schema-defaulted keys (`connectionMode`, `webhookPort`, `typingEnabled`,
- * `replyToMode`) are deliberately NOT listed. The migration helper sees
+ * Schema-defaulted keys (`typingEnabled`, `replyToMode`) are deliberately
+ * NOT listed. The migration helper sees
  * the post-default in-memory config (not the on-disk file), so listing
  * them caused a config-rewrite loop on every gateway boot: the helper
  * "promoted" defaulted-in base-level fields into accounts.default,
  * touched `meta.lastTouchedAt`, the file watcher fired SIGUSR1, and the
  * gateway restarted into the same defaulted state. Behavioral defaults
- * with `default:` in the schema can never legitimately appear at the
- * base block on disk in a post-rename install — there is nothing to
- * migrate, only ghosts to chase.
+ * with `default:` in the schema can never appear at the base block on
+ * disk in a post-rename install — there is nothing to migrate.
  */
 export const sabhaSingleAccountKeysToMove = [
   "baseUrl",
@@ -60,14 +58,12 @@ export const sabhaSingleAccountKeysToMove = [
  *
  * Not listed: `baseUrl` / `apiBaseUrl` (often workspace-shared in
  * multi-bot tenants), behavioral defaults (`replyToMode`, `dmPolicy`,
- * `typingEnabled`, `connectionMode`, `webhookPort`,
- * `allowPrivateAttachmentHosts`, `rooms`, `allowFrom`). These can stay
- * shared without surprising any named account.
+ * `typingEnabled`, `allowPrivateAttachmentHosts`, `rooms`, `allowFrom`).
+ * These can stay shared without surprising any named account.
  */
 export const sabhaNamedAccountPromotionKeys = [
   "botKey",
   "botName",
-  "webhookSecret",
   "websocketUrl",
 ] as const;
 

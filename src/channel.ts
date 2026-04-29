@@ -8,7 +8,6 @@ import {
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
 import { z } from "openclaw/plugin-sdk/zod";
 import { Type } from "@sinclair/typebox";
 
@@ -43,11 +42,8 @@ const SabhaAccountSchema = z.object({
   baseUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),
   botKey: z.string().optional(),
-  webhookSecret: z.string().optional(),
   botName: z.string().optional(),
-  connectionMode: z.enum(["websocket", "webhook"]).optional(),
   websocketUrl: z.string().optional(),
-  webhookPort: z.number().optional(),
   typingEnabled: z.boolean().optional(),
   dmPolicy: z.enum(["open", "allowlist"]).optional(),
   allowFrom: z.array(z.string()).optional(),
@@ -85,37 +81,21 @@ const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
       sensitive: true,
       help: "Bot key from registration via join code",
     },
-    webhookSecret: {
-      label: "Webhook secret",
-      placeholder: "whsec_…",
-      sensitive: true,
-      advanced: true,
-      help: "Captured at registration. Reserved for webhook HMAC verification in a future release — not yet used.",
-    },
     botName: {
       label: "Bot display name",
       placeholder: "OpenClaw",
       advanced: true,
       help: "Shown to users in typing indicators",
     },
-    connectionMode: {
-      label: "Connection mode",
-      help: "WebSocket (recommended) or webhook",
-    },
     typingEnabled: {
       label: "Typing indicators",
       advanced: true,
-      help: "Show 'Bot is typing...' while processing (WebSocket mode only)",
+      help: "Show 'Bot is typing...' while processing",
     },
     websocketUrl: {
       label: "WebSocket URL",
       advanced: true,
       help: "Auto-detected from registration",
-    },
-    webhookPort: {
-      label: "Webhook port",
-      advanced: true,
-      help: "Webhook mode only",
     },
     dmPolicy: { label: "DM policy" },
     allowFrom: {
@@ -141,9 +121,8 @@ function getClient(account: ResolvedSabhaAccount): SabhaClient {
 
 /**
  * Park a `gateway.startAccount` invocation until the framework aborts the
- * account. Used for accounts we deliberately don't service (disabled,
- * non-default webhook-mode, unconfigured) so the SDK doesn't keep
- * restarting them.
+ * account. Used for accounts we deliberately don't service (disabled or
+ * unconfigured) so the SDK doesn't keep restarting them.
  */
 function waitForAbort(abortSignal: AbortSignal): Promise<void> {
   if (abortSignal.aborted) return Promise.resolve();
@@ -175,15 +154,14 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       reply: true,
       threads: true,
       media: true,
-      groupManagement: true,
       blockStreaming: true,
     },
     // Setup-promotion contract for the SDK's
     // `moveSingleAccountChannelSectionToDefaultAccount` migration shim
     // (called from `index.ts:registerFull`). Without these arrays, the
     // shim only promotes keys in the SDK's static common set
-    // (`webhookSecret`, `dmPolicy`, `allowFrom`) — none of which include
-    // Sabha's actual credentials. See `src/setup-contract.ts`.
+    // (`dmPolicy`, `allowFrom`, etc.) — none of which include Sabha's
+    // actual credentials. See `src/setup-contract.ts`.
     setup: {
       ...sabhaSetupAdapter,
       singleAccountKeysToMove: sabhaSingleAccountKeysToMove,
@@ -408,7 +386,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       startAccount: async (ctx) => {
         const account = ctx.account;
         const logPrefix = `[sabha:${account.accountId}]`;
-        const isDefaultAccount = account.accountId === DEFAULT_ACCOUNT_ID;
 
         // Skip disabled accounts entirely — the SDK still calls
         // startAccount for every listed account, not just enabled ones,
@@ -422,24 +399,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           return;
         }
 
-        // Webhook mode uses a single plugin-level HTTP route, which
-        // cannot disambiguate events for more than one bot account.
-        // Fail-closed for named accounts so a multi-account config cannot
-        // silently misroute events through the default bot's client
-        // (wrong botId for mention detection, wrong credentials for
-        // replies). Multi-account webhook routing will require a path
-        // prefix scheme — deferred to v1.1.
-        if (account.connectionMode === "webhook" && !isDefaultAccount) {
-          ctx.log?.error?.(
-            `${logPrefix} Webhook mode is only supported for the default bot account. ` +
-              `Named accounts must use connectionMode: "websocket". Skipping this account.`,
-          );
-          await waitForAbort(ctx.abortSignal);
-          return;
-        }
-
         const shouldMonitor =
-          account.connectionMode === "websocket" &&
           account.baseUrl &&
           account.apiBaseUrl &&
           account.botKey &&
@@ -459,7 +419,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           });
         } else {
           ctx.log?.info?.(
-            `${logPrefix} ${account.connectionMode === "webhook" ? "Webhook mode" : "Not configured"} — waiting for shutdown`,
+            `${logPrefix} Not configured — waiting for shutdown`,
           );
           await waitForAbort(ctx.abortSignal);
         }

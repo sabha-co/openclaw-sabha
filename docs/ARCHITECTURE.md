@@ -2,12 +2,7 @@
 
 ## Overview
 
-`@sabha-co/openclaw-sabha` is a channel plugin that connects OpenClaw to Sabha's Bot API. It runs inside the OpenClaw gateway process — not as a standalone service — and supports two inbound transports:
-
-- **WebSocket (default)** — the plugin opens an outbound ActionCable/AnyCable connection to Sabha's `/cable` endpoint and subscribes to `BotEventsChannel`. No public IP, reverse proxy, or tunnel is required.
-- **Webhook (fallback)** — Sabha pushes events to the plugin's HTTP route. Requires OpenClaw to be network-reachable from Sabha.
-
-Both transports converge on the same inbound pipeline via a typed discriminated-union dispatch keyed on `payload.event`. Outbound replies always go through Sabha's REST Bot API.
+`@sabha-co/openclaw-sabha` is a channel plugin that connects OpenClaw to Sabha's Bot API. It runs inside the OpenClaw gateway process — not as a standalone service. The plugin opens an outbound ActionCable/AnyCable WebSocket connection to Sabha's `/cable` endpoint and subscribes to `BotEventsChannel`. No public IP, reverse proxy, or tunnel is required. Outbound replies always go through Sabha's REST Bot API.
 
 Since 0.9.0 the plugin supports **multiple bot accounts per install**: one `channels.sabha` config slot can run several bot identities concurrently (e.g. `production` and `staging`), each with its own `baseUrl + apiBaseUrl + botKey + botName`. The SDK drives the lifecycle — `gateway.startAccount` is called once per enabled bot account and the plugin stays stateless across them.
 
@@ -18,18 +13,18 @@ Sabha Server                                OpenClaw Gateway
 User sends message / edits / reacts
   |
   v
-┌── WebSocket (default) ───────────────┐
+┌── WebSocket ─────────────────────────┐
 │ BotEventsChannel frame               │ ──> monitor.ts (per bot account)
 │  9 event types (see Inbound events)  │      - dedup (FIFO, 5min / 2000 entries,
 │                                      │        key = `${event}:${id}`)
 │                                      │      - typing start (AnyCable whisper)
-│                                      │      - parseWebhookPayload (shared shape)
+│                                      │      - parseWebhookPayload
 └──────────────────────────────────────┘           |
                                                    v
-┌── Webhook (fallback) ────────────────┐     Typed dispatch by payload.event:
-│ POST /sabha/webhook                  │ ──> message_created  → processInboundMessage
-│ (event, user, room?, message?)       │      message_updated → handleMessageUpdated
-└──────────────────────────────────────┘      message_deleted → handleMessageDeleted
+                                             Typed dispatch by payload.event:
+                                             message_created  → processInboundMessage
+                                             message_updated → handleMessageUpdated
+                                             message_deleted → handleMessageDeleted
                                               boost_created   → handleBoostCreated
                                               boost_deleted   → handleBoostDeleted
                                               user_created    → handleUserCreated  (stub)
@@ -62,10 +57,7 @@ WebSocket typing "stop" whisper fires
 
 ```
 index.ts                Full-runtime entry — defineChannelPluginEntry
-                        Stores PluginRuntime, registers agent tools,
-                        registers the /sabha/webhook HTTP route
-                        (webhook mode only) with typed per-event
-                        dispatch mirroring the WebSocket monitor.
+                        Registers agent tools.
 
 setup-entry.ts          Setup-only entry — defineSetupPluginEntry
                         Lightweight; loaded by `openclaw configure`
@@ -152,8 +144,7 @@ src/
                         required shape (user_* omit room/message;
                         message_* require them; boost_* also require
                         boost). Plus wasBotMentioned, resolveChatType.
-                        Used by BOTH the WebSocket monitor and the
-                        webhook HTTP route so there is one inbound shape.
+                        Used by the WebSocket monitor to decode frames.
 
   session.ts            Sabha room/thread/DM -> OpenClaw session key
                         resolveSessionFromPayload builds primary and
@@ -308,21 +299,17 @@ src/
 
 ## Key Design Decisions
 
-### WebSocket default, webhook fallback
+### WebSocket only
 
-WebSocket is the default because it removes the public-IP/tunnel requirement for self-hosted OpenClaw users. Webhook mode remains for deployments that prefer inbound push or where outbound WebSockets are blocked. Both paths are treated as equals below `parseWebhookPayload`, so feature work should rarely branch on transport.
+WebSocket is the only inbound transport — it removes the public-IP/tunnel requirement for self-hosted OpenClaw users and keeps the connection model simple.
 
 ### Single inbound shape via `parseWebhookPayload`
 
-The WebSocket monitor converts `BotEventsChannel` frames into the same `SabhaWebhookPayload` the webhook HTTP route produces, and then calls `processInboundMessage`. This keeps `inbound.ts` transport-agnostic — do not let transport-specific fields leak past `monitor.ts` or `index.ts`.
-
-### No webhook auto-reply
-
-Sabha supports returning text in the webhook HTTP response body for simple bots. The plugin does **not** use that — OpenClaw's LLM processing is async and can take 30+ seconds, well past the webhook response budget. The `/sabha/webhook` handler always returns `200` immediately and the eventual reply goes out via REST.
+The WebSocket monitor converts `BotEventsChannel` frames into `SabhaWebhookPayload` via `parseWebhookPayload`, and then calls `processInboundMessage`. This keeps `inbound.ts` transport-agnostic — do not let transport-specific fields leak past `monitor.ts`.
 
 ### Immediate attachment download
 
-Webhook and WebSocket payloads both carry signed attachment URLs that expire after ~1 hour. `processInboundMessage` downloads attachments immediately via `runtime.channel.media.fetchRemoteMedia` + `saveMediaBuffer` before dispatching, and the saved media path is appended to the message body for the LLM. Do not defer this — lazy download will race the signed URL expiry.
+WebSocket payloads carry signed attachment URLs that expire after ~1 hour. `processInboundMessage` downloads attachments immediately via `runtime.channel.media.fetchRemoteMedia` + `saveMediaBuffer` before dispatching, and the saved media path is appended to the message body for the LLM. Do not defer this — lazy download will race the signed URL expiry.
 
 ### Bearer-header auth, `/api/bots/*` namespace
 
@@ -393,13 +380,13 @@ The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dange
 
 ### Doctor / health checks
 
-`src/doctor.ts` exposes `runDoctor({ account })` which runs four checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape, connectionMode), API reachability via `listRooms({ perPage: 1 })` (with bearer header — a deliberate first-page-only probe; reporting a workspace count would mislead since `listRooms` is paginated), a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`), and a webhook reachability soft-fail when `connectionMode === "webhook"`. Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
+`src/doctor.ts` exposes `runDoctor({ account })` which runs three checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape), API reachability via `listRooms({ perPage: 1 })` (with bearer header — a deliberate first-page-only probe; reporting a workspace count would mislead since `listRooms` is paginated), and a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`). Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
 
 The doctor is surfaced as the `openclaw sabha doctor [--account <id>]` CLI subcommand, not as a plugin-object field, because the SDK's `ChannelDoctorAdapter` is config-validation only — there is no runtime-probe hook. The CLI loops over every enabled bot account (or the one specified by `--account`) and exits non-zero if any check fails. `warn` and `skip` statuses do not cause a non-zero exit.
 
 ### Inbound event taxonomy & privacy invariant
 
-Sabha fires nine events on `BotEventsChannel`, reducing to seven distinct webhook payload shapes (three message-bearing variants share a common shape, two boost variants share one, two user variants share another). The plugin models this as a discriminated union on `payload.event` and dispatches in both `monitor.ts` (WebSocket) and `index.ts` (webhook HTTP route) to keep the two transports in lock-step.
+Sabha fires nine events on `BotEventsChannel`, reducing to seven distinct payload shapes (three message-bearing variants share a common shape, two boost variants share one, two user variants share another). The plugin models this as a discriminated union on `payload.event` and dispatches in `monitor.ts`.
 
 | Event | Handler | Behavior |
 |---|---|---|
@@ -421,9 +408,9 @@ The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. R
 
 ## Data Flow
 
-### Inbound, WebSocket path (default)
+### Inbound, WebSocket path
 
-1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `connectionMode === "websocket"` and `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<accountId>]`.
+1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<accountId>]`.
 2. **`monitor.ts`** runs `runWithReconnect` → `createSabhaConnectOnce` (`monitor-websocket.ts`), which opens the `/cable` connection and subscribes to `BotEventsChannel`. Multi-tenant workspaces pass `wid` in the query string (extracted from the numeric path prefix on `baseUrl`).
 3. For each incoming frame:
    - `createDedupCache` drops duplicates by `${event}:${id}` (FIFO, 5 min TTL, 2000 entries).
@@ -432,15 +419,7 @@ The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. R
    - The `deliver` callback posts via `SabhaClient`; `TypingManager` stops whispering.
 4. Disconnects classified as `DisconnectNoReconnectError` / `SubscriptionRejectedError` are fatal; everything else triggers backoff via `runWithReconnect`.
 
-### Inbound, webhook path (fallback)
-
-1. **Sabha** POSTs to `/sabha/webhook`.
-2. **`index.ts`** reads the body (1 MB cap, `413` if exceeded), parses JSON, and calls `parseWebhookPayload`.
-3. On `message_created`, constructs a `SabhaClient` for the default bot account and calls `processInboundMessage` with a `deliver` that sends via REST. The one-route-per-plugin constraint means webhook mode always routes through the default bot account; multi-bot webhook routing would need a path prefix scheme (deferred).
-4. On every other event variant, routes to the matching typed handler (`handleMessageUpdated`, `handleBoostCreated`, `handleUserCreated`, …) — the same dispatch table as the WebSocket monitor, with an exhaustive `never` check so adding a new event type to the union fails compilation until the dispatch is extended.
-5. Returns `200` immediately; the actual LLM reply posts later out of band.
-
-### Shared inbound pipeline (`processInboundMessage`)
+### Inbound pipeline (`processInboundMessage`)
 
 1. Skip if the message author is the bot itself.
 2. In groups, skip unless the bot was @mentioned (`wasBotMentioned`).
@@ -484,9 +463,7 @@ Single-bot:
       accounts: {
         default: {
           botKey: "42-AbCdEfGhIjKl",          // bearer token
-          webhookSecret: "whsec_...",         // HMAC secret (captured at registration)
           botName: "OpenClaw",                 // shown in typing indicators
-          connectionMode: "websocket",         // "websocket" (default) | "webhook"
           dmPolicy: "open",                    // "open" | "allowlist"
         },
       },

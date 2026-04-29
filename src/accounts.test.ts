@@ -147,13 +147,6 @@ describe("resolveSabhaAccount", () => {
     expect(account.typingEnabled).toBe(false);
   });
 
-  it("defaults connectionMode to websocket", () => {
-    const account = resolveSabhaAccount({
-      cfg: cfg({ accounts: { default: { baseUrl: "x", botKey: "1-a" } } }),
-    });
-    expect(account.connectionMode).toBe("websocket");
-  });
-
   it("treats base enabled: false as disabled for every account", () => {
     const account = resolveSabhaAccount({
       cfg: cfg({

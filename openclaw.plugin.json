@@ -12,7 +12,7 @@
   "channelConfigs": {
     "sabha": {
       "label": "Sabha",
-      "description": "Connect to a Sabha chat server via WebSocket or webhook.",
+      "description": "Connect to a Sabha chat server via WebSocket.",
       "schema": {
         "type": "object",
         "additionalProperties": false,
@@ -34,28 +34,13 @@
             "type": "string",
             "description": "Bot key from registration via join code (e.g. 42-AbCdEfGhIjKl)."
           },
-          "webhookSecret": {
-            "type": "string",
-            "description": "Per-bot HMAC secret returned at registration. Reserved for webhook signature verification in a future release."
-          },
           "botName": {
             "type": "string",
             "description": "Bot display name shown to users in typing indicators."
           },
-          "connectionMode": {
-            "type": "string",
-            "enum": ["websocket", "webhook"],
-            "default": "websocket",
-            "description": "How to receive events. WebSocket (recommended) connects outbound; webhook requires inbound reachability."
-          },
           "websocketUrl": {
             "type": "string",
             "description": "WebSocket URL (auto-detected from registration). Override only if needed."
-          },
-          "webhookPort": {
-            "type": "number",
-            "default": 8787,
-            "description": "Webhook listener port (webhook mode only)."
           },
           "typingEnabled": {
             "type": "boolean",
@@ -107,14 +92,8 @@
                 "baseUrl": { "type": "string" },
                 "apiBaseUrl": { "type": "string" },
                 "botKey": { "type": "string" },
-                "webhookSecret": { "type": "string" },
                 "botName": { "type": "string" },
-                "connectionMode": {
-                  "type": "string",
-                  "enum": ["websocket", "webhook"]
-                },
                 "websocketUrl": { "type": "string" },
-                "webhookPort": { "type": "number" },
                 "typingEnabled": { "type": "boolean" },
                 "dmPolicy": {
                   "type": "string",
@@ -153,21 +132,8 @@
           "placeholder": "42-AbCdEfGhIjKl",
           "sensitive": true
         },
-        "webhookSecret": {
-          "label": "Webhook secret",
-          "placeholder": "whsec_…",
-          "sensitive": true,
-          "advanced": true
-        },
-        "connectionMode": {
-          "label": "Connection mode"
-        },
         "websocketUrl": {
           "label": "WebSocket URL",
-          "advanced": true
-        },
-        "webhookPort": {
-          "label": "Webhook port",
           "advanced": true
         },
         "dmPolicy": {

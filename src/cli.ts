@@ -64,7 +64,6 @@ export function registerSabhaCli({ program, getConfig, writeConfigFile }: Regist
           baseUrl: resolvedBaseUrl,
           apiBaseUrl: resolvedApiBaseUrl,
           botKey: result.bot_key,
-          webhookSecret: result.webhook_secret,
           websocketUrl: result.websocket_url,
         });
         await writeConfigFile(nextCfg);

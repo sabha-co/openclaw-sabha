@@ -14,7 +14,7 @@ Surveyed against `/Users/ashwin/dev/openclaw/extensions/{mattermost,slack,discor
 | Message-action verbs | 9 | 2 | 13 | 39 |
 | Directory adapter slots wired | 3 (`listGroups`, `listPeers`, `listPeersLive`) | 3 (same) | 3 (same) | 3 (same) |
 | `api.registerTool` calls | 2 (`sabha_search_members`, `sabha_create_dm` — SDK-gap verbs) | 0 | 0 | 0 |
-| Connection mode | WS (AnyCable) + webhook | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
+| Connection mode | WS (AnyCable) | WS only | HTTP Events API *or* Socket Mode | WS gateway only |
 | Streaming dead‑state probe | `isAlive()` exposed | not exposed (uses `discardPending` / `seal` instead) | `isStopped()` exposed | not exposed (uses `discardPending` / `seal` instead) |
 | Thread streaming | yes (in‑thread direct; top‑level→new thread via `firstSend` hook) | yes | yes (`thread_ts` injected) | yes (native) |
 | Multi‑account | `accounts` map (canonical SDK keys) | single bot | per‑workspace OAuth installs | single bot per app |
@@ -39,7 +39,7 @@ Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks i
 
 ### 2. Inbound event surface
 
-- **Sabha** — 7 webhook event types (`message_created/updated/deleted`, `boost_*`, `user_*`). Single `inbound.ts` with branching. `parseWebhookPayload()` produces a discriminated union; both WS and webhook paths converge on `processInboundMessage`.
+- **Sabha** — 7 event types (`message_created/updated/deleted`, `boost_*`, `user_*`). Single `inbound.ts` with branching. `parseWebhookPayload()` produces a discriminated union; the WS monitor converges on `processInboundMessage`.
 - **Mattermost** — WS only; ~10 event types; inline dispatch in `monitor.ts`.
 - **Slack** — Events API delivers ~70 event types across namespaces (messages, reactions, members, channels, pins, interactions). Each namespace gets its own handler in `src/monitor/events/{namespace}.ts`.
 - **Discord** — ~40 gateway events, intent‑gated. Carbon's gateway library handles sequencing, dedup, resume.
@@ -84,12 +84,12 @@ Per‑plugin breakdown (counts re-verified 2026‑04‑27 by enumerating switch 
 
 ### 5. Inbound connection mode
 
-- **Sabha** — WS (AnyCable) primary, webhook fallback. **Webhook fallback only routes to the default account in v1** (per‑bot routes deferred).
+- **Sabha** — WS (AnyCable) only.
 - **Mattermost** — WS only.
 - **Slack** — HTTP Events API (default) *or* Socket Mode WS.
 - **Discord** — gateway WS only; no HTTP receive.
 
-**Sabha verdict: justified divergence on the mode itself; drift on the multi‑bot interaction.** The webhook fallback is genuinely useful for restricted networks. But the asymmetry — WS supports per‑bot routing, webhook routes everything to default — is a footgun. Either fix it (per‑bot webhook routes at `/sabha/webhook/:accountId`) or fail loudly at config‑load when `accounts` has >1 entry and any uses webhook.
+**Sabha verdict: in line with peers.**
 
 ### 6. Session routing
 
@@ -115,7 +115,7 @@ All four use the same internal `{ stopped, final }` state object shared with the
 - **Slack** — exposes `isStopped(): boolean` **and** the `discardPending()` / `seal()` controls (superset)
 - **Discord / Mattermost** — expose only `discardPending()` / `seal()`; the dead-state flag is not surfaced on the returned handle
 
-Sabha needs the probe because the `deliver` callback (in `monitor.ts` and `index.ts` webhook path) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes both — `isStopped` is the same flag Sabha does, just with the opposite name.
+Sabha needs the probe because the `deliver` callback (in `monitor.ts`) has three branches: alive → finalize through `update()+stop()`; dead with preview → bypass loop and PATCH directly via `client.editMessage`; no preview → plain `sendMessage`. Discord and Mattermost achieve the same effect through the richer controls. Slack exposes both — `isStopped` is the same flag Sabha does, just with the opposite name.
 
 The polarity choice (`isAlive` over `isStopped`) is a readability call — `if (draftStream.isAlive())` reads better in the deliver branch than `if (!draftStream.isStopped())`. Neither is more "defensive" than the other; they're the same boolean.
 
@@ -183,8 +183,7 @@ All four plugins: `"type": "module"`, `"module": "Node16"`, `.js` extension on r
 
 ## What would a Mattermost developer find weird about Sabha
 
-1. Webhook fallback at all (Mattermost is WS‑only).
-2. `accounts: Record<id, ...>` instead of one bot per instance.
+1. `accounts: Record<id, ...>` instead of one bot per instance.
 3. The mention‑syntax sermon in `messageToolHints` (Mattermost mentions are `<@id>`, agent priors work).
 4. Per‑bot `allowPrivateAttachmentHosts` (Mattermost has it per‑instance).
 
@@ -210,15 +209,13 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 ## Patterns Sabha is doing better
 
 1. **Self‑registration via join URL** — cleanest setup ceremony of any peer. Captures a Sabha‑platform advantage.
-2. **Webhook fallback alongside WS** — only Slack has anything similar (Socket Mode is the WS‑equivalent), and theirs is a different model. Useful for operators on restrictive networks.
-3. **Bot‑key redaction in stream errors** — peers don't need it because their tokens are opaque blobs. Defense‑in‑depth.
-4. **Verbose mention‑syntax preamble** — costs tokens, but defends against a concrete failure mode peers don't face.
-5. **Defensive modules** (`ssrf-guard.ts`, `dedup.ts`, `retry.ts`) — better audit surface than peers' inline equivalents.
+2. **Bot‑key redaction in stream errors** — peers don't need it because their tokens are opaque blobs. Defense‑in‑depth.
+3. **Verbose mention‑syntax preamble** — costs tokens, but defends against a concrete failure mode peers don't face.
+4. **Defensive modules** (`ssrf-guard.ts`, `dedup.ts`, `retry.ts`) — better audit surface than peers' inline equivalents.
 
 ## Drift worth tracking
 
-1. **Webhook + multi‑bot interaction**. Either route per‑bot at `/sabha/webhook/:accountId` or fail loudly at config load. (Already noted as v1.1.)
-2. **`messageToolHints` SDK gating** (already documented in `docs/AGENT-PROMPT-CONTEXT.md`).
+1. **`messageToolHints` SDK gating** (already documented in `docs/AGENT-PROMPT-CONTEXT.md`).
 3. **One harmless config writeback per boot from `dmPolicy`.** The SDK's static `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set includes `dmPolicy`, which gets schema-defaulted at the channel root on every load. The migration shim then deletes it from the base block (because `accounts.default.dmPolicy` already holds the same value), bumping `meta.lastTouchedAt` once per boot. The watcher's restart predicate doesn't fire on a pure base-block deletion, so the loop is dead — but the writeback persists. Out of plugin's reach to fix without an SDK API to override the static set.
 
 ## Resolved drifts (kept for diff‑against‑history)
@@ -229,9 +226,9 @@ Inflection point for the codebase shape: at one new feature, file structure stay
 - ~~**No `ChannelMessageActionAdapter`; directory tools registered as agent tools.**~~ **Resolved 2026.4.27** (commits across the rename pass + #11 + `0ae9786` / `41ecefb` / `5e6dece`). `actions.handleAction` wired in `src/message-actions.ts` — 7 actions through the shared `message` tool. Directory adapter wires the canonical 3 slots (`listGroups`, `listPeers`, `listPeersLive`); the peer pair pulls from `GET /api/bots/users` (paginated, server-side scoped to bot-room-overlap). `sabha_list_rooms` / `sabha_search` / `sabha_list_members` removed from `src/tools.ts`. Directory adapter scopes to default account when `accountId` is null — Sabha is cross‑tenant (different `apiBaseUrl`s = separate workspaces with overlapping room ids), so unioning would collide ids.
 - ~~**`listGroupMembers` wired as a 4th directory slot.**~~ **Resolved 2026.4.27 same-day.** Briefly wired then dropped after a scale review against Slack/Discord. The slot's SDK signature `(groupId, limit)` is paginated-dump-only (no `query` field), and at Slack/Discord scale a 100k-member room can't be enumerated through a single agent call. All three peers skip this slot for the same reason. Sabha now matches: agents reach `member-info` for individual user lookups, `listPeers` for workspace-level search, or read mention metadata directly from inbound payloads. Both `listGroupMembers` and the underlying `client.listMembers` REST wrapper were removed; the `/api/bots/rooms/:id/members` server endpoint still exists but isn't called from the plugin. If sabha-the-platform ever needs an in-room membership primitive, the right shape is per-question (`member-in-room?(userId, roomId)`, `room-info` summary) rather than a list.
 - ~~**No `listPeers` because Sabha's bot API has no global users endpoint.**~~ **Resolved 2026.4.27** — `GET /api/bots/users` exists and returns the bot's reachable user set (server-side scoped to room overlap). Pagination capped at 100 pages × 100/page = 10 000 users, with a structural `users.length === 0 break` and short-page terminators in `src/directory.ts`.
-- ~~**No `accountInspect` contract.**~~ **Resolved 2026.4.27 follow-on.** Brought up to Slack/Discord/Telegram parity in `src/account-inspect.ts`: tri-state credential status, per-credential `*Source`, `mode` field, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path, no `tokenFile` indirection.
+- ~~**No `accountInspect` contract.**~~ **Resolved 2026.4.27 follow-on.** Brought up to Slack/Discord/Telegram parity in `src/account-inspect.ts`: tri-state credential status, per-credential `*Source`, full merged `config` for audit reuse. Sabha-tailored omissions: no env-var resolution path, no `tokenFile` indirection.
 - ~~**Unknown `agentAccountId` falls through to base-only config**~~, ~~**disabled-account tools silently service**~~, ~~**`threading.resolveReplyToMode` ignores per-bot overrides**~~. **All resolved in the 2026.4.27 rename pass.** `getClientForTool` validates against `listSabhaAccountIds(cfg)` and falls back to default; throws on `enabled: false`. `threading.resolveReplyToMode` reads via `resolveSabhaAccount({ cfg, accountId })`, matching what the deliver callbacks see. The same pass collapsed multi-account plumbing onto `createAccountListHelpers("sabha")` (canonical SDK keys: `accounts:` / `defaultAccount:`).
-- ~~**Boot loop from schema-defaulted promotion keys.**~~ **Resolved 2026.4.27** (commit `1cc5ec7`). `connectionMode` / `webhookPort` / `typingEnabled` / `replyToMode` had `default:` values in `openclaw.plugin.json` *and* sat in `sabhaSingleAccountKeysToMove`; the schema loader injected them on every load, the migration shim "promoted" them, the file watcher saw `meta.lastTouchedAt` bump and fired SIGUSR1, ad infinitum. Fix: drop schema-defaulted keys from the migration list — they can never legitimately appear at the base block on disk in a post-rename install. Test pinned at `src/setup-contract.test.ts` to prevent re-introduction.
+- ~~**Boot loop from schema-defaulted promotion keys.**~~ **Resolved 2026.4.27** (commit `1cc5ec7`). `typingEnabled` / `replyToMode` (and formerly `connectionMode` / `webhookPort`, now removed) had `default:` values in `openclaw.plugin.json` *and* sat in `sabhaSingleAccountKeysToMove`; the schema loader injected them on every load, the migration shim "promoted" them, the file watcher saw `meta.lastTouchedAt` bump and fired SIGUSR1, ad infinitum. Fix: drop schema-defaulted keys from the migration list — they can never legitimately appear at the base block on disk in a post-rename install. Test pinned at `src/setup-contract.test.ts` to prevent re-introduction.
 
 ## References
 

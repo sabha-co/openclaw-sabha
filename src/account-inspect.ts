@@ -22,39 +22,25 @@ export type SabhaCredentialSource = "config" | "none";
  *   - Bot keys are plain strings, not `SecretRef` objects, so the tri-state
  *     check is a direct undefined/empty/non-empty discriminant on the raw
  *     merged config field rather than going through `coerceSecretRef`.
- *   - `webhookSecret` is only surfaced when `connectionMode === "webhook"`;
- *     in WS mode the secret is captured but unused, so audit shouldn't flag
- *     its absence.
- *
  * **Field naming follows the SDK's canonical credential-status keys**
- * (`tokenStatus`, `signingSecretStatus`) so the shared runtime helpers in
+ * (`tokenStatus`) so the shared runtime helpers in
  * `openclaw/src/channels/account-snapshot-fields.ts` (closed set:
  * `tokenStatus`/`botTokenStatus`/`appTokenStatus`/`signingSecretStatus`/`userTokenStatus`)
  * can pick them up. Using a Sabha-flavored name like `botKeyStatus` would
  * be invisible to `hasConfiguredUnavailableCredentialStatus`,
  * `projectCredentialSnapshotFields`, and the audit channel's "configured
- * but unavailable" warnings. `tokenStatus` reflects `botKey`;
- * `signingSecretStatus` reflects `webhookSecret`.
+ * but unavailable" warnings. `tokenStatus` reflects `botKey`.
  */
 export type InspectedSabhaAccount = {
   accountId: string;
   enabled: boolean;
   /** Bot display name (defaults to `"OpenClaw"` when unset). */
   name: string;
-  /** Inbound transport: WS (default) connects outbound; webhook needs inbound reachability. */
-  mode: "websocket" | "webhook";
   baseUrl: string;
   apiBaseUrl: string;
   /** Status of the `botKey` credential. Canonical SDK key — read by audit/status helpers. */
   tokenStatus: SabhaCredentialStatus;
   tokenSource: SabhaCredentialSource;
-  /**
-   * Status of the `webhookSecret`. Only present in webhook mode; in WS
-   * mode the secret is captured but unused, so audit shouldn't flag
-   * its absence. Canonical SDK key — corresponds to `webhookSecret`.
-   */
-  signingSecretStatus?: SabhaCredentialStatus;
-  signingSecretSource?: SabhaCredentialSource;
   baseUrlStatus: SabhaCredentialStatus;
   apiBaseUrlStatus: SabhaCredentialStatus;
   /** True when every credential the runtime needs is `"available"`. Audit reads this. */
@@ -93,18 +79,6 @@ function inspectSabhaAccountPrimary(
   const apiBaseUrl = inspectStringField(merged.apiBaseUrl);
   const botKey = inspectStringField(merged.botKey);
 
-  const mode = (merged.connectionMode ?? "websocket") as "websocket" | "webhook";
-  const isWebhookMode = mode === "webhook";
-
-  const webhookSecret = isWebhookMode ? inspectStringField(merged.webhookSecret) : null;
-
-  // Runtime requirements only — `webhookSecret` is captured at registration
-  // for forward-compat HMAC verification but the current runtime does NOT
-  // require it (see SabhaConfig.webhookSecret in types.ts and the field hint
-  // in channel.ts: "Reserved for webhook HMAC verification in a future
-  // release — not yet used."). Gating `configured` on it would falsely
-  // mark working webhook deployments as unconfigured. The status field
-  // is still surfaced below so audit can show "captured/missing".
   const configured =
     baseUrl.status === "available" &&
     apiBaseUrl.status === "available" &&
@@ -114,17 +88,10 @@ function inspectSabhaAccountPrimary(
     accountId,
     enabled,
     name: merged.botName?.trim() || "OpenClaw",
-    mode,
     baseUrl: typeof merged.baseUrl === "string" ? merged.baseUrl : "",
     apiBaseUrl: typeof merged.apiBaseUrl === "string" ? merged.apiBaseUrl : "",
     tokenStatus: botKey.status,
     tokenSource: botKey.source,
-    ...(webhookSecret
-      ? {
-          signingSecretStatus: webhookSecret.status,
-          signingSecretSource: webhookSecret.source,
-        }
-      : {}),
     baseUrlStatus: baseUrl.status,
     apiBaseUrlStatus: apiBaseUrl.status,
     configured,

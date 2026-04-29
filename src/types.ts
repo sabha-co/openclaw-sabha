@@ -279,13 +279,7 @@ export type SabhaConfig = {
   // bearer-auth HTTP call goes through `apiBaseUrl`.
   apiBaseUrl?: string;
   botKey?: string;
-  // Per-account webhook HMAC secret returned at registration. Captured
-  // for forward-compat; signature verification lands in a future
-  // release.
-  webhookSecret?: string;
   botName?: string;
-  webhookPort?: number;
-  connectionMode?: "websocket" | "webhook";
   websocketUrl?: string;
   typingEnabled?: boolean;
   dmPolicy?: "open" | "allowlist";

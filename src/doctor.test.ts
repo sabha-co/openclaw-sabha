@@ -20,11 +20,8 @@ function stubAccount(
     baseUrl: "http://localhost:3000",
     apiBaseUrl: "http://localhost:3000/api/bots",
     botKey: "42-abc",
-    webhookSecret: "whsec_test",
     botId: 42,
     botName: "TestBot",
-    webhookPort: 8787,
-    connectionMode: "websocket",
     websocketUrl: "",
     typingEnabled: false,
     dmPolicy: "open",
@@ -253,7 +250,7 @@ describe("runDoctor — API check", () => {
       () => new Response("unauthorized", { status: 401 }),
     );
     const report = await runDoctor({
-      account: stubAccount({ connectionMode: "webhook" }),
+      account: stubAccount(),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -265,7 +262,7 @@ describe("runDoctor — API check", () => {
       () => new Response("not found", { status: 404 }),
     );
     const report = await runDoctor({
-      account: stubAccount({ connectionMode: "webhook" }),
+      account: stubAccount(),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -277,7 +274,7 @@ describe("runDoctor — API check", () => {
       throw new Error("ECONNREFUSED");
     });
     const report = await runDoctor({
-      account: stubAccount({ connectionMode: "webhook" }),
+      account: stubAccount(),
     });
     const api = report.checks.find((c) => c.name === "API reachable")!;
     expect(api.status).toBe("fail");
@@ -295,7 +292,7 @@ describe("runDoctor — API check", () => {
     });
     const start = Date.now();
     const report = await runDoctor({
-      account: stubAccount({ connectionMode: "webhook" }),
+      account: stubAccount(),
     });
     const elapsed = Date.now() - start;
     const api = report.checks.find((c) => c.name === "API reachable")!;
@@ -393,17 +390,6 @@ describe("runDoctor — WebSocket check", () => {
     expect(ws.message).toMatch(/Timed out in phase "welcome"/);
   });
 
-  it("is skipped entirely in webhook mode with an informational warning", async () => {
-    restore = withMockedFetch(() => jsonResponse([]));
-    const report = await runDoctor({
-      account: stubAccount({ connectionMode: "webhook" }),
-    });
-    const ws = report.checks.find((c) => c.name === "WebSocket subscribe");
-    expect(ws).toBeUndefined();
-    const webhook = report.checks.find((c) => c.name === "Webhook transport")!;
-    expect(webhook.status).toBe("warn");
-    expect(report.allPassed).toBe(true); // warn still counts as passing
-  });
 });
 
 describe("formatDoctorReport", () => {

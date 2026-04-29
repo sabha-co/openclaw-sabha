@@ -176,10 +176,8 @@ Two new fields in `channels.sabha`:
 }
 ```
 
-- **`typingEnabled`** — default `true`. Set to `false` to disable typing indicators entirely (e.g. for noise-sensitive rooms or webhook mode).
+- **`typingEnabled`** — default `true`. Set to `false` to disable typing indicators entirely (e.g. for noise-sensitive rooms).
 - **`botName`** — used in the `user.name` field of the whisper payload. The setup wizard auto-populates this from the registration response (`POST /join/{code}` → `{ name, ... }`). In the manual setup path the wizard prompts for it explicitly.
-
-Typing works only in WebSocket mode. The webhook transport has no persistent connection to send whispers on, so the feature is silently skipped.
 
 ## Multi-tenancy safety
 
@@ -189,7 +187,7 @@ Sabha can run in SaaS mode where the same server hosts multiple workspaces. Cros
 - **Server-side room filtering**: Sabha's `RoomChannel#find_room` runs `current_user.rooms.find_by(id: params[:room_id])` inside `with_tenant_context`. A bot in workspace A trying to subscribe to a room in workspace B gets a `reject_subscription` response.
 - **Stream scoping**: Sabha's `stream_for @room` uses the room's GlobalID, which includes `?tenant=<wid>`. Broadcasts don't cross workspaces.
 - **Whisper scoping**: Whispers are broadcast to subscribers of the tenant-scoped stream. The `user: {id, name}` field we send is our bot's tenant-local ID and name — never seen by users in other tenants.
-- **Aux-frame filtering**: Other users' typing whispers on `TypingNotificationsChannel` are dropped in `monitor-websocket.ts` before reaching the webhook parser or influencing any plugin state.
+- **Aux-frame filtering**: Other users' typing whispers on `TypingNotificationsChannel` are dropped in `monitor-websocket.ts` before reaching `parseWebhookPayload` or influencing any plugin state.
 - **Rejection cleanup**: `onSubscriptionRejected()` cancels timers and forgets rejected rooms, so the plugin never leaks state on a cross-tenant reject.
 
 ## Tests
@@ -227,7 +225,6 @@ Sabha can run in SaaS mode where the same server hosts multiple workspaces. Cros
 
 ## Known limitations
 
-- **Only in WebSocket mode**: webhook mode has no persistent connection to send whispers on. `typingEnabled: true` is silently ignored when `connectionMode: "webhook"`.
 - **No whisper fallback**: if Sabha is running without AnyCable whispering enabled (`AnyCable::Rails.enabled?` returns false), our whispers are silently dropped. We don't fall back to the slower `message` command that routes through Rails RPC. This matches Sabha's frontend, which only uses whispers when the `anycable-whisper` meta tag is present.
 - **First-whisper latency**: for brand-new rooms the first whisper can't flush until `confirm_subscription` arrives (~200ms typical). Users may not see the indicator if the LLM responds in under ~200ms, but that's a rare case.
 - **No explicit keepalive budget**: the refresh timer runs forever while a dispatch is in flight. If the LLM runs for 30+ minutes the plugin keeps whispering. Not a correctness issue, just a design choice.
@@ -275,7 +272,7 @@ Not worth it unless Sabha moves to AnyCable+ for other reasons.
 3. **Refresh interval**: match the browser at 50s (TTL is 60s).
 4. **Timer architecture**: one global `setInterval` iterating tracked rooms is simpler than per-room timers (same cadence for all).
 5. **Pending-start queue**: not needed. Unlike whispers, the `on_subscribe :present` server hook fires synchronously during subscription — the bot is marked present before `confirm_subscription` even reaches us. The first `refresh` RPC just needs to wait for `"ready"` state before firing.
-6. **Config**: would add `presenceEnabled` (default?) alongside `typingEnabled`. Same webhook-mode skip.
+6. **Config**: would add `presenceEnabled` (default?) alongside `typingEnabled`.
 
 ### Plugin-side sketch (for future reference)
 

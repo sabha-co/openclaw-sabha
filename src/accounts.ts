@@ -20,9 +20,9 @@ import { extractBotId } from "./client.js";
 //       apiBaseUrl: ...
 //       # per-account entries:
 //       accounts:
-//         default:   { botKey: ..., webhookSecret: ... }
-//         staging:   { baseUrl: ..., apiBaseUrl: ..., botKey: ..., webhookSecret: ... }
-//         prod-eu:   { baseUrl: ..., apiBaseUrl: ..., botKey: ..., webhookSecret: ... }
+//         default:   { botKey: ... }
+//         staging:   { baseUrl: ..., apiBaseUrl: ..., botKey: ... }
+//         prod-eu:   { baseUrl: ..., apiBaseUrl: ..., botKey: ... }
 //       defaultAccount: prod-eu   # optional override
 
 export type ResolvedSabhaAccount = {
@@ -31,14 +31,8 @@ export type ResolvedSabhaAccount = {
   baseUrl: string;
   apiBaseUrl: string;
   botKey: string;
-  // `undefined` means "not captured yet" — distinct from an empty string
-  // so future HMAC verification can fail-closed on unregistered bots
-  // without false-accepting a legitimately-empty secret.
-  webhookSecret?: string;
   botId: number;
   botName: string;
-  webhookPort: number;
-  connectionMode: "websocket" | "webhook";
   websocketUrl: string;
   typingEnabled: boolean;
   dmPolicy: "open" | "allowlist";
@@ -136,15 +130,8 @@ export function resolveSabhaAccount(
     baseUrl: merged.baseUrl ?? "",
     apiBaseUrl: merged.apiBaseUrl ?? "",
     botKey: merged.botKey ?? "",
-    // No `?? ""` default — empty would be indistinguishable from a
-    // captured empty secret. See the field's doc comment.
-    ...(merged.webhookSecret !== undefined
-      ? { webhookSecret: merged.webhookSecret }
-      : {}),
     botId: extractBotId(merged.botKey ?? ""),
     botName: merged.botName?.trim() || "OpenClaw",
-    webhookPort: merged.webhookPort ?? 8787,
-    connectionMode: merged.connectionMode ?? "websocket",
     websocketUrl: merged.websocketUrl ?? "",
     typingEnabled: merged.typingEnabled !== false,
     dmPolicy: merged.dmPolicy ?? "open",

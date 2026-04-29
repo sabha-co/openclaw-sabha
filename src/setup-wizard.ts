@@ -64,7 +64,6 @@ export class SabhaRegistrationError extends Error {
 
 export type SabhaRegistrationResponse = {
   bot_key: string;
-  webhook_secret: string;
   name: string;
   webhook_url: string | null;
   base_url: string;
@@ -734,7 +733,6 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
             baseUrl: resolvedBaseUrl,
             apiBaseUrl: resolvedApiBaseUrl,
             botKey: result.bot_key,
-            webhookSecret: result.webhook_secret,
             botName: result.name,
             websocketUrl: result.websocket_url,
             dmPolicy: view.dmPolicy ?? "open",

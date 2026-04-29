@@ -12,7 +12,7 @@
   "channelConfigs": {
     "sabha": {
       "label": "Sabha",
-      "description": "Connect to a Sabha chat server via WebSocket or webhook.",
+      "description": "Connect to a Sabha chat server via WebSocket.",
       "schema": {
         "type": "object",
         "additionalProperties": false,

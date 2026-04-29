@@ -121,9 +121,8 @@ function getClient(account: ResolvedSabhaAccount): SabhaClient {
 
 /**
  * Park a `gateway.startAccount` invocation until the framework aborts the
- * account. Used for accounts we deliberately don't service (disabled,
- * non-default webhook-mode, unconfigured) so the SDK doesn't keep
- * restarting them.
+ * account. Used for accounts we deliberately don't service (disabled or
+ * unconfigured) so the SDK doesn't keep restarting them.
  */
 function waitForAbort(abortSignal: AbortSignal): Promise<void> {
   if (abortSignal.aborted) return Promise.resolve();

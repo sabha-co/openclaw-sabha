@@ -451,6 +451,25 @@ describe("SabhaClient — bearer auth + URL shape", () => {
 
       expect(result).toBeNull();
     });
+
+    it("returns null (does not throw) when the body is empty or non-JSON", async () => {
+      // Stripped proxy response, 201 with no body, or any server regression
+      // that drops the JSON envelope: `res.json()` throws SyntaxError. The
+      // dispatch path treats null as a controlled "no message id" failure
+      // and surfaces a Sabha-specific error — crashing here with an
+      // uncaught parser exception would break that contract.
+      mockFetch(
+        () =>
+          new Response("", {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = new SabhaClient(API, BOT_KEY);
+      const result = await client.sendMessage(5, "hi");
+
+      expect(result).toBeNull();
+    });
   });
 
   describe("listRooms — pagination + filter params", () => {

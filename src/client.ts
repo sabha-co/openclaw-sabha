@@ -160,7 +160,17 @@ export class SabhaClient {
   private async parseSendResponse(
     res: Response,
   ): Promise<{ id: number; roomId: number } | null> {
-    const json = (await res.json()) as { id?: number; room_id?: number };
+    // `res.json()` throws SyntaxError on an empty or non-JSON body
+    // (stripped proxy response, server regression). Callers in
+    // message-actions.ts / channel.ts treat a missing id as a controlled
+    // null and surface a Sabha-specific error rather than crashing the
+    // send path with an uncaught parser exception — preserve that.
+    let json: { id?: number; room_id?: number };
+    try {
+      json = (await res.json()) as { id?: number; room_id?: number };
+    } catch {
+      return null;
+    }
     if (typeof json.id !== "number" || typeof json.room_id !== "number") {
       return null;
     }

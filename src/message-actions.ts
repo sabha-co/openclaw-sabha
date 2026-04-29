@@ -266,29 +266,17 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "reactions") {
-      // Per-message lookup. Server returns 404 indistinguishably for
-      // wrong-room, wrong-message-id, and soft-deleted (messages.active
-      // scope) — surfaces verbatim as SabhaApiError, matching member-info.
-      const roomId = readNumber(
-        params,
-        "channelId", "channel_id", "roomId", "room_id", "to", "target",
-      );
+      // Id-only on the wire — server resolves the room from the message id.
+      // 404 surfaces verbatim as SabhaApiError, matching member-info, and
+      // collapses message-not-visible / message-not-found / soft-deleted.
       const messageId = readNumber(
         params,
         "messageId", "message_id", "targetMessageId",
       );
-      // Two `throw`s rather than a combined disjunctive message so each
-      // missing-field case can be tested specifically (the regex form
-      // matches either branch and tells you nothing).
-      if (roomId == null) {
-        throw new Error(
-          "Sabha reactions requires a single room target ('channelId' or 'roomId').",
-        );
-      }
       if (messageId == null) {
         throw new Error("Sabha reactions requires 'messageId'.");
       }
-      const response = await client.listReactions(roomId, messageId);
+      const response = await client.listReactions(messageId);
       const note = response.total === 0
         ? `No reactions on message ${messageId}`
         : `${response.total} reaction(s) on message ${messageId}`;

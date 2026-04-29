@@ -197,12 +197,11 @@ describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
     ]);
   });
 
-  it("publishes roomId / room_id / channel_id aliases for `reactions`", () => {
+  it("publishes messageId / message_id aliases for `reactions` (id-only on the wire, matches core's edit/unsend treatment)", () => {
     const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
     expect(aliases.reactions?.aliases.sort()).toEqual([
-      "channel_id",
-      "roomId",
-      "room_id",
+      "messageId",
+      "message_id",
     ]);
   });
 

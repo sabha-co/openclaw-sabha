@@ -390,19 +390,16 @@ describe("SabhaClient — bearer auth + URL shape", () => {
   });
 
   describe("sendMessage — return shape", () => {
-    // Pin both branches of `parseSendResponse`. Without these, a regression
-    // that returns null on a valid body (or strips `roomId` from the
-    // Location-header branch) would only surface as a `messageId: null`
-    // in agent details — the entire reason `sendMessage` returns
-    // `{ id, roomId }` instead of `number` is the threading case where
-    // the resolved room differs from the input.
+    // Pin parseSendResponse against the canonical { id, room_id } body
+    // the server returns for every POST /messages. Regressions that drop
+    // either field would surface as messageId: null in agent details.
 
-    it("Location-header branch (no parentMessageId) returns the input roomId and the id parsed from Location", async () => {
+    it("returns { id, roomId } from the JSON body for non-thread sends", async () => {
       mockFetch(
         () =>
-          new Response("", {
+          new Response(JSON.stringify({ id: 123, room_id: 5 }), {
             status: 201,
-            headers: { Location: "/rooms/5/messages/123" },
+            headers: { "Content-Type": "application/json" },
           }),
       );
       const client = new SabhaClient(API, BOT_KEY);
@@ -411,24 +408,9 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(result).toEqual({ id: 123, roomId: 5 });
     });
 
-    it("Location-header branch returns null when the Location is missing", async () => {
-      mockFetch(
-        () =>
-          new Response("", {
-            status: 201,
-          }),
-      );
-      const client = new SabhaClient(API, BOT_KEY);
-      const result = await client.sendMessage(5, "hi");
-
-      expect(result).toBeNull();
-    });
-
-    it("body branch (parentMessageId set) returns { id, roomId } from the JSON body", async () => {
-      // Server's body shape is `{ id, room_id }` (snake_case wire),
-      // returned only when `parent_message_id` is set and the resolved
-      // thread room differs from the input room. The plugin remaps
-      // room_id → roomId.
+    it("returns the resolved thread room id when parentMessageId is set", async () => {
+      // Server resolves the thread room from parent_message_id and
+      // returns its id in room_id, which may differ from the URL room.
       mockFetch(
         () =>
           new Response(JSON.stringify({ id: 99, room_id: 9 }), {
@@ -442,7 +424,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(result).toEqual({ id: 99, roomId: 9 });
     });
 
-    it("body branch returns null when the JSON is well-formed but missing id", async () => {
+    it("returns null when the JSON is well-formed but missing id", async () => {
       mockFetch(
         () =>
           new Response(JSON.stringify({ room_id: 9 }), {
@@ -451,12 +433,12 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           }),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      const result = await client.sendMessage(5, "hi", { parentMessageId: 10 });
+      const result = await client.sendMessage(5, "hi");
 
       expect(result).toBeNull();
     });
 
-    it("body branch returns null when the JSON is well-formed but missing room_id", async () => {
+    it("returns null when the JSON is well-formed but missing room_id", async () => {
       mockFetch(
         () =>
           new Response(JSON.stringify({ id: 99 }), {
@@ -465,7 +447,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           }),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      const result = await client.sendMessage(5, "hi", { parentMessageId: 10 });
+      const result = await client.sendMessage(5, "hi");
 
       expect(result).toBeNull();
     });
@@ -812,7 +794,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
   });
 
   describe("listReactions", () => {
-    it("hits /rooms/:id/messages/:msg/boosts", async () => {
+    it("hits /messages/:msg/boosts", async () => {
       mockFetch(
         () =>
           new Response(
@@ -824,9 +806,9 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           ),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      await client.listReactions(5, 100);
+      await client.listReactions(100);
 
-      expect(lastCall().url).toBe(`${API}/rooms/5/messages/100/boosts`);
+      expect(lastCall().url).toBe(`${API}/messages/100/boosts`);
     });
 
     it("returns the typed shape verbatim", async () => {
@@ -853,7 +835,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           }),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      const out = await client.listReactions(5, 100);
+      const out = await client.listReactions(100);
 
       expect(out).toEqual(wire);
     });
@@ -870,17 +852,17 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           ),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      await expect(client.listReactions(5, 100)).rejects.toThrow(
+      await expect(client.listReactions(100)).rejects.toThrow(
         /unexpected shape/,
       );
     });
 
-    it("surfaces a 404 as SabhaApiError (covers wrong room, missing message, and soft-deleted indistinguishably)", async () => {
+    it("surfaces a 404 as SabhaApiError (covers missing message and soft-deleted indistinguishably)", async () => {
       mockFetch(
         () =>
           new Response(
             JSON.stringify({
-              error: "Room or message not found",
+              error: "Message not found",
               code: "not_found",
             }),
             {
@@ -890,7 +872,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
           ),
       );
       const client = new SabhaClient(API, BOT_KEY);
-      await expect(client.listReactions(5, 100)).rejects.toMatchObject({
+      await expect(client.listReactions(100)).rejects.toMatchObject({
         name: "SabhaApiError",
         status: 404,
       });

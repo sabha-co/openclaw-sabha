@@ -181,91 +181,56 @@ describe("sabhaPlugin.actions.describeMessageTool", () => {
 });
 
 describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
-  // The core message-action runner gates dispatch on `actionHasTarget`
-  // (`node_modules/openclaw/dist/message-action-runner-*.js`). Without these
-  // alias declarations, `{ action: "read", roomId: 5 }` would be rejected
-  // before reaching `handleAction` even though dispatch accepts roomId.
-  // These tests pin the publishing so a future drift (handler accepts an
-  // alias that core silently rejects) surfaces here.
+  // Pins the deliberate decision to NOT declare `messageActionTargetAliases`.
+  // The SDK reads this field through `getBootstrapChannelPlugin`, which
+  // only resolves plugins shipped inside the openclaw npm package's
+  // bundled `extensions/` tree. Externally-installed plugins (Sabha lives
+  // at `~/.openclaw/extensions/sabha`, origin "global") never land in
+  // that registry, so any aliases declared here are silently dropped by
+  // the gate. Live VPS journals proved this with commit 6b35e75 — the
+  // alias was present in source, the gate still rejected. Don't add it
+  // back without first verifying upstream that
+  // `getBootstrapChannelPlugin` consults the runtime channel registry
+  // too, otherwise it's dead code that misleads future readers. See the
+  // comment block in `src/channel.ts` for the peer-aligned alternative
+  // (agent passes `to: <roomId>` alongside `messageId` for `react` /
+  // `reactions`).
 
-  it("publishes roomId / room_id / channel_id aliases for `read`", () => {
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases.read?.aliases.sort()).toEqual([
-      "channel_id",
-      "roomId",
-      "room_id",
-    ]);
+  it("does not declare any per-channel target aliases", () => {
+    expect(sabhaPlugin.actions!.messageActionTargetAliases).toBeUndefined();
+  });
+});
+
+describe("sabhaPlugin.agentPrompt — react/reactions target hint", () => {
+  // `react` and `reactions` are the only Sabha actions where the gate's
+  // accepted aliases (`to` / `channelId` for any action; core's hardcoded
+  // `messageId` for `edit` / `unsend`; iMessage-shaped `chatGuid` /
+  // `chatIdentifier` / `chatId` for `react`) don't naturally accommodate
+  // a "just `messageId`" call. Without a prompt nudge, the agent reads
+  // the schema, sees `messageId` is the conceptually correct field,
+  // and ships `{ action: "react", messageId, emoji }` — which the gate
+  // rejects. These tests pin the nudge.
+
+  it("inboundFormattingHints tells the agent to pass `to` and `messageId` for react/reactions", () => {
+    const fn = sabhaPlugin.agentPrompt!.inboundFormattingHints!;
+    const rules = (fn() as { rules: string[] }).rules;
+    const hint = rules.find(
+      (r) => /react/i.test(r) && /messageId/i.test(r) && /\bto\b/.test(r),
+    );
+    expect(hint).toBeDefined();
   });
 
-  it("publishes messageId / message_id aliases for `reactions` (id-only on the wire)", () => {
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases.reactions?.aliases.sort()).toEqual([
-      "messageId",
-      "message_id",
-    ]);
-  });
-
-  it("publishes messageId / message_id aliases for `react` (id-only on the wire)", () => {
-    // Without this alias core's actionHasTarget gate rejects
-    // `{ action: "react", messageId, emoji }` as "Action react requires
-    // a target.", forcing the agent to fabricate a `target` field that
-    // then explodes downstream at the channel resolver.
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases.react?.aliases.sort()).toEqual([
-      "messageId",
-      "message_id",
-    ]);
-  });
-
-  it("publishes messageId / message_id aliases for `edit` (id-only on the wire)", () => {
-    // Same trap as `react`: core's gate would reject
-    // `{ action: "edit", messageId, text }` without a `to`/`channelId`,
-    // even though dispatch only reads `messageId` from params.
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases.edit?.aliases.sort()).toEqual([
-      "messageId",
-      "message_id",
-    ]);
-  });
-
-  it("publishes messageId / message_id aliases for `unsend` (id-only on the wire)", () => {
-    // Same trap as `react` / `edit`. `unsend` dispatch reads only
-    // `messageId`; core's gate must accept it without a phantom target.
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases.unsend?.aliases.sort()).toEqual([
-      "messageId",
-      "message_id",
-    ]);
-  });
-
-  it("does not alias `thread-reply` — that one is room-scoped on the wire", () => {
-    // `client.sendMessage(parentRoomId, text, { parentMessageId })` posts
-    // to `POST /rooms/:room_id/messages?parent_message_id=:id`, and the
-    // dispatch handler at `src/message-actions.ts:336` throws if
-    // `roomId` is missing. Aliasing `messageId` here would let core's
-    // gate accept calls that the dispatch then rejects — worse UX than
-    // the current "agent must pass `to`" requirement.
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    expect(aliases["thread-reply"]).toBeUndefined();
-  });
-
-  it("does not publish `to`, `channelId`, or `target` (handled by core or as a synthetic field)", () => {
-    // `to` and `channelId` are always accepted by core's actionHasTarget;
-    // `target` is the runner's synthetic post-normalization field, which
-    // we don't want to short-circuit by claiming it as an alias.
-    const aliases = sabhaPlugin.actions!.messageActionTargetAliases!;
-    for (const action of [
-      "read",
-      "reactions",
-      "react",
-      "edit",
-      "unsend",
-    ] as const) {
-      const list = aliases[action]?.aliases ?? [];
-      expect(list).not.toContain("to");
-      expect(list).not.toContain("channelId");
-      expect(list).not.toContain("target");
-    }
+  it("messageToolHints carries the same nudge for proactive (non-inbound) runs", () => {
+    // `inboundFormattingHints` only renders on the inbound auto-reply path
+    // (via `buildInboundMetaSystemPrompt`). Proactive agent runs on the
+    // `messaging` profile go through `buildMessagingSection` instead and
+    // miss the inbound hint, so the rule must be repeated here.
+    const fn = sabhaPlugin.agentPrompt!.messageToolHints!;
+    const hints = fn() as string[];
+    const hint = hints.find(
+      (r) => /react/i.test(r) && /messageId/i.test(r) && /\bto\b/.test(r),
+    );
+    expect(hint).toBeDefined();
   });
 });
 

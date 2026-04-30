@@ -188,41 +188,17 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // sending replies through the inbound pipeline.
     actions: {
       ...sabhaMessageActions,
-      // Core's message-action runner gates the call on `actionHasTarget`
-      // before dispatching to `handleAction`: only `to`, `channelId`, and
-      // per-action aliases declared here are recognized as a valid target.
-      // Without this entry, an agent calling `{ action: "read", roomId: 5 }`
-      // would be rejected by core with "Action read requires a target." even
-      // though the dispatch handler in `src/message-actions.ts` accepts the
-      // alias. See `node_modules/openclaw/dist/message-action-runner-*.js`
-      // (`actionRequiresTarget` / `actionHasTarget`).
-      //
-      // We publish only the genuine target aliases — `to` and `channelId`
-      // are always accepted by core and `target` is the runner's
-      // synthetic post-normalization field, so neither belongs here.
-      //
-      // For id-only mutating actions (`react` / `edit` / `unsend`) the
-      // wire is `/api/bots/messages/:id[...]` — the server resolves the
-      // room from the message id and authorizes via the bot's room
-      // access (see CLAUDE.md "Mutating message ops are id-only on the
-      // wire"). The dispatch handlers in `src/message-actions.ts` only
-      // read `messageId`, never `roomId`. Without the `messageId` alias
-      // here, core's `actionHasTarget` gate rejects
-      // `{ action: "react", messageId, emoji }` with "Action react
-      // requires a target." even though dispatch would accept the call;
-      // the agent then defensively fills `target` with a guessed name,
-      // which routes through the channel resolver and fails as
-      // "Unknown target". `thread-reply` is intentionally NOT aliased
-      // — the wire is room-scoped (`POST /rooms/:id/messages?parent_message_id=:id`)
-      // and the dispatch handler throws if `roomId` is missing, so the
-      // agent must keep passing `to` for that one.
-      messageActionTargetAliases: {
-        read: { aliases: ["roomId", "room_id", "channel_id"] },
-        reactions: { aliases: ["messageId", "message_id"] },
-        react: { aliases: ["messageId", "message_id"] },
-        edit: { aliases: ["messageId", "message_id"] },
-        unsend: { aliases: ["messageId", "message_id"] },
-      },
+      // No `messageActionTargetAliases` here — deliberately. The SDK
+      // reads them via `getBootstrapChannelPlugin`, which only resolves
+      // *bundled* extensions (inside the openclaw npm package). Sabha
+      // is externally installed at `~/.openclaw/extensions/sabha/`, so
+      // any aliases declared here are silently dropped by the gate
+      // (verified live; commit 6b35e75 had them and still failed).
+      // Peer plugins (Slack/Discord/Mattermost/etc.) don't declare
+      // aliases either — they require `to: <roomId>` from the agent
+      // and discard it on the wire when the server resolves the room
+      // from the message id. We follow that shape; agents are nudged
+      // toward it via `messageToolHints` and `inboundFormattingHints`.
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the
         // implicit-target reply, and `thread-reply` covers the explicit one
@@ -343,6 +319,9 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "Write standard Markdown. Sabha converts it to rich text automatically.",
           "Headings, bold, italic, code blocks, and bullet lists all work.",
           "Pipe tables are not supported — use a code block or plain list instead.",
+          // Core's gate rejects `react` / `reactions` without a channel
+          // target; mirrored in `messageToolHints` for proactive runs.
+          "When acting on a specific message (`react` or `reactions`), pass BOTH `to` (the room id where the message lives) AND `messageId`. The room id satisfies the message-tool gate; Sabha's wire actually resolves the room from `messageId`.",
         ],
       }),
       reactionGuidance: () => ({
@@ -382,6 +361,12 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "READING HISTORY: The `message` tool's `read` action returns messages newest-first. " +
             "Reorder client-side before summarizing if you want chronological output. " +
             "Pass `cursor` (from a prior page's `nextCursor`) to walk further back in time.",
+          // Mirror of the inbound hint — proactive runs miss
+          // `inboundFormattingHints`, so the gate-quirk rule needs a copy
+          // on this render path too.
+          "REACT / REACTIONS ON SABHA: pass BOTH `to` (the room id where the message lives) AND `messageId`. " +
+            "The room id is required to satisfy the message tool's target gate; Sabha's wire still " +
+            "resolves the room from `messageId` so the `to` value is otherwise harmless.",
         ];
       },
     },

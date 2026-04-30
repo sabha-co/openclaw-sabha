@@ -189,7 +189,20 @@ export async function processInboundMessage(
     ? roomConfig?.systemPrompt?.trim() || undefined
     : undefined;
 
-  // Build the inbound context with PascalCase field names (MsgContext)
+  // Build the inbound context with PascalCase field names (MsgContext).
+  //
+  // `Provider` / `Surface` / `OriginatingChannel` are required by the
+  // SDK's `buildThreadingToolContext` (`agent-runner-utils-*.js`) — if
+  // they're missing, it short-circuits at `if (!rawProvider) return
+  // { currentMessageId };` and never populates `toolContext.currentChannelId`.
+  // That breaks the runner's auto-fill of `target` from
+  // `currentChannelId` (`message-action-runner-*.js:106-114`), which is
+  // what lets the agent call e.g. `react` with just `messageId` and
+  // have the gate auto-resolve the room target. Verified against peers:
+  // Telegram, Feishu, Mattermost all set these on every
+  // `finalizeInboundContext` call. Sabha was the only outlier.
+  // `OriginatingTo` mirrors `To` so the resolver picks the same room id
+  // either field is read.
   const ctxPayload = channel.reply.finalizeInboundContext({
     Body: envelope,
     BodyForAgent: envelope,
@@ -200,6 +213,10 @@ export async function processInboundMessage(
     SenderId: String(payload.user.id),
     SenderName: payload.user.name,
     To: String(payload.room.id),
+    Provider: CHANNEL_ID,
+    Surface: CHANNEL_ID,
+    OriginatingChannel: CHANNEL_ID,
+    OriginatingTo: String(payload.room.id),
     SessionKey: route.sessionKey,
     AccountId: accountId,
     ChatType: chatType,

@@ -211,6 +211,34 @@ describe("processInboundMessage", () => {
     expect(typeof ctx.Timestamp).toBe("number");
   });
 
+  it("sets Provider/Surface/OriginatingChannel/OriginatingTo so the SDK populates toolContext.currentChannelId", async () => {
+    // The SDK's `buildThreadingToolContext` short-circuits at `if
+    // (!rawProvider) return { currentMessageId };` when `Provider` /
+    // `OriginatingChannel` are missing — that leaves
+    // `toolContext.currentChannelId` empty, breaking the runner's
+    // auto-fill of `target` from the inbound room id (which is the
+    // safety net for "the agent forgot to pass `to`" cases on
+    // `react`/`reactions`/etc). Verified live via `[sabha-action]
+    // enter ... currentChannelId=-` log lines before this fix.
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: Record<string, unknown>;
+    }).ctxPayload;
+    expect(ctx.Provider).toBe("sabha");
+    expect(ctx.Surface).toBe("sabha");
+    expect(ctx.OriginatingChannel).toBe("sabha");
+    // OriginatingTo mirrors To — the SDK's resolveOriginMessageTo
+    // returns `originatingTo ?? to`, so divergent values would
+    // pick OriginatingTo. We keep them in sync.
+    expect(ctx.OriginatingTo).toBe(ctx.To);
+  });
+
   it("maps Direct room type to direct ChatType", async () => {
     const payload = makePayload({
       room: { ...makePayload().room, type: "Direct" },

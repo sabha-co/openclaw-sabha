@@ -188,17 +188,41 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // sending replies through the inbound pipeline.
     actions: {
       ...sabhaMessageActions,
-      // No `messageActionTargetAliases` here — deliberately. The SDK
-      // reads them via `getBootstrapChannelPlugin`, which only resolves
-      // *bundled* extensions (inside the openclaw npm package). Sabha
-      // is externally installed at `~/.openclaw/extensions/sabha/`, so
-      // any aliases declared here are silently dropped by the gate
-      // (verified live; commit 6b35e75 had them and still failed).
-      // Peer plugins (Slack/Discord/Mattermost/etc.) don't declare
-      // aliases either — they require `to: <roomId>` from the agent
-      // and discard it on the wire when the server resolves the room
-      // from the message id. We follow that shape; agents are nudged
-      // toward it via `messageToolHints` and `inboundFormattingHints`.
+      // No `messageActionTargetAliases` here — and no prompt nudge
+      // about passing `to`/`target` either. Both were tried; both
+      // failed:
+      //
+      // 1. Aliases (commit 6b35e75): the SDK reads them via
+      //    `getBootstrapChannelPlugin`, which only resolves *bundled*
+      //    extensions inside the openclaw npm package. Sabha is
+      //    externally installed at `~/.openclaw/extensions/sabha/` and
+      //    never lands in that registry, so declarations here are
+      //    silently dropped by the gate.
+      //
+      // 2. Prompt nudge ("pass `to: <roomId>` and `messageId`"): the
+      //    agent doesn't have the numeric room id in its envelope —
+      //    only the room name surfaces ("General"). It fills `to`
+      //    with that name, the directory resolver fails with "Unknown
+      //    target", and the user sees the agent confabulating
+      //    "reactions aren't supported on Sabha".
+      //
+      // What works: the runner already auto-fills `target` from
+      // `toolContext.currentChannelId` when the agent passes neither
+      // `target` nor `to`/`channelId` (see
+      // `message-action-runner-BN7W0fv6.js:106-114`). For Sabha
+      // inbounds, `currentChannelId` is the numeric room id (set via
+      // `inbound.ts:202` → `agent-runner-utils:63`). So the natural
+      // agent call `{action:"react", messageId, emoji}` succeeds —
+      // the runner injects the room id, gate passes, dispatch reads
+      // `messageId`. The auto-fill condition is gated on the agent
+      // passing nothing for the target slot, which is why a prompt
+      // nudge to "also pass `to`" actually breaks it (it disables
+      // auto-fill, then the agent's guessed name fails resolution).
+      //
+      // Proactive (non-inbound) react/reactions calls don't have
+      // `currentChannelId` set and will fail the gate. Acceptable
+      // niche — agents can fetch the room id via `read`/`search`
+      // first or be coached per-call by the operator.
       describeMessageTool: () => ({
         // `reply` deliberately omitted: `send` with `replyToId` covers the
         // implicit-target reply, and `thread-reply` covers the explicit one
@@ -319,9 +343,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "Write standard Markdown. Sabha converts it to rich text automatically.",
           "Headings, bold, italic, code blocks, and bullet lists all work.",
           "Pipe tables are not supported — use a code block or plain list instead.",
-          // Core's gate rejects `react` / `reactions` without a channel
-          // target; mirrored in `messageToolHints` for proactive runs.
-          "When acting on a specific message (`react` or `reactions`), pass BOTH `to` (the room id where the message lives) AND `messageId`. The room id satisfies the message-tool gate; Sabha's wire actually resolves the room from `messageId`.",
         ],
       }),
       reactionGuidance: () => ({
@@ -361,12 +382,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           "READING HISTORY: The `message` tool's `read` action returns messages newest-first. " +
             "Reorder client-side before summarizing if you want chronological output. " +
             "Pass `cursor` (from a prior page's `nextCursor`) to walk further back in time.",
-          // Mirror of the inbound hint — proactive runs miss
-          // `inboundFormattingHints`, so the gate-quirk rule needs a copy
-          // on this render path too.
-          "REACT / REACTIONS ON SABHA: pass BOTH `to` (the room id where the message lives) AND `messageId`. " +
-            "The room id is required to satisfy the message tool's target gate; Sabha's wire still " +
-            "resolves the room from `messageId` so the `to` value is otherwise harmless.",
         ];
       },
     },

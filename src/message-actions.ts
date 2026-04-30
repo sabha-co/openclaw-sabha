@@ -38,6 +38,90 @@ const SUPPORTED_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set([
   "reactions",
 ]);
 
+// TEMP DEBUG (introduced post-2026.4.29 react/edit gate triage).
+//
+// Logs the agent's call shape at dispatch entry, the runner's
+// `toolContext.currentChannelId` (which feeds the gate's auto-fill),
+// and the dispatch outcome (success with resolved ids, or thrown
+// error). Together these answer all the questions we kept re-deriving
+// by reading `node_modules/openclaw/dist/*` line-by-line:
+//
+//   - what did the agent actually pass? (params shape)
+//   - did the runner auto-fill `target`/`to`? (compare params.to to
+//     toolContext.currentChannelId)
+//   - which messageId did dispatch land on?
+//   - what did the wire return? (3xx/4xx body, or the dispatch throw)
+//
+// Greppable as `[sabha-action]` in the gateway journal. Drop once the
+// react/reactions surface is stable in production.
+function previewParams(params: Record<string, unknown>): Record<string, unknown> {
+  // Don't dump the full params (message bodies can be long, and we
+  // don't want to leak attachment payloads into the journal). Surface
+  // the gate-relevant keys and a short body preview.
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    "to",
+    "target",
+    "channel",
+    "channelId",
+    "channel_id",
+    "roomId",
+    "room_id",
+    "messageId",
+    "message_id",
+    "emoji",
+    "replyToId",
+    "parentMessageId",
+    "limit",
+    "cursor",
+  ]) {
+    if (key in params) out[key] = params[key];
+  }
+  const message = params.message ?? params.text ?? params.body;
+  if (typeof message === "string") {
+    out.message_preview = message.length > 60
+      ? `${message.slice(0, 60)}…(${message.length}ch)`
+      : message;
+  }
+  return out;
+}
+
+function logActionEntry(ctx: ChannelMessageActionContext): void {
+  const fields = previewParams(ctx.params);
+  const tc = ctx.toolContext ?? {};
+   
+  console.log(
+    `[sabha-action] enter action=${ctx.action} accountId=${ctx.accountId ?? "(default)"} ` +
+      `currentChannelId=${tc.currentChannelId ?? "-"} currentMessageId=${tc.currentMessageId ?? "-"} ` +
+      `replyToMode=${tc.replyToMode ?? "-"} params=${JSON.stringify(fields)}`,
+  );
+}
+
+function logActionOk(
+  ctx: ChannelMessageActionContext,
+  details: Record<string, unknown>,
+  startedAt: number,
+): void {
+   
+  console.log(
+    `[sabha-action] ok action=${ctx.action} elapsed=${Date.now() - startedAt}ms ` +
+      `details=${JSON.stringify(details)}`,
+  );
+}
+
+function logActionErr(
+  ctx: ChannelMessageActionContext,
+  err: unknown,
+  startedAt: number,
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+   
+  console.log(
+    `[sabha-action] err action=${ctx.action} elapsed=${Date.now() - startedAt}ms ` +
+      `error=${JSON.stringify(message)}`,
+  );
+}
+
 function buildClient(ctx: ChannelMessageActionContext): SabhaClient {
   const account = resolveSabhaAccount({
     cfg: ctx.cfg,
@@ -174,10 +258,32 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
   describeMessageTool: () => null,
   supportsAction: ({ action }) => SUPPORTED_ACTIONS.has(action),
   handleAction: async (ctx) => {
-    const { action, params } = ctx;
-    const client = buildClient(ctx);
+    // TEMP DEBUG: log entry/outcome for every dispatch. See `previewParams`
+    // / `logActionEntry` for the full rationale. Drop once stable.
+    const __debugStart = Date.now();
+    logActionEntry(ctx);
+    try {
+      const result = await dispatchSabhaAction(ctx);
+      logActionOk(
+        ctx,
+        (result.details as Record<string, unknown> | undefined) ?? {},
+        __debugStart,
+      );
+      return result;
+    } catch (err) {
+      logActionErr(ctx, err, __debugStart);
+      throw err;
+    }
+  },
+};
 
-    if (action === "search") {
+async function dispatchSabhaAction(
+  ctx: ChannelMessageActionContext,
+): Promise<AgentToolResult<unknown>> {
+  const { action, params } = ctx;
+  const client = buildClient(ctx);
+
+  if (action === "search") {
       const query = readString(params, "query", "q", "text");
       if (!query) {
         throw new Error("Sabha search requires a 'query' parameter.");
@@ -387,5 +493,4 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
     }
 
     throw new Error(`Unsupported Sabha message action: ${action}`);
-  },
-};
+}

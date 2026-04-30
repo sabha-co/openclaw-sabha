@@ -201,36 +201,31 @@ describe("sabhaPlugin.actions.messageActionTargetAliases", () => {
   });
 });
 
-describe("sabhaPlugin.agentPrompt — react/reactions target hint", () => {
-  // `react` and `reactions` are the only Sabha actions where the gate's
-  // accepted aliases (`to` / `channelId` for any action; core's hardcoded
-  // `messageId` for `edit` / `unsend`; iMessage-shaped `chatGuid` /
-  // `chatIdentifier` / `chatId` for `react`) don't naturally accommodate
-  // a "just `messageId`" call. Without a prompt nudge, the agent reads
-  // the schema, sees `messageId` is the conceptually correct field,
-  // and ships `{ action: "react", messageId, emoji }` — which the gate
-  // rejects. These tests pin the nudge.
+describe("sabhaPlugin.agentPrompt — no react/reactions target hint", () => {
+  // Pins the deliberate decision NOT to add a "pass `to: <roomId>`"
+  // hint for react/reactions. The runner already auto-fills `target`
+  // from `toolContext.currentChannelId` when the agent passes neither
+  // `target` nor `to`/`channelId`. Sabha's inbound flow sets
+  // `currentChannelId` to the numeric room id, so the natural call
+  // `{action:"react", messageId, emoji}` succeeds.
+  //
+  // Adding a hint backfires: the agent fills `to` with the only
+  // room-y string it has access to (the room *name* like "General",
+  // since the envelope doesn't expose the numeric id), which both
+  // disables auto-fill AND fails directory resolution. Verified live
+  // on the VPS; the agent-visible failure mode was the agent
+  // confabulating "reactions aren't supported on Sabha".
 
-  it("inboundFormattingHints tells the agent to pass `to` and `messageId` for react/reactions", () => {
+  it("inboundFormattingHints does not mention react/reactions", () => {
     const fn = sabhaPlugin.agentPrompt!.inboundFormattingHints!;
     const rules = (fn() as { rules: string[] }).rules;
-    const hint = rules.find(
-      (r) => /react/i.test(r) && /messageId/i.test(r) && /\bto\b/.test(r),
-    );
-    expect(hint).toBeDefined();
+    expect(rules.some((r) => /react/i.test(r))).toBe(false);
   });
 
-  it("messageToolHints carries the same nudge for proactive (non-inbound) runs", () => {
-    // `inboundFormattingHints` only renders on the inbound auto-reply path
-    // (via `buildInboundMetaSystemPrompt`). Proactive agent runs on the
-    // `messaging` profile go through `buildMessagingSection` instead and
-    // miss the inbound hint, so the rule must be repeated here.
+  it("messageToolHints does not mention react/reactions", () => {
     const fn = sabhaPlugin.agentPrompt!.messageToolHints!;
     const hints = fn() as string[];
-    const hint = hints.find(
-      (r) => /react/i.test(r) && /messageId/i.test(r) && /\bto\b/.test(r),
-    );
-    expect(hint).toBeDefined();
+    expect(hints.some((r) => /react/i.test(r))).toBe(false);
   });
 });
 

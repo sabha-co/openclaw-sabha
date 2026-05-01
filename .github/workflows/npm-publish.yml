@@ -30,11 +30,14 @@ jobs:
         with:
           # Match `engines.node` in package.json. Bump together when the
           # floor moves.
-          node-version: "22.14"
+          node-version: "22.19"
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
-      - run: npm ci
+      # `--ignore-scripts` skips the openclaw devDependency's
+      # `postinstall-bundled-plugins.mjs` hook, which pulls ~60 bundled
+      # channel-plugin packages we don't need for typecheck/lint/test.
+      - run: npm ci --ignore-scripts
 
       - name: Resolve publish mode and verify version
         id: release

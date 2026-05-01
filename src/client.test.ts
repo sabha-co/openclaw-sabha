@@ -574,7 +574,7 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       });
 
       const url = lastCall().url;
-      expect(url).toContain("query=hi");
+      expect(url).toContain("q=hi");
       expect(url).toContain("before=2026-04-28T00%3A00%3A00Z");
       expect(url).toContain("after=2026-04-01T00%3A00%3A00Z");
       expect(url).toContain("limit=100");
@@ -627,15 +627,16 @@ describe("SabhaClient — bearer auth + URL shape", () => {
       expect(url).not.toContain("author_ids=");
     });
 
-    it("a bare { query } produces exactly /search?query=<value> on the wire", async () => {
+    it("a bare { query } produces exactly /search?q=<value> on the wire", async () => {
       // Pins the wire contract so a future change adding a default
       // limit / cursor would surface as a test failure rather than a
-      // silent drift.
+      // silent drift. Server reads `params[:q]` (see Sabha
+      // `app/controllers/api/bots/searches_controller.rb`).
       searchMockFetch({ results: [], has_more: false, next_cursor: null });
       const client = new SabhaClient(API, BOT_KEY);
       await client.search({ query: "hi" });
 
-      expect(lastCall().url).toBe(`${API}/search?query=hi`);
+      expect(lastCall().url).toBe(`${API}/search?q=hi`);
     });
 
     it("throws on a malformed envelope (defends against server regression to bare-array)", async () => {

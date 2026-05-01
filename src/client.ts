@@ -411,7 +411,7 @@ export class SabhaClient {
    * Search messages. Server caps results at 200; default limit is 50.
    * Pass `roomIds` / `authorIds` to scope; pass `cursor` to walk results.
    *
-   * Server route: `GET /api/bots/search?query=&room_ids=&author_ids=&before=&after=&limit=&cursor=`.
+   * Server route: `GET /api/bots/search?q=&room_ids=&author_ids=&before=&after=&limit=&cursor=`.
    * Array params (`room_ids`, `author_ids`) use repeated keys (Rails default).
    * Response shape: `{ results, has_more, next_cursor: "<iso>|<id>" | null }`.
    * 422 on unparseable `before` / `after` ISO timestamps.
@@ -433,7 +433,7 @@ export class SabhaClient {
     cursor?: string;
   }): Promise<SabhaSearchResponse> {
     const params = new URLSearchParams();
-    params.set("query", opts.query);
+    params.set("q", opts.query);
     for (const id of opts.roomIds ?? []) params.append("room_ids", String(id));
     for (const id of opts.authorIds ?? []) params.append("author_ids", String(id));
     // The wire's `before` is dual-purpose: plain ISO = filter, composite

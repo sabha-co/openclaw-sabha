@@ -240,7 +240,7 @@ describe("sabhaMessageActions.handleAction", () => {
     const url = String(mock.fetch.mock.calls[0][0]);
     expect(url).toContain("/search?");
     // URLSearchParams encodes spaces as `+`, not `%20`.
-    expect(url).toContain("query=hello+world");
+    expect(url).toContain("q=hello+world");
     const details = result.details as {
       results: unknown[];
       hasMore: boolean;

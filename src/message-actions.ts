@@ -214,13 +214,6 @@ function readNumberList(
   return merged.length > 0 ? merged : undefined;
 }
 
-function ok(text: string, details: unknown = {}): AgentToolResult<unknown> {
-  return {
-    content: [{ type: "text" as const, text }],
-    details,
-  };
-}
-
 // Project Sabha's wire shape into the field names the shared formatter
 // (`openclaw/src/commands/message-format.ts`) reads. The formatter walks
 // `payload.messages[]` and pulls `id` / `timestamp` / `authorTag` /
@@ -437,15 +430,17 @@ async function dispatchSabhaAction(
       if (sent == null) {
         throw new Error("Sabha send: server returned no message id.");
       }
-      if (replyToId != null) {
-        return ok(`Replied to message ${replyToId}`, {
-          messageId: sent.id,
-          roomId: sent.roomId,
-        });
-      }
-      return ok(`Sent message`, {
+      // Surface the new messageId via `jsonResult` so the LLM sees it in
+      // the tool result text — required for any "send X then act on it"
+      // follow-up (`react` / `edit` / `thread-reply` on the bot's own
+      // send). With the older `ok(text, details)` shape the messageId
+      // landed in `details` only, which the agent loop never serializes
+      // into the LLM-visible content.
+      return jsonResult({
+        ok: true,
         messageId: sent.id,
         roomId: sent.roomId,
+        ...(replyToId != null ? { replyToId } : {}),
       });
     }
 
@@ -464,9 +459,11 @@ async function dispatchSabhaAction(
       if (sent == null) {
         throw new Error("Sabha thread-reply: server returned no message id.");
       }
-      return ok(`Replied in thread on message ${messageId}`, {
+      return jsonResult({
+        ok: true,
         messageId: sent.id,
         roomId: sent.roomId,
+        parentMessageId: messageId,
       });
     }
 
@@ -477,7 +474,7 @@ async function dispatchSabhaAction(
         throw new Error("Sabha edit requires 'messageId' and 'message'.");
       }
       await client.editMessage(messageId, text);
-      return ok(`Edited message ${messageId}`, { messageId, roomId: roomId ?? null });
+      return jsonResult({ ok: true, messageId, roomId: roomId ?? null });
     }
 
     if (action === "unsend") {
@@ -486,7 +483,7 @@ async function dispatchSabhaAction(
         throw new Error("Sabha unsend requires 'messageId'.");
       }
       await client.deleteMessage(messageId);
-      return ok(`Deleted message ${messageId}`, { messageId, roomId: roomId ?? null });
+      return jsonResult({ ok: true, messageId, roomId: roomId ?? null });
     }
 
     if (action === "react") {
@@ -496,9 +493,13 @@ async function dispatchSabhaAction(
         throw new Error("Sabha react requires 'messageId' and 'emoji'.");
       }
       const boostId = await client.addReaction(messageId, emoji);
-      return ok(`Reacted with ${emoji} on message ${messageId}`, {
+      // `boostId` is required for any later `unreact` — agents that
+      // can't see it have to walk reactions to find their own.
+      return jsonResult({
+        ok: true,
         boostId,
         messageId,
+        emoji,
         roomId: roomId ?? null,
       });
     }

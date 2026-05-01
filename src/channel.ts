@@ -27,8 +27,10 @@ import {
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
 import {
+  inferSabhaTargetChatType,
   looksLikeSabhaTargetId,
   normalizeSabhaMessagingTarget,
+  resolveSabhaDeliveryTarget,
   resolveSabhaMessagingTarget,
 } from "./messaging.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
@@ -329,6 +331,18 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     // failure-mode trace.
     messaging: {
       normalizeTarget: normalizeSabhaMessagingTarget,
+      // Inferred from canonical prefix (`user:` → direct, `channel:` →
+      // group). Bare-numeric inputs return undefined since Sabha rooms
+      // and users share a numeric id namespace; the SDK's own
+      // raw-prefix heuristics cover the fall-through. See
+      // `inferSabhaTargetChatType` in `src/messaging.ts`.
+      inferTargetChatType: ({ to }) => inferSabhaTargetChatType(to),
+      // For thread sessions, deliver to the parent room with the thread
+      // room as `threadId` — matches Mattermost/Slack/Telegram/Feishu
+      // pattern. Non-thread sessions deliver to the conversation
+      // directly. See `resolveSabhaDeliveryTarget` in `src/messaging.ts`.
+      resolveDeliveryTarget: ({ conversationId, parentConversationId }) =>
+        resolveSabhaDeliveryTarget({ conversationId, parentConversationId }),
       targetResolver: {
         looksLikeId: looksLikeSabhaTargetId,
         hint: "<roomId | userId | @{userId}>",

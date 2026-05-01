@@ -1,6 +1,6 @@
 # Close SDK parity gaps with bundled peers
 
-**Status:** Partially shipped (2026-05-01). Phase 1 and Phase 2 minimum viable subset are live; Phase 3 and Phase 4 deferred per their entry conditions; two new bug classes surfaced during implementation are also closed.
+**Status:** Mostly shipped (2026-05-01). Phase 1, Phase 2 minimum viable subset, and Phase 2.5 (`resolveDeliveryTarget` + `inferTargetChatType`) are all live; Phase 3 and Phase 4 deferred per their entry conditions; two new bug classes surfaced during implementation are also closed.
 **Problem area:** Sabha is an externally-installed channel plugin (`@sabha-co/openclaw-sabha`, origin `"global"`) and has accumulated several quiet divergences from the bundled-peer baseline — fields and slots the SDK silently relies on. Most are no-ops in the happy path; each manifests as a confusing "agent confabulates / target unknown / sub-agent loses thread" failure when an edge case fires.
 
 ## What shipped on 2026-05-01
@@ -222,19 +222,19 @@ Risk: trivial. Both fields are documented on `MsgContext`; the only subtle bit i
 
 Verified against `https://docs.openclaw.ai/plugins/architecture-internals.md` ("Channel target resolution" section). The doc explicitly says `looksLikeId` is for "explicit/native target id" checks (not directory search) and `resolveTarget` is the "provider-specific normalization fallback after directory miss" — both match what shipped.
 
-**Still deferred from the original Phase 2 list — but more broadly adopted by peers than the original plan acknowledged. Audit on 2026-05-01 reclassified both from "indefinite defer" to "concrete Phase 2.5":**
+**Phase 2.5 — both deferred sub-fields shipped together (2026-05-01):**
 
-- ⏳ `resolveDeliveryTarget({ conversationId, parentConversationId })` — wired by **5 peers**: Mattermost (`channel.ts:311`), Feishu (`channel.ts:1149`), Matrix (`channel.ts:377`), Slack (`channel.ts:387`), Telegram (`channel.ts:687`). Mattermost's pattern is `parent && parent !== child ? { to: 'channel:${parent}', threadId: child } : { to: ... }`. Sabha's draft-stream owns the runtime delivery path so the SDK fall-through doesn't bite the happy path today — but adoption is universal among full-featured peers, and the cost is one short function. **Worth opening as Phase 2.5.**
+- ✅ `resolveDeliveryTarget({ conversationId, parentConversationId })` — implemented as `resolveSabhaDeliveryTarget` in `src/messaging.ts`. Mirrors Mattermost's `channel.ts:311-317` pattern verbatim: `parent && parent !== child ? { to: 'channel:${parent}', threadId: child } : { to: 'channel:${child}' }`. Wired by 5 peers (Mattermost, Feishu, Matrix, Slack, Telegram).
 
-- ⏳ `inferTargetChatType({ to })` — wired by **8+ peers**: Discord (`channel.ts:403`), Slack (`channel.ts:396`), Telegram (`channel.ts:692`), BlueBubbles, Signal, iMessage, WhatsApp, QA. All infer from prefix shape (e.g. Slack uses `parseSlackExplicitTarget(to)?.chatType`), not server lookup. The original plan said "Sabha can't tell DM vs group from a bare numeric id without a server lookup" — true *before* Phase 2 normalize landed, but no longer accurate. Now that `normalizeSabhaMessagingTarget` emits canonical `user:N` / `channel:N` forms, inference is a one-liner:
+- ✅ `inferTargetChatType({ to })` — implemented as `inferSabhaTargetChatType`. One-liner against the canonical normalize prefix:
   ```ts
-  inferTargetChatType: ({ to }) => {
-    if (/^user:/i.test(to)) return "direct";
-    if (/^channel:/i.test(to)) return "group";
-    return undefined; // bare digits stay ambiguous
-  }
+  if (/^user:/i.test(to)) return "direct";
+  if (/^channel:/i.test(to)) return "group";
+  return undefined; // bare digits stay ambiguous
   ```
-  **Also worth Phase 2.5.**
+  Wired by 8+ peers (Discord, Slack, Telegram, BlueBubbles, Signal, iMessage, WhatsApp, QA). The original plan's "can't tell DM vs group from a bare numeric without a server lookup" was true before Phase 2 normalize landed; once normalize emits canonical kinded forms (`user:N` / `channel:N`), inference is trivial. Bare-numeric inputs still return undefined (Sabha rooms and users share the numeric id namespace), and the SDK falls back to its own raw-prefix heuristics for those.
+
+Tests for both at `src/messaging.test.ts` cover prefix matching, bare-numeric undefined returns, thread vs non-thread delivery, parent === child collapse, and empty-input null.
 
 **Skip permanently** (unchanged from original plan):
 - `parseExplicitTarget` — Sabha's `normalizeTarget` already canonicalizes `user:`/`channel:`/`group:`/`@{N}`/`@x`/`#x` forms to a single grammar. The SDK's default behavior over the canonical form is sufficient.

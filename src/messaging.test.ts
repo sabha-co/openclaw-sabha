@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 import {
+  inferSabhaTargetChatType,
   looksLikeSabhaTargetId,
   normalizeSabhaMessagingTarget,
+  resolveSabhaDeliveryTarget,
   resolveSabhaMessagingTarget,
 } from "./messaging.js";
 
@@ -332,5 +334,86 @@ describe("resolveSabhaMessagingTarget", () => {
     });
 
     expect(out).toBeNull();
+  });
+});
+
+describe("inferSabhaTargetChatType", () => {
+  it("infers `direct` from a `user:` prefix", () => {
+    expect(inferSabhaTargetChatType("user:42")).toBe("direct");
+    expect(inferSabhaTargetChatType("user:alice")).toBe("direct");
+    // Case-insensitive — matches the canonical normalize forms.
+    expect(inferSabhaTargetChatType("USER:42")).toBe("direct");
+  });
+
+  it("infers `group` from a `channel:` prefix", () => {
+    expect(inferSabhaTargetChatType("channel:21")).toBe("group");
+    expect(inferSabhaTargetChatType("channel:general")).toBe("group");
+    expect(inferSabhaTargetChatType("CHANNEL:21")).toBe("group");
+  });
+
+  it("returns undefined for bare-numeric inputs (Sabha namespaces overlap)", () => {
+    // Sabha rooms and users share the numeric id namespace. Without a
+    // prefix the SDK can't tell direct from group; returning undefined
+    // lets the SDK fall back to its own raw-prefix heuristics.
+    expect(inferSabhaTargetChatType("21")).toBeUndefined();
+    expect(inferSabhaTargetChatType("42")).toBeUndefined();
+  });
+
+  it("returns undefined for empty / whitespace-only input", () => {
+    expect(inferSabhaTargetChatType("")).toBeUndefined();
+    expect(inferSabhaTargetChatType("   ")).toBeUndefined();
+  });
+
+  it("returns undefined for an unknown prefix", () => {
+    expect(inferSabhaTargetChatType("group:21")).toBeUndefined();
+    expect(inferSabhaTargetChatType("dm:42")).toBeUndefined();
+  });
+});
+
+describe("resolveSabhaDeliveryTarget", () => {
+  it("returns parent room with thread room as threadId for thread sessions", () => {
+    // Mirrors Mattermost's `channel.ts:311-317` exactly: parent ≠ child
+    // means a thread session, so `to` is the parent and `threadId` is
+    // the child (thread room).
+    expect(
+      resolveSabhaDeliveryTarget({
+        conversationId: "99",
+        parentConversationId: "5",
+      }),
+    ).toEqual({ to: "channel:5", threadId: "99" });
+  });
+
+  it("returns just `to` for non-thread sessions", () => {
+    expect(
+      resolveSabhaDeliveryTarget({ conversationId: "5" }),
+    ).toEqual({ to: "channel:5" });
+  });
+
+  it("treats parent === child as a non-thread session", () => {
+    // Some session-grammar paths pass `parentConversationId` equal to
+    // `conversationId` for non-thread cases. Don't emit a `threadId`
+    // there — that would mis-attribute the conversation.
+    expect(
+      resolveSabhaDeliveryTarget({
+        conversationId: "5",
+        parentConversationId: "5",
+      }),
+    ).toEqual({ to: "channel:5" });
+  });
+
+  it("ignores blank parentConversationId", () => {
+    expect(
+      resolveSabhaDeliveryTarget({
+        conversationId: "5",
+        parentConversationId: "   ",
+      }),
+    ).toEqual({ to: "channel:5" });
+  });
+
+  it("returns null when the conversationId is empty", () => {
+    expect(resolveSabhaDeliveryTarget({ conversationId: "" })).toBeNull();
+    expect(
+      resolveSabhaDeliveryTarget({ conversationId: "   " }),
+    ).toBeNull();
   });
 });

@@ -169,3 +169,68 @@ export async function resolveSabhaMessagingTarget(params: {
 // Surfaced for kind detection in tests and by callers that need the shared
 // canonical-prefix grammar.
 export const sabhaTargetKindPrefixRe = KIND_PREFIX_RE;
+
+/**
+ * Lightweight chat-type inference used by the SDK at
+ * `message-action-runner-BN7W0fv6.js:548` (`detectTargetKind`) BEFORE
+ * directory lookup, so the runner can route directory queries to users
+ * vs rooms without server round-tripping. The SDK accepts `"direct" |
+ * "group" | "channel"` and translates `"direct"` → user kind for
+ * directory routing.
+ *
+ * Sabha's `normalizeSabhaMessagingTarget` already canonicalizes every
+ * input shape (`@{N}`, `@alex`, `#general`, `user:42`, `channel:21`,
+ * etc.) into either `user:X` or `channel:X` (or a bare name/id if no
+ * kind signal is present). So this inference is a one-liner against the
+ * canonical prefix — same pattern as Slack's `parseSlackExplicitTarget`,
+ * Discord's `parseDiscordExplicitTarget`, and Telegram's
+ * `parseTelegramExplicitTarget`.
+ *
+ * Returns `undefined` for bare-numeric inputs (Sabha rooms and users
+ * share a numeric id namespace; without a prefix we cannot tell DM from
+ * group). The SDK accepts undefined and falls back to its own
+ * raw-prefix heuristics, which already cover `user:` / `@` / `channel:`
+ * / `#` from a different angle.
+ */
+export function inferSabhaTargetChatType(
+  to: string,
+): "direct" | "group" | undefined {
+  const trimmed = to.trim();
+  if (!trimmed) return undefined;
+  if (/^user:/i.test(trimmed)) return "direct";
+  if (/^channel:/i.test(trimmed)) return "group";
+  return undefined;
+}
+
+/**
+ * Plugin-owned mapping from session-grammar conversation ids to wire
+ * delivery target. Read by the SDK at `delivery-context-BB8mcaUV.js:33,44`
+ * (`formatConversationTarget` and `resolveConversationDeliveryTarget`).
+ *
+ * Mirrors the canonical pattern from Mattermost (`channel.ts:311-317`),
+ * Slack, Telegram, Feishu, and Matrix: when a session has a parent
+ * conversation distinct from the current one (i.e. it's a thread session),
+ * deliver to the parent and surface the thread room as `threadId`. For
+ * non-thread sessions, deliver to the conversation itself.
+ *
+ * Sabha's runtime delivery path goes through the draft-stream and doesn't
+ * consult this hook today, but non-draft-stream apply paths (media
+ * echo-transcript, captured registrations) read it. Without this hook,
+ * the SDK fall-through at `delivery-context-BB8mcaUV.js:38` returns
+ * `channel:${conversationId}` and loses the parent association — a
+ * thread reply would then be attributed to the thread room, not the
+ * parent room, which is the wrong shape for downstream consumers that
+ * key on the parent room id.
+ */
+export function resolveSabhaDeliveryTarget(params: {
+  conversationId: string;
+  parentConversationId?: string;
+}): { to?: string; threadId?: string } | null {
+  const child = params.conversationId.trim();
+  if (!child) return null;
+  const parent = params.parentConversationId?.trim();
+  if (parent && parent !== child) {
+    return { to: `channel:${parent}`, threadId: child };
+  }
+  return { to: `channel:${child}` };
+}

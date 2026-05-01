@@ -631,7 +631,7 @@ describe("sabhaMessageActions.handleAction", () => {
       content?: unknown;
       boosters?: unknown;
     };
-    expect(details).toEqual({
+    expect(details).toMatchObject({
       reactions: [
         {
           name: "🚀",
@@ -644,9 +644,8 @@ describe("sabhaMessageActions.handleAction", () => {
       truncated: false,
     });
     // Defensive: per-entry raw keys (`content`, `boosters`) must not leak
-    // through. The structural deepEqual above already covers this, but
-    // pin it explicitly so a future change that adds them back as
-    // "extras" surfaces here.
+    // through. Pin it explicitly so a future change that adds them back
+    // as "extras" surfaces here.
     const entry = details.reactions[0] as Record<string, unknown>;
     expect(entry.content).toBeUndefined();
     expect(entry.boosters).toBeUndefined();
@@ -667,7 +666,7 @@ describe("sabhaMessageActions.handleAction", () => {
     const details = result.details as { total: number; reactions: unknown[] };
     expect(details.total).toBe(0);
     expect(details.reactions).toEqual([]);
-    expect(result.content[0].text).toMatch(/^No reactions/);
+    expect(result.content[0].text).toMatch(/No reactions/);
   });
 
   it("reactions throws when messageId is missing", async () => {

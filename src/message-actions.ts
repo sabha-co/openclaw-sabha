@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import { jsonResult } from "openclaw/plugin-sdk/channel-actions";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageActionContext,
@@ -311,11 +312,16 @@ async function dispatchSabhaAction(
         cursor: readString(params, "cursor"),
       });
       // The agent reads `hasMore` to decide whether to refine vs. paginate;
-      // `nextCursor` lets it walk if it really needs more.
-      const note = response.hasMore
-        ? `Found ${response.results.length} (more available — pass cursor to walk or scope with channelIds/authorIds)`
-        : `Found ${response.results.length} result(s)`;
-      return ok(note, {
+      // `nextCursor` lets it walk if it really needs more. The `note` is
+      // baked into the payload itself (not just the content text) because
+      // `jsonResult` serializes the whole payload into the LLM-visible
+      // text, and we want the pagination hint surfaced regardless of which
+      // prompt-hint slot is active for the current profile.
+      return jsonResult({
+        ok: true,
+        note: response.hasMore
+          ? `Found ${response.results.length} (more available — pass cursor to walk or scope with channelIds/authorIds)`
+          : `Found ${response.results.length} result(s)`,
         results: response.results,
         hasMore: response.hasMore,
         nextCursor: response.nextCursor,
@@ -332,7 +338,7 @@ async function dispatchSabhaAction(
         throw new Error("Sabha member-info requires 'userId'.");
       }
       const profile = await client.getUser(userId);
-      return ok(`Profile for ${profile.name} (id ${profile.id})`, { profile });
+      return jsonResult({ ok: true, profile });
     }
 
     if (action === "read") {
@@ -360,11 +366,15 @@ async function dispatchSabhaAction(
       const messages = response.results.map(projectReadMessage);
       // "Newest first" baked into the note so the agent learns ordering
       // from the first call's tool result, regardless of which prompt-hint
-      // slot is active for the current profile.
-      const note = response.hasMore
-        ? `Read ${messages.length} message(s), newest first (more available — pass cursor to walk)`
-        : `Read ${messages.length} message(s), newest first`;
-      return ok(note, {
+      // slot is active for the current profile. The note rides inside the
+      // payload — `jsonResult` serializes the whole thing into the
+      // LLM-visible content text, so the messages array (with each
+      // message's id) is what the agent actually sees, not a count.
+      return jsonResult({
+        ok: true,
+        note: response.hasMore
+          ? `Read ${messages.length} message(s), newest first (more available — pass cursor to walk)`
+          : `Read ${messages.length} message(s), newest first`,
         messages,
         hasMore: response.hasMore,
         nextCursor: response.nextCursor,
@@ -383,10 +393,11 @@ async function dispatchSabhaAction(
         throw new Error("Sabha reactions requires 'messageId'.");
       }
       const response = await client.listReactions(messageId);
-      const note = response.total === 0
-        ? `No reactions on message ${messageId}`
-        : `${response.total} reaction(s) on message ${messageId}`;
-      return ok(note, {
+      return jsonResult({
+        ok: true,
+        note: response.total === 0
+          ? `No reactions on message ${messageId}`
+          : `${response.total} reaction(s) on message ${messageId}`,
         reactions: response.reactions.map(projectReaction),
         total: response.total,
         truncated: response.truncated,

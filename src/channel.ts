@@ -26,6 +26,11 @@ import {
   listSabhaDirectoryPeersLive,
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
+import {
+  looksLikeSabhaTargetId,
+  normalizeSabhaMessagingTarget,
+  resolveSabhaMessagingTarget,
+} from "./messaging.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { resolveSabhaTargets } from "./resolver.js";
 import { sabhaSetupWizard } from "./setup-wizard.js";
@@ -315,6 +320,33 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
     resolver: {
       resolveTargets: async ({ cfg, accountId, inputs, kind }) =>
         await resolveSabhaTargets({ cfg, accountId, inputs, kind }),
+    },
+    // Plugin-owned target helpers consulted by the SDK's message-action
+    // runner. Required so bare-numeric Sabha room ids (e.g. `21`) survive
+    // the runner's `looksLikeTargetId` gate, which otherwise rejects any
+    // numeric shorter than 6 digits and falls through to a directory
+    // lookup that matches by name. See `src/messaging.ts` for the full
+    // failure-mode trace.
+    messaging: {
+      normalizeTarget: normalizeSabhaMessagingTarget,
+      targetResolver: {
+        looksLikeId: looksLikeSabhaTargetId,
+        hint: "<roomId | userId | @{userId}>",
+        resolveTarget: async ({
+          cfg,
+          accountId,
+          input,
+          normalized,
+          preferredKind,
+        }) =>
+          await resolveSabhaMessagingTarget({
+            cfg,
+            accountId,
+            input,
+            normalized,
+            preferredKind,
+          }),
+      },
     },
     agentPrompt: {
       // `inboundFormattingHints` carries the fuller Sabha identity +

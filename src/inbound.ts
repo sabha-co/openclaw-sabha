@@ -224,7 +224,14 @@ export async function processInboundMessage(
     Timestamp: new Date(payload.message.created_at).getTime(),
     MessageSid: String(payload.message.id),
     GroupSystemPrompt: groupSystemPrompt,
+    // `WasMentioned` is group-only by canonical convention. Peers
+    // (Mattermost, Telegram, Feishu) gate the field on `isGroup` —
+    // a DM is implicitly addressed to the bot, and feeding `true`
+    // there would make `ack-reactions-wu9Zf6cu.js:12` over-trigger
+    // on every direct reply. See `docs/SDK-PARITY-PLAN.md` Phase 1.
+    ...(isDm ? {} : { WasMentioned: mentioned }),
     ...(session.threadId ? {
+      MessageThreadId: session.threadId,
       ReplyToId: session.threadId,
       ParentSessionKey: session.baseConversationId
         ? route.sessionKey

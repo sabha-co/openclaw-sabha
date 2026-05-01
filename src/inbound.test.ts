@@ -254,7 +254,14 @@ describe("processInboundMessage", () => {
     expect(ctx.ChatType).toBe("direct");
   });
 
-  it("includes ReplyToId for threaded messages", async () => {
+  it("includes ReplyToId and MessageThreadId for threaded messages", async () => {
+    // `MessageThreadId` is read by the SDK at four sites including
+    // sub-agent spawn (`action-spawn-DNsZAtA6.js:37 → agentThreadId`)
+    // and per-thread session transcript paths
+    // (`agent-runner.runtime-BhSS0F7i.js:2408`). Without it, a
+    // sub-agent spawned from a Sabha thread inherits no thread context
+    // and replies escape to the parent room. See
+    // `docs/SDK-PARITY-PLAN.md` Phase 1.
     const payload = makePayload({
       message: {
         ...makePayload().message,
@@ -268,8 +275,91 @@ describe("processInboundMessage", () => {
       deliver: vi.fn(),
     });
 
-    const ctx = (mockDispatch.mock.calls[0][0] as { ctxPayload: { ReplyToId?: string } }).ctxPayload;
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: { ReplyToId?: string; MessageThreadId?: string };
+    }).ctxPayload;
     expect(ctx.ReplyToId).toBe("99");
+    expect(ctx.MessageThreadId).toBe("99");
+  });
+
+  it("omits MessageThreadId for non-thread inbounds", async () => {
+    // Non-thread group/DM inbounds should not carry the field. The
+    // SDK's `MessageThreadId?: string | number` (templating.d.ts:158)
+    // is optional; setting it on a non-thread message would mis-key
+    // session transcript paths.
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: { MessageThreadId?: string };
+    }).ctxPayload;
+    expect(ctx.MessageThreadId).toBeUndefined();
+  });
+
+  it("sets WasMentioned on group inbounds where the bot was mentioned", async () => {
+    // Default payload has `mentionees: [{id: 42, name: "MyBot"}]`
+    // and `botId: 42`, so wasBotMentioned returns true.
+    await processInboundMessage(makePayload(), {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: { WasMentioned?: boolean };
+    }).ctxPayload;
+    expect(ctx.WasMentioned).toBe(true);
+  });
+
+  it("omits WasMentioned for DMs (canonical group-only behavior)", async () => {
+    // Canonical SDK behavior at `bot-ClNJQIfx.js:3206`:
+    //   `WasMentioned: isGroup ? effectiveWasMentioned : void 0`.
+    // A DM is implicitly addressed to the bot, so feeding `true`
+    // here would over-trigger ack-reactions logic. Sabha matches.
+    const payload = makePayload({
+      room: { ...makePayload().room, type: "Direct" },
+    });
+    await processInboundMessage(payload, {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: { WasMentioned?: boolean; ChatType: string };
+    }).ctxPayload;
+    expect(ctx.ChatType).toBe("direct");
+    expect(ctx.WasMentioned).toBeUndefined();
+  });
+
+  it("sets WasMentioned: false on a thread inbound where the bot was not mentioned", async () => {
+    // Thread inbounds bypass the mention-required gate (any thread
+    // reply is handled), so a `false` mention bit is meaningful and
+    // should flow to MsgContext rather than be silently dropped.
+    const payload = makePayload({
+      message: {
+        ...makePayload().message,
+        thread: { id: 99, parent_message_id: 10 },
+        mentionees: [],
+      },
+    });
+    await processInboundMessage(payload, {
+      runtime: makeChannelRuntime(),
+      cfg: baseCfg,
+      account: baseAccount,
+      deliver: vi.fn(),
+    });
+
+    const ctx = (mockDispatch.mock.calls[0][0] as {
+      ctxPayload: { WasMentioned?: boolean };
+    }).ctxPayload;
+    expect(ctx.WasMentioned).toBe(false);
   });
 
   it("passes the normalized channel runtime to dispatch", async () => {

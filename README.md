@@ -9,7 +9,7 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 
 - WebSocket mode — connects outbound to Sabha, no tunnels needed
 - Supports DMs, group chat, threads, reactions, attachments, search
-- 12 agent tools for room and member management
+- Two Sabha-specific agent tools (room-scoped member search, DM creation); everything else (send / edit / react / read / search / list / resolve) flows through OpenClaw's shared `message` tool, directory adapter, and resolver
 - Sabha self-host support (single-tenant and multi-tenant SaaS)
 - Message dedup across WebSocket reconnects
 - Auto-registration via join URL

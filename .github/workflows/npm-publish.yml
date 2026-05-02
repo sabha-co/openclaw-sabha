@@ -34,6 +34,12 @@ jobs:
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
+      # OIDC trusted publishing requires npm >= 11.5.1. Node 22.19 ships
+      # with npm 10.9.x, which fails `npm publish` with `ENEEDAUTH` even
+      # when the trusted publisher record is configured. Bump before
+      # `npm ci` so install + publish run on the same npm.
+      - run: npm install -g npm@^11
+
       # `--ignore-scripts` skips the openclaw devDependency's
       # `postinstall-bundled-plugins.mjs` hook, which pulls ~60 bundled
       # channel-plugin packages we don't need for typecheck/lint/test.

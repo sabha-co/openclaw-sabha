@@ -41,7 +41,7 @@
       "pluginApi": ">=2026.4.9"
     },
     "build": {
-      "openclawVersion": "2026.4.9"
+      "openclawVersion": "2026.4.29"
     }
   },
   "scripts": {
@@ -52,14 +52,14 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.41",
+    "typebox": "^1.1.31",
     "ws": "^8.0.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "eslint": "^9.39.4",
     "globals": "^15.15.0",
-    "openclaw": "2026.4.9",
+    "openclaw": "2026.4.29",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.58.1",
     "vitest": "^3.0.0"

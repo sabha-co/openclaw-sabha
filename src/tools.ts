@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type, type TSchema } from "typebox";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { SabhaClient } from "./client.js";
 import {
@@ -93,7 +93,7 @@ type ToolDefinition<TParams extends AccountAwareParams> = {
   name: string;
   label: string;
   description: string;
-  parameters: unknown;
+  parameters: TSchema;
   execute: ToolExecute<TParams>;
 };
 

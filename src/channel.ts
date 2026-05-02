@@ -1,7 +1,10 @@
 import {
   createChatChannelPlugin,
   type OpenClawConfig,
+  type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
+
+type PluginRuntimeChannel = PluginRuntime["channel"];
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
 import {
   createDefaultChannelRuntimeState,
@@ -9,7 +12,7 @@ import {
 } from "openclaw/plugin-sdk/channel-status";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { z } from "openclaw/plugin-sdk/zod";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 import type { ResolvedSabhaAccount } from "./accounts.js";
 import {
@@ -472,10 +475,18 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
 
         if (shouldMonitor) {
           ctx.log?.info?.(`${logPrefix} Starting WebSocket monitor`);
+          // The SDK types `ctx.channelRuntime` as the minimal
+          // `ChannelRuntimeSurface` (`runtimeContexts` + index signature),
+          // but the runtime *value* — when present — is documented to be
+          // the full `createPluginRuntime().channel` surface. Sabha's
+          // monitor/inbound code uses the rich shape (`channel.media`,
+          // `channel.routing`, `channel.reply`, ...), so cast at the
+          // boundary. See SDK ChannelGatewayContext docs and Discord's
+          // `monitorDiscordProvider` for the same pattern.
           await monitorSabha({
             account,
             config: ctx.cfg,
-            runtime: ctx.channelRuntime!,
+            runtime: ctx.channelRuntime as unknown as PluginRuntimeChannel,
             abortSignal: ctx.abortSignal,
             logger: ctx.log,
             statusSink: (patch) => {

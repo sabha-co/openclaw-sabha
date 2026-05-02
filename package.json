@@ -4,7 +4,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.13.0"
   },
   "repository": {
     "type": "git",

@@ -25,7 +25,7 @@ jobs:
         with:
           # Match `engines.node` in package.json. Bump together when the
           # floor moves.
-          node-version: "22.19"
+          node-version: "24.15"
           cache: npm
 
       # `--ignore-scripts` skips the openclaw devDependency's

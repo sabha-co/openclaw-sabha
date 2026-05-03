@@ -41,7 +41,7 @@
       "pluginApi": ">=2026.4.9"
     },
     "build": {
-      "openclawVersion": "2026.4.29"
+      "openclawVersion": "2026.5.2"
     }
   },
   "scripts": {
@@ -59,7 +59,7 @@
     "@types/ws": "^8.18.1",
     "eslint": "^9.39.4",
     "globals": "^15.15.0",
-    "openclaw": "2026.4.29",
+    "openclaw": "2026.5.2",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.58.1",
     "vitest": "^3.0.0"

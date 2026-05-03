@@ -2,6 +2,9 @@
   "id": "sabha",
   "kind": "channel",
   "channels": ["sabha"],
+  "contracts": {
+    "tools": ["sabha_search_members", "sabha_create_dm"]
+  },
   "name": "Sabha",
   "description": "Connect OpenClaw to a Sabha chat server",
   "configSchema": {

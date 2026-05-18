@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { jsonResult } from "openclaw/plugin-sdk/channel-actions";
 import type {
   ChannelMessageActionAdapter,

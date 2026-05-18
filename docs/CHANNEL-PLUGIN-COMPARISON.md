@@ -32,10 +32,10 @@ Mattermost is the closest peer: text‑first, REST + WS, no rich UI. It clocks i
 
 ### 1. Entry points
 
-- **Sabha** — `index.ts` (`defineChannelPluginEntry`) + `setup-entry.ts` (`defineSetupPluginEntry`). Config schema lives in `openclaw.plugin.json` + `src/channel.ts`. External plugin (npm‑published), so direct entry rather than the bundled pattern.
+- **Sabha** — `index.ts` (`defineBundledChannelEntry`) + `setup-entry.ts` (`defineBundledChannelSetupEntry`). Config schema lives in `openclaw.plugin.json` + `src/channel.ts`. Plugin object loads lazily via `{ specifier: "./src/channel.js", exportName: "sabhaPlugin" }`. External plugin (npm‑published), but uses the same lazy-specifier shape as in‑repo bundled plugins — required to avoid the openclaw 2026.5.12 cold-start `ERR_INTERNAL_ASSERTION` on Node 24.14.x (the old `defineChannelPluginEntry` closure-captured the full plugin graph through Node's native require fast path).
 - **Mattermost / Slack / Discord** — `defineBundledChannelEntry` with `loadBundledEntryExportSync`, splitting plugin contract across `channel-plugin-api.ts`, `secret-contract-api.ts`, `runtime-api.ts`. Bundled = in‑repo, lazy‑loads implementation modules.
 
-**Sabha verdict: justified divergence.** External plugins use the direct entry; the bundled pattern is for in‑repo lazy loading.
+**Sabha verdict: aligned with peers.** All channel plugins now use the bundled entry contract; the difference is just where the plugin lives (npm tarball vs. in-repo).
 
 ### 2. Inbound event surface
 

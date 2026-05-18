@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `@sabha-co/openclaw-sabha` — an OpenClaw channel plugin that connects OpenClaw agents to Sabha chat servers. It speaks to Sabha's Bot REST API for outbound and uses an outbound **WebSocket** (ActionCable/AnyCable `/cable`) for inbound events. No reverse proxy or public IP required.
 
-The plugin is loaded at runtime by the `openclaw` host via `openclaw.plugin.json` and `defineChannelPluginEntry` — it is **not** a standalone app. There is no `main`/`start` script; install into a running OpenClaw gateway with `openclaw plugins install -l .` and restart the gateway.
+The plugin is loaded at runtime by the `openclaw` host via `openclaw.plugin.json` and `defineBundledChannelEntry` — it is **not** a standalone app. There is no `main`/`start` script; install into a running OpenClaw gateway with `openclaw plugins install -l .` and restart the gateway.
 
 ## Commands
 
@@ -20,7 +20,7 @@ npm run lint:fix
 npm run build                         # tsc -> dist/ (typecheck + emit)
 ```
 
-There is no dev server. To exercise the plugin end-to-end, run `npm run build` first (the manifest points at `./dist/index.js`, not `./index.ts`, so the loader needs compiled output), then install it into a local OpenClaw checkout (`openclaw plugins install -l .`) and `openclaw gateway restart`. After source edits, re-run `npm run build` before the gateway picks them up.
+There is no dev server. To exercise the plugin end-to-end, run `npm run build` first (the manifest's `runtimeExtensions` points at `./dist/index.js`, not `./index.ts`, so the loader needs compiled output), then install it into a local OpenClaw checkout (`openclaw plugins install -l .`) and `openclaw gateway restart`. After source edits, re-run `npm run build` before the gateway picks them up.
 
 ## Module system quirk
 
@@ -34,8 +34,8 @@ Two entry points, three execution paths, one plugin definition.
 
 ### Entry points
 
-- `index.ts` — `defineChannelPluginEntry`. Registers agent tools. This is the **full** runtime entry.
-- `setup-entry.ts` — `defineSetupPluginEntry`. Used only by `openclaw configure` so the setup wizard can load without the whole gateway. Keep it lightweight; do not import monitor/gateway code from here.
+- `index.ts` — `defineBundledChannelEntry` (from `openclaw/plugin-sdk/channel-entry-contract`). A deliberately tiny shim: the only static import is the SDK entry contract. The plugin object loads lazily via `{ specifier: "./src/channel.js", exportName: "sabhaPlugin" }` through the SDK's `createRequire`-scoped `loadBundledEntryExportSync`. `registerCliMetadata` and `registerFull` run inline; `registerFull` dynamic-imports `./src/accounts.js` and `./src/tools.js` inside an async IIFE to keep the entry's static graph at one import. **Do not** static-import `./src/*` here — that re-introduces the cold-start `ERR_INTERNAL_ASSERTION` regression in Node 24 that this shape was adopted to avoid (root cause: openclaw 2026.5.12 #80878 routes `openclaw/plugin-sdk/*` through Node's native require fast path, and the old `defineChannelPluginEntry` shape closure-captured the full ~17-subpath plugin graph through that path).
+- `setup-entry.ts` — `defineBundledChannelSetupEntry`. Same lazy-specifier shape as the channel entry. Used only by `openclaw configure` so the setup wizard can load without the whole gateway. Keep it lightweight; never static-import monitor/gateway code from here.
 - `src/channel.ts` — `createChatChannelPlugin(...)`. The plugin object itself: capabilities, config schema, DM security policy, outbound adapters (`sendText`/`sendMedia`), the `gateway.startAccount` hook that launches the WebSocket monitor, and `agentPrompt` hints (platform identity preamble + mention syntax in `messageToolHints`, markdown rules in `inboundFormattingHints`).
 
 ### Inbound path

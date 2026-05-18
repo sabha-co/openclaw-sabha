@@ -2,34 +2,27 @@
 //
 // Catches the failure mode where `index.ts` or `setup-entry.ts` compiles
 // cleanly but produces a runtime shape OpenClaw's loader rejects — e.g. a
-// missing `register` function, an id/name drift after a rename, or
-// `setup-entry.ts` accidentally exporting the channel plugin object instead
-// of the SDK's `{ plugin }` wrapper.
+// missing `kind` discriminator after a contract migration, an id/name drift,
+// or `setup-entry.ts` accidentally exporting the channel plugin object
+// instead of the SDK's bundled-setup-entry contract.
 //
-// Equivalent to peers' `assertBundledChannelEntries` helper
-// (extensions/discord/index.test.ts, extensions/slack/index.test.ts), but
-// targets the external-plugin entry shape from `defineChannelPluginEntry`
-// rather than the bundled-plugin `kind`-tagged shape.
+// Uses the SDK's canonical `assertBundledChannelEntries` helper for the
+// entry-contract surface (matches WhatsApp / Telegram bundled tests). The
+// third describe-it walks the plugin object directly to catch capability
+// regressions that the contract assertions can't see.
 
+import { assertBundledChannelEntries } from "openclaw/plugin-sdk/channel-test-helpers";
 import { describe, expect, it } from "vitest";
 import entry from "./index.js";
 import setupEntry from "./setup-entry.js";
 import { sabhaPlugin } from "./src/channel.js";
 
-describe("sabha plugin entries", () => {
-  it("channel entry exposes the contracted external-plugin shape", () => {
-    expect(entry.id).toBe("sabha");
-    expect(entry.name).toBe("Sabha");
-    expect(typeof entry.description).toBe("string");
-    expect(entry.description.length).toBeGreaterThan(0);
-    expect(typeof entry.register).toBe("function");
-    expect(entry.channelPlugin).toBe(sabhaPlugin);
-    expect(entry.configSchema).toBeDefined();
-  });
-
-  it("setup entry wraps the same plugin object the channel entry exposes", () => {
-    expect(setupEntry.plugin).toBe(sabhaPlugin);
-    expect(setupEntry.plugin).toBe(entry.channelPlugin);
+describe("sabha bundled entries", () => {
+  assertBundledChannelEntries({
+    entry,
+    expectedId: "sabha",
+    expectedName: "Sabha",
+    setupEntry,
   });
 
   it("plugin object declares the chat-channel surface the loader reads", () => {

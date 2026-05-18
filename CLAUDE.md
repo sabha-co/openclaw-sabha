@@ -20,7 +20,7 @@ npm run lint:fix
 npm run build                         # tsc -> dist/ (typecheck + emit)
 ```
 
-There is no dev server. To exercise the plugin end-to-end, install it into a local OpenClaw checkout (`openclaw plugins install -l .`) and `openclaw gateway restart`.
+There is no dev server. To exercise the plugin end-to-end, run `npm run build` first (the manifest points at `./dist/index.js`, not `./index.ts`, so the loader needs compiled output), then install it into a local OpenClaw checkout (`openclaw plugins install -l .`) and `openclaw gateway restart`. After source edits, re-run `npm run build` before the gateway picks them up.
 
 ## Module system quirk
 

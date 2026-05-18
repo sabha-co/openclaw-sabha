@@ -4,6 +4,7 @@ import { createSabhaRetryRunner } from "./retry.js";
 import { buildWebSocketUrl } from "./monitor.js";
 import {
   defaultWebSocketFactory,
+  loadWsConstructor,
   type SabhaWebSocketFactory,
   type WebSocketLike,
 } from "./monitor-websocket.js";
@@ -84,6 +85,9 @@ export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
   );
 
   // --- Check 3: WebSocket subscribe ---
+  if (!opts.webSocketFactory) {
+    await loadWsConstructor();
+  }
   checks.push(
     await probeWebSocket(
       account,

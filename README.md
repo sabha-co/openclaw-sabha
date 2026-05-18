@@ -149,13 +149,16 @@ Install from source for local development or debugging:
 ```bash
 git clone https://github.com/sabha-co/openclaw-sabha.git
 cd openclaw-sabha
-npm install --omit=dev
+npm install
+npm run build
 openclaw plugins install .
 ```
 
+`npm run build` is required: the plugin manifest points the OpenClaw loader at `./dist/index.js`, which doesn't exist until `tsc` has run. `npm install` (not `--omit=dev`) is needed so TypeScript is on the path.
+
 This copies the plugin into OpenClaw's managed plugin directory, where it surfaces in `openclaw configure --section channels` and the rest of the channel CLI.
 
-For active development with edit-in-place, swap the install line for `openclaw plugins install -l .`. Linked installs go into `plugins.load.paths`, which currently aren't surfaced by the configure menu (upstream OpenClaw catalog-discovery gap); configure sabha by hand-editing `channels.sabha` in `~/.openclaw/openclaw.json` while linked.
+For active development with edit-in-place, swap the install line for `openclaw plugins install -l .`. Linked installs still read `./dist/index.js`, so re-run `npm run build` after edits before restarting the gateway. Linked installs go into `plugins.load.paths`, which currently aren't surfaced by the configure menu (upstream OpenClaw catalog-discovery gap); configure sabha by hand-editing `channels.sabha` in `~/.openclaw/openclaw.json` while linked.
 
 Run tests:
 

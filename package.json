@@ -14,13 +14,14 @@
     "index.ts",
     "setup-entry.ts",
     "src/",
+    "dist/",
     "openclaw.plugin.json"
   ],
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
-    "setupEntry": "./setup-entry.ts",
+    "setupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "sabha",
       "label": "Sabha",

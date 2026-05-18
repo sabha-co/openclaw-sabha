@@ -1,4 +1,4 @@
-import WebSocket from "ws";
+import type WebSocket from "ws";
 import type { ConnectionStatus } from "./types.js";
 
 // -- ActionCable protocol types --
@@ -27,8 +27,27 @@ export type WebSocketLike = {
 
 export type SabhaWebSocketFactory = (url: string) => WebSocketLike;
 
-export const defaultWebSocketFactory: SabhaWebSocketFactory = (url) =>
-  new WebSocket(url) as WebSocketLike;
+let _wsCtor: typeof WebSocket | undefined;
+
+// `ws/wrapper.mjs` is ESM but its lib/*.js leaves are CJS, so a static
+// `import` of "ws" forces the gateway's cold-start ESM loader through
+// loadCJSModuleWithModuleLoad. On Node 24.x that bridge hits an internal
+// assertion when the host's CJS cache is already warm. Deferring the
+// import keeps the ws subgraph out of the cold-load window — call this
+// once before `defaultWebSocketFactory` is invoked.
+export async function loadWsConstructor(): Promise<void> {
+  if (_wsCtor) return;
+  _wsCtor = (await import("ws")).default;
+}
+
+export const defaultWebSocketFactory: SabhaWebSocketFactory = (url) => {
+  if (!_wsCtor) {
+    throw new Error(
+      "ws constructor not loaded — call loadWsConstructor() before defaultWebSocketFactory()",
+    );
+  }
+  return new _wsCtor(url) as WebSocketLike;
+};
 
 // -- Connect once --
 
@@ -97,8 +116,12 @@ export class SubscriptionRejectedError extends Error {
  */
 export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<void> {
   const factory = opts.webSocketFactory ?? defaultWebSocketFactory;
+  const usingDefaultFactory = !opts.webSocketFactory;
 
   return async () => {
+    if (usingDefaultFactory) {
+      await loadWsConstructor();
+    }
     const ws = factory(opts.wsUrl);
     const onAbort = () => ws.terminate();
     opts.abortSignal?.addEventListener("abort", onAbort, { once: true });

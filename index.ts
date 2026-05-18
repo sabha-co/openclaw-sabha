@@ -1,4 +1,7 @@
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
+import {
+  defineChannelPluginEntry,
+  type OpenClawConfig,
+} from "openclaw/plugin-sdk/channel-core";
 import { sabhaPlugin } from "./src/channel.js";
 import {
   listConfiguredSabhaAccountIds,
@@ -15,7 +18,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
   // CLI-only registration path: runs on `openclaw sabha …` without loading the
   // full plugin (gateway, services, etc.)
   registerCliMetadata(api) {
-    const getConfig = () => api.runtime.config.loadConfig();
+    const getConfig = () => api.runtime.config.current() as OpenClawConfig;
 
     api.registerCli(
       async ({ program }) => {
@@ -23,7 +26,12 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
         registerSabhaCli({
           program,
           getConfig,
-          writeConfigFile: (cfg) => api.runtime.config.writeConfigFile(cfg),
+          writeConfigFile: async (cfg) => {
+            await api.runtime.config.replaceConfigFile({
+              nextConfig: cfg,
+              afterWrite: { mode: "auto" },
+            });
+          },
         });
       },
       {
@@ -39,7 +47,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry> = defineChannelPluginEn
   },
 
   registerFull(api) {
-    const getConfig = () => api.runtime.config.loadConfig();
+    const getConfig = () => api.runtime.config.current() as OpenClawConfig;
     const cfg = getConfig();
 
     // Detect the silent-skip case: `channels.sabha` is set (operator thinks

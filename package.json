@@ -19,9 +19,13 @@
   ],
   "openclaw": {
     "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-entry.ts",
+    "runtimeExtensions": [
       "./dist/index.js"
     ],
-    "setupEntry": "./dist/setup-entry.js",
+    "runtimeSetupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "sabha",
       "label": "Sabha",

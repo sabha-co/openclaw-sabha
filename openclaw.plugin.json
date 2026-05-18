@@ -1,6 +1,5 @@
 {
   "id": "sabha",
-  "kind": "channel",
   "channels": ["sabha"],
   "contracts": {
     "tools": ["sabha_search_members", "sabha_create_dm"]

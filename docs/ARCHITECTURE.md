@@ -56,10 +56,11 @@ WebSocket typing "stop" whisper fires
 ## File Structure
 
 ```
-index.ts                Full-runtime entry — defineChannelPluginEntry
-                        Registers agent tools.
+index.ts                Full-runtime entry — defineBundledChannelEntry
+                        Tiny shim: one SDK import; plugin loads lazily
+                        via string specifier. Registers agent tools.
 
-setup-entry.ts          Setup-only entry — defineSetupPluginEntry
+setup-entry.ts          Setup-only entry — defineBundledChannelSetupEntry
                         Lightweight; loaded by `openclaw configure`
                         without the gateway / monitor / HTTP stack
 
@@ -522,7 +523,8 @@ Multi-tenant note: `buildWebSocketUrl` extracts a 7+ digit path prefix from `bas
 ## Dependencies
 
 - `openclaw` — Plugin SDK. Subpaths used:
-  - `plugin-sdk/channel-core` — `createChatChannelPlugin`, `defineChannelPluginEntry`, `PluginRuntime`
+  - `plugin-sdk/channel-core` — `createChatChannelPlugin`, `PluginRuntime`, `OpenClawConfig`
+  - `plugin-sdk/channel-entry-contract` — `defineBundledChannelEntry`, `defineBundledChannelSetupEntry`, `OpenClawPluginApi`
   - `plugin-sdk/channel-setup` — `ChannelSetupWizard`
   - `plugin-sdk/channel-inbound` + `plugin-sdk/inbound-reply-dispatch` — shared inbound dispatch
   - `plugin-sdk/account-core` — `DEFAULT_ACCOUNT_ID`, `normalizeAccountId`, `listCombinedAccountIds`, `resolveListedDefaultAccountId`, `resolveMergedAccountConfig`

@@ -1,6 +1,6 @@
 # Close SDK parity gaps with bundled peers
 
-**Status:** Mostly shipped (2026-05-01). Phase 1, Phase 2 minimum viable subset, and Phase 2.5 (`resolveDeliveryTarget` + `inferTargetChatType`) are all live; Phase 3 and Phase 4 deferred per their entry conditions; two new bug classes surfaced during implementation are also closed.
+**Status:** Mostly shipped. Phase 1, Phase 2 minimum viable subset, Phase 2.5 (`resolveDeliveryTarget` + `inferTargetChatType`), and **Phase 3 (`threading.buildToolContext`, shipped 2026-05-19)** are all live; Phase 4 deferred per its entry condition; two new bug classes surfaced during implementation are also closed.
 **Problem area:** Sabha is an externally-installed channel plugin (`@sabha-co/openclaw-sabha`, origin `"global"`) and has accumulated several quiet divergences from the bundled-peer baseline — fields and slots the SDK silently relies on. Most are no-ops in the happy path; each manifests as a confusing "agent confabulates / target unknown / sub-agent loses thread" failure when an edge case fires.
 
 ## What shipped on 2026-05-01
@@ -13,7 +13,11 @@ Re-deploy on the VPS confirmed the "edit your last message to 'ok'" workflow end
 - `3c57961` — `send`/`thread-reply`/`edit`/`unsend`/`react` write actions also switched to `jsonResult`. Drops the `ok` helper entirely; Sabha now matches Slack/Discord uniformly.
 - `140c3d5` — Phase 1: `MessageThreadId` and `WasMentioned` on inbound `MsgContext`. Tests cover thread/non-thread × group/DM × mention/no-mention cells. Latent bug — closes the sub-agent-thread-escape and per-thread-transcript-collapse risks before they bite.
 
-Untouched: Phase 3 (`threading.buildToolContext`), Phase 4 (`secrets`), and the two deferred Phase 2 sub-fields (`resolveDeliveryTarget`, `inferTargetChatType`) below.
+Untouched: Phase 4 (`secrets`).
+
+## What shipped on 2026-05-19
+
+- Phase 3 (`threading.buildToolContext`) triggered — `[sabha-action] enter action=send … replyToMode=-` showed up in production for a top-level group inbound (room `General`, msg 174), and the agent's reply landed in roomId=1 (parent) instead of the thread. Root cause: the SDK's `message-action-runner-*.js:resolveAndApplyOutboundReplyToId` reads `toolContext.replyToMode` to decide whether to auto-inject `replyTo` into the agent's `message.send` params; without a plugin-owned `buildToolContext`, the SDK fall-through returns a context without `replyToMode`, so the auto-inject skips and the reply lands flat in the parent room. Fix: `buildSabhaThreadingToolContext` in `src/messaging.ts`, wired via `threading.buildToolContext` in `src/channel.ts`. Forces `replyToMode: "off"` for in-thread inbounds (the room already IS the thread room) and for DMs; otherwise surfaces `account.replyToMode` so auto-inject threads the first message-tool send. This was deferred per the original entry condition ("until live logs show empty `currentThreadTs` correlating with a user-visible bug") — the trigger was a behavior shift in the SDK (recent CHANGELOG entries about preserving source-reply delivery metadata for `tools.message` source replies) that started routing inbound replies through the `message` tool instead of the deliver pipeline.
 
 ## Goal
 
@@ -245,7 +249,7 @@ Tests for both at `src/messaging.test.ts` cover prefix matching, bare-numeric un
 
 **Bake observation:** the `[sabha-action]` debug logs since deploy show `read` / `react` / `search` resolving cleanly against bare-numeric room ids. No double-route or dedup-miss signals. Original Phase 2 risk (subtle dedup behavior shift) does not appear to have manifested in the first ~hour of live traffic; keep watching for ~48h before declaring it bedded in.
 
-### Phase 3 — `threading.buildToolContext` (1 PR, ½ day, do only when triggered)
+### Phase 3 — `threading.buildToolContext` (shipped 2026-05-19)
 
 Implement `buildToolContext({ cfg, accountId, context, hasRepliedRef })` returning:
 

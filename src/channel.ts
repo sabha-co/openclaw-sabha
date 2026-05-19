@@ -30,6 +30,7 @@ import {
 } from "./directory.js";
 import { sabhaMessageActions } from "./message-actions.js";
 import {
+  buildSabhaThreadingToolContext,
   inferSabhaTargetChatType,
   looksLikeSabhaTargetId,
   normalizeSabhaMessagingTarget,
@@ -521,6 +522,18 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
       const account = resolveSabhaAccount({ cfg, accountId });
       return account.replyToMode;
     },
+    // Surface `replyToMode` (and currentChannelId / currentMessageId /
+    // currentThreadTs / hasRepliedRef) on the SDK's tool context so the
+    // `message.send` auto-inject path threads the agent's first reply
+    // for top-level group inbounds. Without this hook, the SDK's
+    // fall-through context omits `replyToMode`, which makes
+    // `resolveAndApplyOutboundReplyToId` (message-action-runner-*.js)
+    // short-circuit at `mode === "off"` and the agent's reply lands
+    // in the parent room instead of the thread. Forces "off" for
+    // in-thread inbounds (Sabha's thread room IS the room — auto-inject
+    // would create a nested thread) and DMs (no threads).
+    // See `buildSabhaThreadingToolContext` for the full rationale.
+    buildToolContext: (params) => buildSabhaThreadingToolContext(params),
   },
 
   outbound: {

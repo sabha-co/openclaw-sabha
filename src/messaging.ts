@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
+import { resolveSabhaAccount } from "./accounts.js";
 import { resolveSabhaTargets } from "./resolver.js";
 
 /**
@@ -233,4 +234,113 @@ export function resolveSabhaDeliveryTarget(params: {
     return { to: `channel:${parent}`, threadId: child };
   }
   return { to: `channel:${child}` };
+}
+
+type ThreadingToolContextInput = {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  context: {
+    To?: string;
+    ChatType?: string;
+    CurrentMessageId?: string | number;
+    MessageThreadId?: string | number;
+    ReplyToId?: string;
+  };
+  hasRepliedRef?: { value: boolean };
+};
+
+type ThreadingToolContextOutput = {
+  currentChannelId?: string;
+  currentMessageId?: string | number;
+  currentThreadTs?: string;
+  replyToMode?: "off" | "first" | "all" | "batched";
+  hasRepliedRef?: { value: boolean };
+};
+
+/**
+ * Plugin-owned `threading.buildToolContext`. Read by the SDK at
+ * `agent-runner-utils-*.js` (the auto-generated id varies by build) and
+ * fed into `message-action-runner-*.js:resolveAndApplyOutboundReplyToId`,
+ * which is where the SDK auto-injects `replyTo` into the agent's
+ * `message.send` params before dispatch.
+ *
+ * Why we need this: when the agent replies via `message.send` (rather
+ * than yielding plain text that flows through the deliver pipeline in
+ * `monitor.ts`), the message-action-runner is the one that decides
+ * whether to thread the reply. It looks at `toolContext.replyToMode`
+ * + `toolContext.currentMessageId` + `toolContext.currentChannelId`
+ * + `toolContext.hasRepliedRef`. Without a plugin-owned `buildToolContext`,
+ * the SDK fall-through at `agent-runner-utils-*.js:151-156` returns a
+ * context **without** `replyToMode`, so the auto-inject at
+ * `message-action-runner-*.js:443-467` short-circuits at
+ * `if (mode === "off" || mode === "batched") return;` — and the
+ * resulting `send` lands in the parent room instead of the thread.
+ *
+ * The fix: surface `account.replyToMode` so the auto-inject path sees
+ * "first" / "all" and copies `currentMessageId` into `actionParams.replyTo`.
+ * `src/message-actions.ts:send` already reads `replyTo` / `replyToId` and
+ * passes it as `parentMessageId` to the wire client, which threads the
+ * server-side via `Rooms::Thread.find_or_create_for`.
+ *
+ * We force-collapse `replyToMode` to `"off"` for two inbound shapes where
+ * auto-injection would do the wrong thing:
+ *
+ *   - **In-thread inbounds** — `payload.room.id` already IS the thread
+ *     room, so sending to it lands in the thread. Auto-injecting
+ *     `parentMessageId` on top would create a nested thread (server
+ *     resolves a thread room for the parent message via
+ *     `Rooms::Thread.find_or_create_for`).
+ *   - **DMs** — Sabha doesn't model threads in direct messages.
+ *
+ * The remaining cell (top-level group / channel inbound) is exactly
+ * where the deliver-path `shouldThread` gate in `monitor.ts` would have
+ * threaded, so the message-tool path now matches the deliver path.
+ *
+ * Shipped 2026-05-19 after the deferred Phase 3 entry in
+ * `docs/SDK-PARITY-PLAN.md` became a live problem — see the doc for
+ * the original "do only when triggered" framing and the trigger we hit.
+ */
+export function buildSabhaThreadingToolContext(
+  params: ThreadingToolContextInput,
+): ThreadingToolContextOutput {
+  const { cfg, accountId, context, hasRepliedRef } = params;
+  const account = resolveSabhaAccount({
+    cfg,
+    accountId: accountId ?? undefined,
+  });
+
+  const isInThread = context.MessageThreadId != null;
+  const isDm = context.ChatType === "direct";
+
+  // Sabha collapses "first" and "all" semantically (the server's thread
+  // routing is idempotent — repeated parent_message_id posts land in the
+  // same thread room), so reusing `account.replyToMode` directly is
+  // enough to drive auto-inject. `hasRepliedRef` still gates "first" to
+  // a single auto-inject per turn, matching the deliver path.
+  const effectiveReplyToMode =
+    isInThread || isDm ? "off" : account.replyToMode;
+
+  const currentChannelId =
+    typeof context.To === "string" && context.To.trim()
+      ? context.To.trim()
+      : undefined;
+
+  return {
+    currentChannelId,
+    // SDK already falls back to its own `currentMessageId` when our
+    // return value omits it (`agent-runner-utils-*.js:177`), but
+    // surfacing it explicitly is the canonical shape per the parity
+    // plan and matches Slack / Matrix / Telegram peers.
+    currentMessageId: context.CurrentMessageId,
+    // `currentThreadTs` is wired for future thread-aware verbs (e.g. a
+    // hypothetical `thread-info` action) that read it from toolContext.
+    // The auto-inject we care about today doesn't depend on it, but
+    // peers populate it and the SDK happily threads it through.
+    currentThreadTs:
+      context.MessageThreadId != null
+        ? String(context.MessageThreadId)
+        : undefined,
+    replyToMode: effectiveReplyToMode,
+    hasRepliedRef,
+  };
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 import {
+  buildSabhaThreadingToolContext,
   inferSabhaTargetChatType,
   looksLikeSabhaTargetId,
   normalizeSabhaMessagingTarget,
@@ -415,5 +416,148 @@ describe("resolveSabhaDeliveryTarget", () => {
     expect(
       resolveSabhaDeliveryTarget({ conversationId: "   " }),
     ).toBeNull();
+  });
+});
+
+describe("buildSabhaThreadingToolContext", () => {
+  function cfgWith(
+    replyToMode: "off" | "first" | "all" | undefined,
+  ): OpenClawConfig {
+    return {
+      channels: {
+        sabha: {
+          accounts: {
+            a: {
+              apiBaseUrl: "https://sabha.example/api/bots",
+              botKey: "1-A",
+              ...(replyToMode ? { replyToMode } : {}),
+            },
+          },
+          defaultAccount: "a",
+        },
+      },
+    } as unknown as OpenClawConfig;
+  }
+
+  it("surfaces account.replyToMode + ids for a top-level group inbound", () => {
+    // This is the failure cell that motivated the helper. Without
+    // `replyToMode` on the tool context, `message-action-runner-*.js`'s
+    // `resolveAndApplyOutboundReplyToId` short-circuits and a `send`
+    // action lands in the parent room instead of the thread.
+    const hasRepliedRef = { value: false };
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("first"),
+      accountId: "a",
+      context: {
+        To: "1",
+        ChatType: "channel",
+        CurrentMessageId: "174",
+      },
+      hasRepliedRef,
+    });
+    expect(out).toEqual({
+      currentChannelId: "1",
+      currentMessageId: "174",
+      currentThreadTs: undefined,
+      replyToMode: "first",
+      hasRepliedRef,
+    });
+  });
+
+  it("forces replyToMode to 'off' for in-thread inbounds", () => {
+    // Sabha threads ARE rooms — payload.room.id is the thread room.
+    // Auto-injecting parentMessageId on top would create a nested
+    // thread (server resolves a new thread room for that parent).
+    // Verified against the wire contract documented in CLAUDE.md
+    // ("Threading uses parentMessageId on sendMessage").
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("first"),
+      accountId: "a",
+      context: {
+        To: "42",
+        ChatType: "channel",
+        CurrentMessageId: "200",
+        MessageThreadId: "42",
+      },
+    });
+    expect(out.replyToMode).toBe("off");
+    // currentThreadTs is still surfaced — future thread-aware verbs
+    // (e.g. a hypothetical thread-info action) read it from here.
+    expect(out.currentThreadTs).toBe("42");
+  });
+
+  it("forces replyToMode to 'off' for DMs", () => {
+    // Sabha DMs don't model threads — collapse the mode so the
+    // auto-inject path skips entirely. Same shape as the in-thread
+    // case but driven by ChatType="direct" instead of MessageThreadId.
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("first"),
+      accountId: "a",
+      context: {
+        To: "9",
+        ChatType: "direct",
+        CurrentMessageId: "55",
+      },
+    });
+    expect(out.replyToMode).toBe("off");
+  });
+
+  it("respects account.replyToMode === 'off' on a top-level group", () => {
+    // The "off" cell should round-trip unchanged: an operator that
+    // explicitly opted out of threading must not get auto-threading
+    // back via the tool-context path.
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("off"),
+      accountId: "a",
+      context: {
+        To: "1",
+        ChatType: "channel",
+        CurrentMessageId: "100",
+      },
+    });
+    expect(out.replyToMode).toBe("off");
+  });
+
+  it("defaults to 'first' when no replyToMode is configured", () => {
+    // Match `resolveSabhaAccount`'s default. If this drifts we'd
+    // silently revert to "off" on a fresh install and never thread.
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith(undefined),
+      accountId: "a",
+      context: {
+        To: "1",
+        ChatType: "channel",
+        CurrentMessageId: "100",
+      },
+    });
+    expect(out.replyToMode).toBe("first");
+  });
+
+  it("passes hasRepliedRef through unchanged", () => {
+    // The SDK mutates `.value = true` after auto-inject fires, so the
+    // exact reference must round-trip. Returning a fresh object would
+    // make "first" mode auto-inject every send instead of just the
+    // first one.
+    const ref = { value: true };
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("first"),
+      accountId: "a",
+      context: { To: "1", ChatType: "channel" },
+      hasRepliedRef: ref,
+    });
+    expect(out.hasRepliedRef).toBe(ref);
+  });
+
+  it("trims and drops a blank `To` to undefined currentChannelId", () => {
+    // The SDK's `isSameConversationTarget` gate compares the agent's
+    // `to`/`target` against `currentChannelId.trim()`. Returning an
+    // empty/whitespace string would silently disable auto-inject; we
+    // want it explicitly undefined so the SDK fall-through is honest.
+    const out = buildSabhaThreadingToolContext({
+      cfg: cfgWith("first"),
+      accountId: "a",
+      context: { To: "   ", ChatType: "channel" },
+    });
+    expect(out.currentChannelId).toBeUndefined();
   });
 });

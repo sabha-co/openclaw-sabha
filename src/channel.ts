@@ -1,27 +1,20 @@
 import {
   createChatChannelPlugin,
-  type OpenClawConfig,
   type PluginRuntime,
 } from "openclaw/plugin-sdk/channel-core";
 
 type PluginRuntimeChannel = PluginRuntime["channel"];
-import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
 import {
   createDefaultChannelRuntimeState,
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
-import { z } from "zod";
 import { Type } from "typebox";
 
 import type { ResolvedSabhaAccount } from "./accounts.js";
 import {
-  listSabhaAccountIds,
   resolveSabhaAccount,
-  resolveSabhaAccountForSdk,
-  resolveDefaultSabhaAccountId,
 } from "./accounts.js";
-import { inspectSabhaAccount } from "./account-inspect.js";
 import { SabhaClient } from "./client.js";
 import {
   listSabhaDirectoryGroups,
@@ -39,92 +32,10 @@ import {
 } from "./messaging.js";
 import { chunkMarkdownText } from "./outbound/chunk.js";
 import { resolveSabhaTargets } from "./resolver.js";
-import { sabhaSetupWizard } from "./setup-wizard.js";
-import {
-  sabhaNamedAccountPromotionKeys,
-  sabhaSetupAdapter,
-  sabhaSingleAccountKeysToMove,
-} from "./setup-contract.js";
+import { sabhaSetupPlugin } from "./channel-setup.js";
 import { monitorSabha } from "./monitor.js";
 import { fetchGuardedAttachment } from "./ssrf-guard.js";
 
-const SabhaAccountSchema = z.object({
-  enabled: z.boolean().optional(),
-  baseUrl: z.string().optional(),
-  apiBaseUrl: z.string().optional(),
-  botKey: z.string().optional(),
-  botName: z.string().optional(),
-  websocketUrl: z.string().optional(),
-  typingEnabled: z.boolean().optional(),
-  dmPolicy: z.enum(["open", "allowlist"]).optional(),
-  allowFrom: z.array(z.string()).optional(),
-  allowPrivateAttachmentHosts: z.boolean().optional(),
-  replyToMode: z.enum(["off", "first", "all"]).optional(),
-});
-
-const SabhaRoomConfigSchema = z.object({
-  systemPrompt: z.string().optional(),
-});
-
-const SabhaConfigSchema = SabhaAccountSchema.extend({
-  rooms: z.record(z.string(), SabhaRoomConfigSchema).optional(),
-  accounts: z.record(z.string(), SabhaAccountSchema.partial()).optional(),
-  defaultAccount: z.string().optional(),
-});
-
-const sabhaConfigSchema = buildChannelConfigSchema(SabhaConfigSchema, {
-  uiHints: {
-    enabled: { label: "Enabled" },
-    baseUrl: {
-      label: "Server URL",
-      placeholder: "https://sabha.co/1000006",
-      help: "Sabha server URL (include workspace ID for multi-tenant)",
-    },
-    apiBaseUrl: {
-      label: "Bot API base URL",
-      placeholder: "https://sabha.co/1000006/api/bots",
-      advanced: true,
-      help: "Auto-detected from registration; endpoint for bearer-auth HTTP calls",
-    },
-    botKey: {
-      label: "Bot key",
-      placeholder: "42-AbCdEfGhIjKl",
-      sensitive: true,
-      help: "Bot key from registration via join code",
-    },
-    botName: {
-      label: "Bot display name",
-      placeholder: "OpenClaw",
-      advanced: true,
-      help: "Shown to users in typing indicators",
-    },
-    typingEnabled: {
-      label: "Typing indicators",
-      advanced: true,
-      help: "Show 'Bot is typing...' while processing",
-    },
-    websocketUrl: {
-      label: "WebSocket URL",
-      advanced: true,
-      help: "Auto-detected from registration",
-    },
-    dmPolicy: { label: "DM policy" },
-    allowFrom: {
-      label: "Allow list",
-      advanced: true,
-      help: "User IDs for allowlist mode",
-    },
-    allowPrivateAttachmentHosts: {
-      label: "Allow private attachment hosts",
-      advanced: true,
-      help: "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups.",
-    },
-    replyToMode: {
-      label: "Reply threading mode",
-      help: '"off" = inline, "first" = thread on first reply, "all" = always thread',
-    },
-  },
-});
 
 function getClient(account: ResolvedSabhaAccount): SabhaClient {
   return new SabhaClient(account.apiBaseUrl, account.botKey);
@@ -144,53 +55,7 @@ function waitForAbort(abortSignal: AbortSignal): Promise<void> {
 
 export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
   base: {
-    id: "sabha",
-    setupWizard: sabhaSetupWizard,
-    meta: {
-      id: "sabha",
-      label: "Sabha",
-      selectionLabel: "Sabha (Bot API)",
-      detailLabel: "Sabha Bot",
-      docsPath: "/channels/sabha",
-      docsLabel: "sabha",
-      systemImage: "bubble.left.and.bubble.right",
-      blurb: "Connect OpenClaw to a Sabha chat server.",
-    },
-    configSchema: sabhaConfigSchema,
-    capabilities: {
-      chatTypes: ["direct", "group", "channel", "thread"],
-      reactions: true,
-      edit: true,
-      unsend: true,
-      reply: true,
-      threads: true,
-      media: true,
-      blockStreaming: true,
-    },
-    // Setup-promotion contract for the SDK's setup wizard
-    // (`setup-wizard-helpers-*.js` calls
-    // `moveSingleAccountChannelSectionToDefaultAccount` during
-    // `openclaw configure`). Without these arrays, the wizard's
-    // promotion step only moves keys in the SDK's static common set
-    // (`dmPolicy`, `allowFrom`, etc.) — none of which include Sabha's
-    // actual credentials. See `src/setup-contract.ts`.
-    setup: {
-      ...sabhaSetupAdapter,
-      singleAccountKeysToMove: sabhaSingleAccountKeysToMove,
-      namedAccountPromotionKeys: sabhaNamedAccountPromotionKeys,
-    },
-    config: {
-      resolveAccount: resolveSabhaAccountForSdk,
-      listAccountIds: listSabhaAccountIds,
-      defaultAccountId: resolveDefaultSabhaAccountId,
-      // Per-account read-only snapshot for the OpenClaw doctor / audit-channel
-      // layer. Returns the tri-state credential status and full merged config
-      // shape that peers (Slack/Discord/Telegram) ship — see `src/account-inspect.ts`
-      // for the Sabha-tailored shape and the rationale for the omitted bits
-      // (no env-var path, no tokenFile indirection).
-      inspectAccount: (cfg: OpenClawConfig, accountId?: string | null) =>
-        inspectSabhaAccount({ cfg, accountId }),
-    },
+    ...sabhaSetupPlugin,
     // Channel-owned action surface for the shared `message` tool.
     // Discovery half (which actions Sabha supports) lives here; dispatch
     // half (executing each action against `SabhaClient`) lives in
@@ -501,15 +366,6 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount>({
           await waitForAbort(ctx.abortSignal);
         }
       },
-    },
-  },
-
-  security: {
-    dm: {
-      channelKey: "sabha",
-      resolvePolicy: (account: ResolvedSabhaAccount) => account.dmPolicy,
-      resolveAllowFrom: (account: ResolvedSabhaAccount) => account.allowFrom,
-      defaultPolicy: "open",
     },
   },
 

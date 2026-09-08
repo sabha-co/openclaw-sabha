@@ -1,12 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   createAccountListHelpers,
-  resolveMergedAccountConfig,
 } from "openclaw/plugin-sdk/account-helpers";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-core";
 
 import type { SabhaConfig, SabhaRoomConfig } from "./types.js";
-import { extractBotId } from "./client.js";
+import { extractBotId } from "./bot-id.js";
 
 // Multi-account config shape (canonical SDK keys — matches Feishu / Slack /
 // Discord). The plugin reads `channels.sabha.accounts.<id>` layered over the
@@ -55,7 +54,7 @@ const helpers = createAccountListHelpers("sabha");
  * plugins) — `gateway.startAccount` will run for it but skip the
  * WebSocket monitor unless credentials are present.
  */
-export const listSabhaAccountIds = helpers.listAccountIds;
+export const listSabhaAccountIds = (cfg: OpenClawConfig): string[] => helpers.listConfiguredAccountIds(cfg).sort();
 
 /**
  * Account ids the operator has *explicitly* configured under
@@ -90,18 +89,11 @@ export function mergeSabhaAccountConfig(
   accountId: string,
 ): SabhaConfig {
   const section = getSabhaSection(cfg);
-  return resolveMergedAccountConfig<SabhaConfig & Record<string, unknown>>({
-    channelConfig: section as
-      | (SabhaConfig & Record<string, unknown>)
-      | undefined,
-    accounts: section?.accounts as
-      | Record<string, Partial<SabhaConfig & Record<string, unknown>>>
-      | undefined,
-    accountId,
-    // SDK's mergeAccountConfig auto-omits `accounts`; we only need to
-    // strip the channel-level `defaultAccount` selector.
-    omitKeys: ["defaultAccount"],
-  });
+  const account = section?.accounts?.[accountId];
+  if (!account) return {};
+  const { accounts: _accounts, defaultAccount: _default, botKey: _key, botName: _name, websocketUrl: _ws, ...shared } = section ?? {};
+  return { ...shared, ...account };
+
 }
 
 type ResolveSabhaAccountParams = {

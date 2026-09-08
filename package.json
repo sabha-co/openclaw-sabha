@@ -35,7 +35,72 @@
       "docsLabel": "sabha",
       "systemImage": "bubble.left.and.bubble.right",
       "blurb": "Connect OpenClaw to a Sabha chat server.",
-      "markdownCapable": true
+      "markdownCapable": true,
+      "setup": {
+        "fields": [
+          {
+            "kind": "string",
+            "cli": {
+              "flags": "--base-url <url>",
+              "description": "Sabha server URL including workspace prefix"
+            },
+            "key": "baseUrl"
+          },
+          {
+            "kind": "string",
+            "cli": {
+              "flags": "--api-base-url <url>",
+              "description": "Sabha bot API URL"
+            },
+            "key": "apiBaseUrl"
+          },
+          {
+            "kind": "string",
+            "sensitive": true,
+            "cli": {
+              "flags": "--bot-key <key>",
+              "description": "Sabha bot key"
+            },
+            "key": "botKey"
+          },
+          {
+            "kind": "string",
+            "cli": {
+              "flags": "--bot-name <name>",
+              "description": "Bot display name"
+            },
+            "key": "botName"
+          },
+          {
+            "kind": "string",
+            "cli": {
+              "flags": "--websocket-url <url>",
+              "description": "Sabha cable URL"
+            },
+            "key": "websocketUrl"
+          },
+          {
+            "kind": "choice",
+            "choices": [
+              "open",
+              "allowlist"
+            ],
+            "cli": {
+              "flags": "--dm-policy <policy>",
+              "description": "DM admission policy"
+            },
+            "key": "dmPolicy"
+          },
+          {
+            "kind": "string-list",
+            "cli": {
+              "flags": "--allow-from <ids>",
+              "description": "Allowed Sabha user IDs"
+            },
+            "key": "allowFrom"
+          }
+        ]
+      }
     },
     "install": {
       "npmSpec": "@sabha-co/openclaw-sabha",
@@ -54,7 +119,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "manifest:generate": "npm run build && node scripts/generate-manifest.mjs",
+    "manifest:check": "node scripts/generate-manifest.mjs --check",
+    "prepack": "npm run manifest:generate"
   },
   "dependencies": {
     "typebox": "1.3.18",

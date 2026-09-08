@@ -1,14 +1,35 @@
 {
   "id": "sabha",
-  "channels": ["sabha"],
-  "contracts": {
-    "tools": ["sabha_search_members", "sabha_create_dm"]
-  },
+  "channels": [
+    "sabha"
+  ],
   "name": "Sabha",
   "description": "Connect OpenClaw to a Sabha chat server",
+  "version": "2026.5.19",
+  "contracts": {
+    "tools": [
+      "sabha_search_members",
+      "sabha_create_dm"
+    ]
+  },
+  "toolMetadata": {
+    "sabha_search_members": {
+      "replaySafe": true
+    },
+    "sabha_create_dm": {
+      "sideEffecting": true
+    }
+  },
+  "cliCommands": [
+    {
+      "name": "sabha",
+      "description": "Sabha channel commands",
+      "hasSubcommands": true
+    }
+  ],
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
+    "additionalProperties": false,
     "properties": {}
   },
   "channelConfigs": {
@@ -16,138 +37,191 @@
       "label": "Sabha",
       "description": "Connect to a Sabha chat server via WebSocket.",
       "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
-        "additionalProperties": false,
         "properties": {
           "enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "Enable or disable the Sabha channel."
+            "type": "boolean"
           },
           "baseUrl": {
-            "type": "string",
-            "description": "Sabha server URL (site root) including workspace ID for multi-tenant (e.g. https://sabha.co/1000006). The setup wizard hits {baseUrl}/skill to verify the URL points at a Sabha server."
+            "type": "string"
           },
           "apiBaseUrl": {
-            "type": "string",
-            "description": "Bot API base URL (e.g. https://sabha.co/1000006/api/bots). Auto-populated from the registration response; bearer-auth HTTP calls go here."
-          },
-          "botKey": {
-            "type": "string",
-            "description": "Bot key from registration via join code (e.g. 42-AbCdEfGhIjKl)."
-          },
-          "botName": {
-            "type": "string",
-            "description": "Bot display name shown to users in typing indicators."
-          },
-          "websocketUrl": {
-            "type": "string",
-            "description": "WebSocket URL (auto-detected from registration). Override only if needed."
+            "type": "string"
           },
           "typingEnabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "Show 'Bot is typing...' while processing (WebSocket mode only)."
+            "type": "boolean"
           },
           "dmPolicy": {
             "type": "string",
-            "enum": ["open", "allowlist"],
-            "default": "open",
-            "description": "Who can send direct messages to the bot."
+            "enum": [
+              "open",
+              "allowlist"
+            ]
           },
           "allowFrom": {
             "type": "array",
-            "items": { "type": "string" },
-            "description": "User IDs allowed to DM (allowlist mode only)."
+            "items": {
+              "type": "string"
+            }
           },
           "allowPrivateAttachmentHosts": {
-            "type": "boolean",
-            "description": "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups."
+            "type": "boolean"
           },
           "replyToMode": {
             "type": "string",
-            "enum": ["off", "first", "all"],
-            "default": "first",
-            "description": "Threading mode. 'off' = inline replies; 'first' = thread on first reply; 'all' = always thread."
+            "enum": [
+              "off",
+              "first",
+              "all"
+            ]
           },
           "rooms": {
             "type": "object",
-            "description": "Per-room overrides keyed by room id. Used for per-room system prompts.",
-            "propertyNames": { "type": "string" },
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "type": "object",
-              "additionalProperties": false,
               "properties": {
-                "systemPrompt": { "type": "string" }
-              }
+                "systemPrompt": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "accounts": {
             "type": "object",
-            "description": "Named bot accounts layered over the base config for multi-bot setups.",
-            "propertyNames": { "type": "string" },
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "type": "object",
-              "additionalProperties": false,
               "properties": {
-                "enabled": { "type": "boolean" },
-                "baseUrl": { "type": "string" },
-                "apiBaseUrl": { "type": "string" },
-                "botKey": { "type": "string" },
-                "botName": { "type": "string" },
-                "websocketUrl": { "type": "string" },
-                "typingEnabled": { "type": "boolean" },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "apiBaseUrl": {
+                  "type": "string"
+                },
+                "botKey": {
+                  "type": "string"
+                },
+                "botName": {
+                  "type": "string"
+                },
+                "websocketUrl": {
+                  "type": "string"
+                },
+                "typingEnabled": {
+                  "type": "boolean"
+                },
                 "dmPolicy": {
                   "type": "string",
-                  "enum": ["open", "allowlist"]
+                  "enum": [
+                    "open",
+                    "allowlist"
+                  ]
                 },
                 "allowFrom": {
                   "type": "array",
-                  "items": { "type": "string" }
+                  "items": {
+                    "type": "string"
+                  }
                 },
-                "allowPrivateAttachmentHosts": { "type": "boolean" },
+                "allowPrivateAttachmentHosts": {
+                  "type": "boolean"
+                },
                 "replyToMode": {
                   "type": "string",
-                  "enum": ["off", "first", "all"]
+                  "enum": [
+                    "off",
+                    "first",
+                    "all"
+                  ]
+                },
+                "rooms": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "systemPrompt": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
                 }
-              }
+              },
+              "additionalProperties": false
             }
           },
           "defaultAccount": {
-            "type": "string",
-            "description": "Bot account id used when no explicit account is passed. Defaults to the alphabetic-first entry."
+            "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "uiHints": {
+        "enabled": {
+          "label": "Enabled"
+        },
         "baseUrl": {
           "label": "Server URL",
-          "placeholder": "https://sabha.co/1000006"
+          "placeholder": "https://sabha.co/1000006",
+          "help": "Sabha server URL (include workspace ID for multi-tenant)"
         },
         "apiBaseUrl": {
           "label": "Bot API base URL",
           "placeholder": "https://sabha.co/1000006/api/bots",
-          "advanced": true
+          "advanced": true,
+          "help": "Auto-detected from registration; endpoint for bearer-auth HTTP calls"
         },
-        "botKey": {
+        "accounts.*.botKey": {
           "label": "Bot key",
           "placeholder": "42-AbCdEfGhIjKl",
-          "sensitive": true
+          "sensitive": true,
+          "help": "Bot key from registration via join code"
         },
-        "websocketUrl": {
+        "accounts.*.botName": {
+          "label": "Bot display name",
+          "placeholder": "OpenClaw",
+          "advanced": true,
+          "help": "Shown to users in typing indicators"
+        },
+        "typingEnabled": {
+          "label": "Typing indicators",
+          "advanced": true,
+          "help": "Show 'Bot is typing...' while processing"
+        },
+        "accounts.*.websocketUrl": {
           "label": "WebSocket URL",
-          "advanced": true
+          "advanced": true,
+          "help": "Auto-detected from registration"
         },
         "dmPolicy": {
           "label": "DM policy"
         },
         "allowFrom": {
           "label": "Allow list",
-          "advanced": true
+          "advanced": true,
+          "help": "User IDs for allowlist mode"
+        },
+        "allowPrivateAttachmentHosts": {
+          "label": "Allow private attachment hosts",
+          "advanced": true,
+          "help": "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups."
         },
         "replyToMode": {
           "label": "Reply threading mode",
-          "advanced": true
+          "help": "\"off\" = inline, \"first\" = thread on first reply, \"all\" = always thread"
         }
       }
     }

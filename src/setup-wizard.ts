@@ -5,7 +5,6 @@ import {
   normalizeAccountId,
 } from "openclaw/plugin-sdk/account-core";
 import type { SabhaConfig, SabhaRoom } from "./types.js";
-import { SabhaClient, SabhaApiError } from "./client.js";
 import {
   listSabhaAccountIds,
   mergeSabhaAccountConfig,
@@ -140,6 +139,7 @@ async function autoJoinOpenRooms(
   botKey: string,
   prompter: WizardPrompter,
 ): Promise<void> {
+  const { SabhaClient } = await import("./client.js");
   const client = new SabhaClient(apiBaseUrl, botKey);
 
   let joinable: SabhaRoom[];
@@ -285,6 +285,7 @@ async function probeBotKey(
   // `/api/bots` scope. If a self-hosted Sabha ever mounts the bot API
   // under a different path, this will false-negative — we can revisit
   // when that happens.
+  const { SabhaClient, SabhaApiError } = await import("./client.js");
   const client = new SabhaClient(`${baseUrl}/api/bots`, botKey);
   try {
     await client.listRooms({ joinable: true });
@@ -478,25 +479,10 @@ export function getSabhaAccountView(
 export function listSabhaAccountIdsWithCredentials(
   cfg: OpenClawConfig,
 ): string[] {
-  const ids: string[] = [];
-
-  const defaultView = getSabhaAccountView(cfg, DEFAULT_ACCOUNT_ID);
-  if (defaultView.baseUrl && defaultView.apiBaseUrl && defaultView.botKey) {
-    ids.push(DEFAULT_ACCOUNT_ID);
-  }
-
-  for (const id of listSabhaAccountIds(cfg)) {
-    if (id === DEFAULT_ACCOUNT_ID) continue;
+  const ids = listSabhaAccountIds(cfg).filter((id) => {
     const view = getSabhaAccountView(cfg, id);
-    if (
-      view.baseUrl &&
-      view.apiBaseUrl &&
-      view.botKey &&
-      !ids.includes(id)
-    ) {
-      ids.push(id);
-    }
-  }
+    return Boolean(view.baseUrl && view.apiBaseUrl && view.botKey);
+  });
 
   return ids;
 }

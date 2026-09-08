@@ -1,7 +1,8 @@
 import { defineChannelPluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { SABHA_TOOL_NAMES, SABHA_CLI_DESCRIPTORS } from "./src/metadata.js";
 import { sabhaPlugin } from "./src/channel.js";
-import { createSabhaTools, SABHA_TOOL_NAMES } from "./src/tools.js";
+import { createSabhaTools } from "./src/tools.js";
 
 const entry: ReturnType<typeof defineChannelPluginEntry<typeof sabhaPlugin>> = defineChannelPluginEntry({
   id: "sabha",
@@ -26,13 +27,7 @@ const entry: ReturnType<typeof defineChannelPluginEntry<typeof sabhaPlugin>> = d
         });
       },
       {
-        descriptors: [
-          {
-            name: "sabha",
-            description: "Sabha channel commands",
-            hasSubcommands: true,
-          },
-        ],
+        descriptors: SABHA_CLI_DESCRIPTORS,
       },
     );
   },

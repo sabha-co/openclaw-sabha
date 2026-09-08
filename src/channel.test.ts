@@ -48,7 +48,7 @@ describe("sabhaPlugin.config", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botKey: "42-AbCdEfGhIjKl",
+      accounts: { default: { botKey: "42-AbCdEfGhIjKl" } },
     });
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;
@@ -82,7 +82,7 @@ describe("sabhaPlugin.config", () => {
   it("inspectAccount reports missing without apiBaseUrl", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co",
-      botKey: "42-AbCdEfGhIjKl",
+      accounts: { default: { botKey: "42-AbCdEfGhIjKl" } },
     });
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;

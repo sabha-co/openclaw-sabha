@@ -28,17 +28,13 @@ describe("listSabhaAccountIds", () => {
     expect(ids).toEqual(["production", "staging"]);
   });
 
-  it("returns the SDK fallback ['default'] when accounts is empty", () => {
-    // Behavior change from the pre-rename helper (which returned []).
-    // Matches Feishu / Slack / Discord — the SDK supplies an implicit
-    // default slot so single-account flat-config mode works without an
-    // explicit `accounts.default` block.
+  it("returns no accounts when accounts is empty", () => {
     const ids = listSabhaAccountIds(cfg({ baseUrl: "x", accounts: {} }));
-    expect(ids).toEqual(["default"]);
+    expect(ids).toEqual([]);
   });
 
-  it("returns the SDK fallback ['default'] when channels.sabha is missing", () => {
-    expect(listSabhaAccountIds({} as OpenClawConfig)).toEqual(["default"]);
+  it("returns no accounts when channels.sabha is missing", () => {
+    expect(listSabhaAccountIds({} as OpenClawConfig)).toEqual([]);
   });
 });
 

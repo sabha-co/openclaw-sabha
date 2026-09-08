@@ -2,7 +2,7 @@ import { Type, type TSchema } from "typebox";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 
-export const SABHA_TOOL_NAMES = ["sabha_search_members", "sabha_create_dm"] as const;
+
 import { SabhaClient } from "./client.js";
 import {
   listSabhaAccountIds,

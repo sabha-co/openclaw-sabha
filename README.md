@@ -16,10 +16,17 @@ OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSock
 - Auto-joins all open rooms on setup
 - Typing indicator while the bot is generating a reply (via AnyCable whisper)
 
+## Requirements and fresh installation
+
+Requires **OpenClaw 2026.9.2+** and **Node 24.15+** (Node 25 requires 25.9+).
+This release targets the OpenClaw 2 plugin architecture. Configure a fresh
+installation; old root credentials and session history are not migrated.
+Credentials belong only under `channels.sabha.accounts.<id>`.
+
 ## Install
 
 ```bash
-openclaw plugins install @sabha-co/openclaw-sabha
+openclaw plugins install @sabha-co/openclaw-sabha --accept-capabilities
 ```
 
 ## Post-install: allowlist the plugin
@@ -96,7 +103,7 @@ openclaw gateway restart
 4. The agent processes the message with an LLM
 5. The plugin replies via Sabha's REST API
 
-In DMs, the bot responds to every message. In rooms, only when @mentioned.
+Open DMs admit every sender; `dmPolicy: "allowlist"` restricts them to `allowFrom`. Top-level rooms require a mention; existing threads continue without another mention.
 
 ## Agent Tools
 
@@ -169,3 +176,26 @@ npm test
 ## License
 
 MIT
+
+## Development verification
+
+```bash
+npm ci --ignore-scripts
+npm run lint
+npm run build
+npm run manifest:check
+npm test
+npm run test:pack
+```
+
+The package test installs the actual archive into disposable OpenClaw state,
+validates metadata and CLI loading, then checks streaming, hook rewrites,
+cancellation, shared-message reaction routing, replay dedup, and fatal-disconnect
+shutdown against fake loopback Sabha servers. It does not
+reinstall your real gateway or send messages to real rooms. Local archive/link
+installation needs the host's `--force --accept-capabilities` flags.
+
+Replies stream as one edited preview unless a modifying hook is installed, in
+which case they wait for the hook-approved final content. Missing send receipts
+are errors rather than reported success. Fresh sessions isolate bot accounts
+even when their servers have overlapping room ids. See [architecture](docs/ARCHITECTURE.md).

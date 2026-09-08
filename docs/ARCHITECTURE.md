@@ -1,540 +1,155 @@
-# Architecture
+# Sabha channel architecture
 
-## Overview
+Target: OpenClaw **2026.9.2**, Node **24.15+** (Node 25 requires 25.9+).
+This is an external channel plugin, installed with id `sabha` and npm name
+`@sabha-co/openclaw-sabha`. It has no standalone server or polling process.
 
-`@sabha-co/openclaw-sabha` is a channel plugin that connects OpenClaw to Sabha's Bot API. It runs inside the OpenClaw gateway process — not as a standalone service. The plugin opens an outbound ActionCable/AnyCable WebSocket connection to Sabha's `/cable` endpoint and subscribes to `BotEventsChannel`. No public IP, reverse proxy, or tunnel is required. Outbound replies always go through Sabha's REST Bot API.
+## Loading and setup
 
-Since 0.9.0 the plugin supports **multiple bot accounts per install**: one `channels.sabha` config slot can run several bot identities concurrently (e.g. `production` and `staging`), each with its own `baseUrl + apiBaseUrl + botKey + botName`. The SDK drives the lifecycle — `gateway.startAccount` is called once per enabled bot account and the plugin stays stateless across them.
+`index.ts` uses `defineChannelPluginEntry`. It registers the channel and two
+named tool factories synchronously. Factories defer config/client access until
+execution and prefer the host's current tool-context config. CLI descriptors
+are static; `src/cli.ts` loads only when a Sabha command is invoked.
 
-```
-Sabha Server                                OpenClaw Gateway
------------                                 ----------------
+`setup-entry.ts` uses `defineSetupPluginEntry` and `src/channel-setup.ts`.
+The setup graph contains schema, account inspection, security, setup contract,
+and wizard metadata. Transport, tools, draft streams, and the HTTP client do
+not load statically through this entry. The wizard imports its client only
+when an operator actually runs a network-dependent setup step.
 
-User sends message / edits / reacts
-  |
-  v
-┌── WebSocket ─────────────────────────┐
-│ BotEventsChannel frame               │ ──> monitor.ts (per bot account)
-│  9 event types (see Inbound events)  │      - dedup (FIFO, 5min / 2000 entries,
-│                                      │        key = `${event}:${id}`)
-│                                      │      - typing start (AnyCable whisper)
-│                                      │      - parseWebhookPayload
-└──────────────────────────────────────┘           |
-                                                   v
-                                             Typed dispatch by payload.event:
-                                             message_created  → processInboundMessage
-                                             message_updated → handleMessageUpdated
-                                             message_deleted → handleMessageDeleted
-                                              boost_created   → handleBoostCreated
-                                              boost_deleted   → handleBoostDeleted
-                                              user_created    → handleUserCreated  (stub)
-                                              user_deleted    → handleUserDeleted  (stub)
-                                                   |
-                                                   v  (message_created only)
-                                              inbound.ts:
-                                                - skip self / unmentioned
-                                                - download attachments (signed URLs)
-                                                - resolveSessionFromPayload
-                                                - formatAgentEnvelope
-                                                - dispatchInboundReplyWithBase
-                                                   |
-                                                   v
-                                              LLM processes message
-                                                   |
-                                                   v
-                                              deliver() callback:
-                                                   |
-POST /api/bots/rooms/{id}/messages   <─────────────┘  SabhaClient.sendMessage
-  |                                                   / replyInThread
-  |                                                   (through retry runner:
-  |                                                    429/5xx + Retry-After)
-  v
-Message appears in Sabha;
-WebSocket typing "stop" whisper fires
+`src/config-schema.ts` owns the Zod schema and UI hints. `src/metadata.ts` owns
+CLI and tool declarations. `scripts/generate-manifest.mjs` projects those and
+`src/setup-contract.ts` into `openclaw.plugin.json` and package setup fields.
+`npm run manifest:check` detects drift; `prepack` builds and regenerates them.
+
+Only `channels.sabha.accounts.<id>` contains credentials and bot identity.
+Shared non-credential defaults remain on `channels.sabha`; account overrides
+win, including `rooms` maps and allowlists. `defaultAccount` selects a bot.
+There is no root-credential fallback, implicit configured bot, setup promotion,
+boot migration, old-host shim, or old-session migration.
+
+## Inbound path
+
+```mermaid
+flowchart LR
+  Sabha[Sabha BotEventsChannel] --> WS[WebSocket monitor]
+  WS --> Dedup[FIFO dedup and in-flight guard]
+  Dedup --> Route[Agent route and account-scoped session]
+  Route --> Admission[SDK ingress policy]
+  Admission --> Media[Typing and immediate guarded media download]
+  Media --> Context[Injected inbound context builder]
+  Context --> Kernel[Injected inbound kernel]
+  Kernel --> Delivery[Native reply and receipt]
+  Delivery --> Sabha
 ```
 
-## File Structure
-
-```
-index.ts                Full-runtime entry — defineBundledChannelEntry
-                        Tiny shim: one SDK import; plugin loads lazily
-                        via string specifier. Registers agent tools.
-
-setup-entry.ts          Setup-only entry — defineBundledChannelSetupEntry
-                        Lightweight; loaded by `openclaw configure`
-                        without the gateway / monitor / HTTP stack
-
-src/
-  channel.ts            Plugin object — createChatChannelPlugin
-                        Capabilities, Zod config schema + UI hints
-                        (including accounts / defaultAccount),
-                        DM security policy, threading mode (per-account
-                        replyToMode read), outbound adapters
-                        (sendText/sendMedia), gateway.startAccount
-                        (launches a WebSocket monitor per bot account),
-                        agentPrompt hints (platform identity preamble +
-                        mention syntax in messageToolHints; markdown
-                        rules in inboundFormattingHints). Wires the
-                        account resolver into the SDK via
-                        config.resolveAccount / listAccountIds.
-
-  accounts.ts           Multi-account model
-                        ResolvedSabhaAccount type, listSabhaAccountIds,
-                        resolveDefaultSabhaAccountId, mergeSabhaAccountConfig,
-                        resolveSabhaAccount, listEnabledSabhaAccounts,
-                        resolveSabhaAccountForSdk (SDK-boundary shim).
-                        Layers `accounts.<id>` overrides on top of the
-                        base `channels.sabha` block via the SDK's
-                        createAccountListHelpers + resolveMergedAccountConfig.
-
-  client.ts             Sabha REST Bot API client
-                        All Bot API endpoints under `/api/bots/*`,
-                        typed responses. Auth via
-                        `Authorization: Bearer <bot_key>` header;
-                        `apiBaseUrl` is the full bot-API base URL
-                        returned in the registration response.
-                        Every fetch runs through the Sabha retry
-                        runner (429/5xx + Retry-After) with
-                        per-attempt AbortSignal rebuild so timeouts
-                        don't leak across retries. SabhaApiError
-                        exposes `retryable: boolean` so callers can
-                        branch without re-importing the predicate.
-                        Also exports extractBotId().
-
-  retry.ts              Sabha retry runner
-                        Thin wrapper around plugin-sdk/retry-runtime's
-                        createRateLimitRetryRunner. Exports:
-                          RETRYABLE_STATUS (429, 502, 503, 504),
-                          isRetryableSabhaError, sabhaRetryAfterMs,
-                          parseRetryAfter (delta-seconds + HTTP-date),
-                          createSabhaRetryRunner({ retry?, verbose? }).
-                        Defaults: 3 attempts, 500ms..30s exponential
-                        backoff, ±20% jitter.
-
-  ssrf-guard.ts         SSRF-safe attachment fetch
-                        fetchGuardedAttachment wraps the SDK's
-                        plugin-sdk/media-runtime fetchRemoteMedia with
-                        a policy derived from
-                        ssrfPolicyFromAllowPrivateNetwork. The
-                        allowPrivateAttachmentHosts per-bot-account
-                        flag is the dangerous-opt-in escape hatch for
-                        corporate / split-horizon DNS. Covers
-                        attachment downloads only; Sabha's own Bot API
-                        baseUrl is operator-configured and trusted by
-                        design.
-
-  doctor.ts             runDoctor({ account }) — runtime health checks
-                        Config validation, listRooms({ perPage: 1 })
-                        first-page reachability probe (NOT a workspace
-                        room count — listRooms is paginated and a
-                        one-page response would mislead operators),
-                        fresh /cable WebSocket subscribe handshake
-                        (connect → welcome → subscribe → confirmed),
-                        webhook-mode soft-fail. Returns a structured
-                        DoctorReport; formatDoctorReport renders
-                        human-readable text for the CLI.
-
-  types.ts              TypeScript types: webhook payloads (discriminated
-                        union by `event` — all 7 variants), rooms,
-                        messages, members, config (accounts +
-                        defaultAccount), delivery payloads,
-                        connection status.
-
-  webhook.ts            Payload parser + helpers
-                        parseWebhookPayload validates each variant's
-                        required shape (user_* omit room/message;
-                        message_* require them; boost_* also require
-                        boost). Plus wasBotMentioned, resolveChatType.
-                        Used by the WebSocket monitor to decode frames.
-
-  session.ts            Sabha room/thread/DM -> OpenClaw session key
-                        resolveSessionFromPayload builds primary and
-                        parentConversationCandidates entries.
-
-  inbound.ts            Inbound processor + typed event handlers
-                        shouldHandleInbound (pre-flight gate reused by
-                        the monitor for typing, applies to created/
-                        updated/deleted variants so bot self-echoes
-                        don't loop). processInboundMessage runs the
-                        full reply pipeline for message_created.
-                        Typed stubs: handleMessageUpdated,
-                        handleMessageDeleted, handleBoostCreated,
-                        handleBoostDeleted, handleUserCreated,
-                        handleUserDeleted. user_* stubs log at DEBUG
-                        and never reach agent-visible surfaces — see
-                        the "Event privacy invariant" decision below.
-
-  monitor.ts            WebSocket monitor orchestration
-                        buildWebSocketUrl (http->ws, multi-tenant wid),
-                        monitorSabha (dedup, typing, typed event
-                        dispatch). All state is scoped per invocation
-                        so per-bot-account monitors don't collide.
-                        Log prefix is `[sabha:<accountId>]`.
-
-  monitor-websocket.ts  Low-level WebSocket lifecycle
-                        createSabhaConnectOnce, ping/pong, subscribe
-                        race handling, DisconnectNoReconnectError,
-                        SubscriptionRejectedError, connection refs.
-
-  reconnect.ts          runWithReconnect — exponential backoff loop
-                        that calls connectOnce, respecting AbortSignal
-                        and distinguishing fatal from retryable errors.
-
-  dedup.ts              createDedupCache — FIFO eviction cache (NOT LRU)
-                        keyed on `${event}:${id}` so the same numeric
-                        id doesn't collide across create / update /
-                        delete / boost variants. Bounded at 2000
-                        entries with a 5-minute TTL.
-
-  typing.ts             TypingManager
-                        Subscribes to TypingNotificationsChannel per
-                        room on demand and emits AnyCable whispers
-                        ({action: "start"|"stop", user}) on the same
-                        WebSocket. Rails never sees these frames.
-
-  tools.ts              Agent tools registered via api.registerTool.
-                        Two tools total: sabha_search_members
-                        (room-scoped name → id; no SDK directory slot
-                        models roomId + query) and sabha_create_dm
-                        (explicit DM materialization; Sabha doesn't
-                        auto-create on first send). Channel/member
-                        admin (create / archive / join / leave / add /
-                        remove / list-joinable) was dropped in
-                        2026.4.29 — see docs/CHANNEL-ADMIN-DROP-PLAN.md.
-                        sabha_list_rooms / sabha_search /
-                        sabha_list_members were removed earlier
-                        (2026.4.27) and now live behind the directory
-                        adapter and the shared `message` tool's
-                        `search` action. Tool factories read
-                        ctx.agentAccountId at execute time and route
-                        through a shared getClientForTool helper that
-                        resolves the right bot account's client. The
-                        bot account id is NOT exposed in tool schemas
-                        — the LLM never has to pick one.
-
-  message-actions.ts    ChannelMessageActionAdapter dispatch half
-                        Agent-callable message ops on Sabha via core's
-                        shared `message` tool. handleAction routes
-                        send / edit / unsend / react / thread-reply /
-                        search / member-info / read / reactions to
-                        SabhaClient methods. `read` is cursor-paginated
-                        room history (newest-first; pass `cursor` from
-                        a prior `nextCursor` to walk further back —
-                        rides on the wire's dual-purpose `before` URL
-                        param). `reactions` returns aggregated boosts on
-                        a single message; 404 covers wrong room, wrong
-                        message id, and soft-deleted messages
-                        indistinguishably. The discovery half
-                        (describeMessageTool's action list + schema
-                        contribution) lives in channel.ts. `search` and
-                        `read` both accept the canonical channelId /
-                        channelIds / authorId / authorIds aliases plus
-                        Sabha-native roomId/roomIds (search unions all
-                        into the wire's repeated-key room_ids= shape;
-                        read selects a single room). Both return the
-                        same envelope { results, hasMore, nextCursor }
-                        capped at 200 server-side. `reply` is
-                        intentionally absent — `send` with replyToId
-                        covers implicit, `thread-reply` covers
-                        explicit (and fails closed if messageId is
-                        missing). Mattermost omits `reply` for the
-                        same reason.
-
-  directory.ts          Channel directory adapter helpers
-                        listSabhaDirectoryGroups (rooms — server-
-                        paginated via ?query=&page=&per_page= with a
-                        100-page × 100-per-page = 10k ceiling, mirrors
-                        the listSabhaDirectoryPeers loop),
-                        listSabhaDirectoryPeers (bot-reachable users
-                        via GET /api/bots/users — server-side scoped
-                        to users sharing rooms with the bot), and
-                        listSabhaDirectoryPeersLive (autocompletable
-                        variant for autocomplete UX). Wired into
-                        `directory:` slot in channel.ts via
-                        createChannelDirectoryAdapter.
-                        listGroupMembers is intentionally NOT wired —
-                        peers (Slack/Discord/Mattermost) don't wire it
-                        either; full-room roster dumps don't scale.
-                        When accountId is null, scopes to the resolved
-                        default account rather than unioning every
-                        enabled
-                        account: Sabha can be cross-tenant (different
-                        apiBaseUrls = separate workspaces with
-                        overlapping room id namespaces), so a union
-                        would collide bare ids and hand the agent
-                        rooms it cannot subsequently message.
-
-  resolver.ts           ChannelResolverAdapter — workspace-level name
-                        → id, the SDK slot Discord/Slack/Telegram all
-                        wire. Numeric and `@{id}`/`#id` inputs pass
-                        through; bare names hit
-                        client.searchUsers({ query }) (users) or
-                        client.listRooms({ query }) (groups). Per-call
-                        cache shares one server call across duplicate
-                        inputs in a batch. Distinguishes lookup-failed
-                        (transient 5xx → resolved:false +
-                        note:"lookup failed") from no-match (clean
-                        empty response → bare resolved:false) so the
-                        agent doesn't fabricate a name → user pairing
-                        on a server hiccup.
-
-  setup-wizard.ts       sabhaSetupWizard — interactive configure flow.
-                        Accepts either a join URL (self-registers via
-                        POST /join/{code}) or a pre-existing bot key.
-                        Honors the SDK-provided accountId: every account
-                        (including the default) writes into
-                        channels.sabha.accounts.<id> without clobbering
-                        the others. status.resolveConfigured
-                        and dmPolicy.{getCurrent,setPolicy} also
-                        honor accountId.
-
-  cli.ts                registerSabhaCli — `openclaw sabha …` subcommands.
-                        Lazily imported from registerCliMetadata so CLI
-                        metadata capture stays cheap. Includes the
-                        `doctor` subcommand, which iterates every
-                        enabled bot account and exits non-zero on any
-                        failing check.
-
-  *.test.ts             Colocated Vitest suites. Excluded from tsc build.
-```
-
-## Key Design Decisions
-
-### WebSocket only
-
-WebSocket is the only inbound transport — it removes the public-IP/tunnel requirement for self-hosted OpenClaw users and keeps the connection model simple.
-
-### Single inbound shape via `parseWebhookPayload`
-
-The WebSocket monitor converts `BotEventsChannel` frames into `SabhaWebhookPayload` via `parseWebhookPayload`, and then calls `processInboundMessage`. This keeps `inbound.ts` transport-agnostic — do not let transport-specific fields leak past `monitor.ts`.
-
-### Immediate attachment download
-
-WebSocket payloads carry signed attachment URLs that expire after ~1 hour. `processInboundMessage` downloads attachments immediately via `runtime.channel.media.fetchRemoteMedia` + `saveMediaBuffer` before dispatching, and the saved media path is appended to the message body for the LLM. Do not defer this — lazy download will race the signed URL expiry.
-
-### Bearer-header auth, `/api/bots/*` namespace
-
-Since the bearer-auth refactor (`2026.4.25`), Sabha authenticates bots via `Authorization: Bearer <bot_key>` and every endpoint lives under `/api/bots/*`. `SabhaClient` constructs requests with `apiBaseUrl` (returned in the registration response) and injects the bearer header on every call. The WebSocket connection at `/cable?bot_key=…` still carries the key in the query string — that path is unchanged. The numeric bot ID can still be recovered from the key via `extractBotId()`.
-
-### Dedup is FIFO, not LRU, and keyed by event+id
-
-`src/dedup.ts` uses insertion-order eviction, bounded at 2000 entries with a 5-minute TTL. A recent commit corrected a stale LRU comment — keep the behavior and comment aligned. Since the typed event dispatch landed in 0.9.0, keys are `${event}:${id}` so a `message_created:42` and `message_updated:42` don't collide — the same numeric message id can legitimately produce frames on multiple event types within the dedup window.
-
-### Typing indicators via AnyCable whisper
-
-`TypingManager` subscribes to `TypingNotificationsChannel` per room and emits `whisper` commands on the existing WebSocket. Whispers are routed directly by AnyCable-Go between subscribers with no Rails round-trip — do not attempt to implement this over REST. Gated on the pre-flight `shouldHandleInbound` check so we don't type at our own messages or at messages that won't be handled. See `docs/TYPING.md` for the frame-level protocol and future presence-indicator plan.
-
-### Channel context in the agent system prompt
-
-`src/channel.ts` ships two `agentPrompt` adapters into the SDK that cover **different render paths**:
-
-- `inboundFormattingHints` — rendered by `buildInboundMetaSystemPrompt` (`openclaw/src/auto-reply/reply/inbound-meta.ts`) on the **inbound auto-reply path only**. Carries the fuller Sabha identity stub, `@{USER_ID}` mention rule, and markdown rules. Lands in the per-turn `## Inbound Context` JSON block. Defends against model priors that default to Discord-style `<@id>` or Slack-style `@username`, both of which Sabha's server-side `format_mentions` regex silently drops. Renders regardless of tool profile because it sits outside the SDK's `availableTools.has("message")` gate.
-- `messageToolHints` — rendered by `buildMessagingSection` (`openclaw/src/agents/system-prompt.ts`) on **every agent system prompt** where the `message` tool is in scope, including proactive (non-inbound) agent runs (e.g. a user-initiated agent that uses the message tool to send a Sabha message). Carries a one-line minimal identity + mention reminder for that path, plus advisory planning hints (search-truncation note, `read` newest-first ordering). Gated by the SDK behind `availableTools.has("message")`.
-
-Coverage matrix:
-
-| Path | `inboundFormattingHints` | `messageToolHints` | Identity available |
-|---|---|---|---|
-| Inbound auto-reply, `messaging` profile | ✓ | ✓ | both |
-| Inbound auto-reply, `coding` profile | ✓ | gate fires | inbound hook only |
-| Proactive run, `messaging` profile | ✗ (not inbound) | ✓ | message-tool hook only |
-| Proactive run, `coding` profile | ✗ | gate fires | none (degenerate case) |
-| Inbound + fast-reply, `messaging` profile | skipped | ✓ | message-tool hook only |
-| Inbound + fast-reply, `coding` profile | skipped | gate fires | **none** |
-
-Before 2026.4.29 the identity + mention syntax lived only in `messageToolHints` and silently disappeared on `coding`-profile inbound runs (cell 2). The 2026.4.29 split lifted identity into `inboundFormattingHints` to fix that, but a pre-merge review caught that a pure "move out" would regress cell 3 (proactive on `messaging`). The final shape keeps a minimal identity reminder in `messageToolHints` so cell 3 stays covered. See `docs/MESSAGE-TOOL-HINT-DEPENDENCE-PLAN.md` for the full rationale.
-
-**Known residual gap.** The bottom-right cell (inbound + fast-reply + `coding`) is uncovered by either hook. Workarounds: `tools.alsoAllow: ["message"]` in `~/.openclaw/openclaw.json` (re-enables `messageToolHints` even on `coding`) or per-room `systemPrompt`. Closing the fast-reply gap entirely with a plugin-only change isn't possible today; revisit only if real-world impact materializes.
-
-The plugin previously fetched Sabha's `/skill` endpoint (an LLM-readable API reference) on startup and injected the 19 KB cached body into `messageToolHints`. That subsystem was removed in 2026.4.26. The `/skill` endpoint is still consumed at setup time by `setup-wizard.ts:probeBaseUrl` to verify a `baseUrl` actually points at a Sabha server (response body discarded after the URL classification check).
-
-If you add a new agent-visible Sabha capability, pick the right SDK slot rather than expanding the `messageToolHints` payload (peer channel plugins keep that hook to ~3 lines):
-
-- **Sending / editing / reacting / fetching messages?** Add it to `SUPPORTED_ACTIONS` + `handleAction` in `src/message-actions.ts`. The shared `message` tool is the canonical surface.
-- **Listing channels or users?** Add it to the directory adapter in `src/directory.ts`. Cross-channel "list conversations" verbs land here uniformly.
-- **Sabha-specific admin without a cross-channel analog?** (e.g. a new room CRUD shape.) Add it as an `api.registerTool` factory in `src/tools.ts`.
-
-Peers (Slack/Discord/Mattermost) have **zero** `registerTool` calls — every operation falls under the message or directory adapters. Sabha's `registerTool` use is intentional and Sabha-specific (room admin), not a default for all new capabilities.
-
-### Outbound capability split: message actions, directory, agent tools
-
-The SDK splits outbound capability into three slots, and Sabha uses all three:
-
-- **`actions: ChannelMessageActionAdapter`** (wired in `channel.ts`, dispatched in `src/message-actions.ts`) — Sabha's contribution to core's shared `message` tool. Supports `send` / `edit` / `unsend` / `react` / `thread-reply` / `search` / `member-info` / `read` / `reactions`. `search` and `read` both return the envelope `{ results, hasMore, nextCursor }` capped at 200 server-side; both accept the canonical `channelId`/`channelIds`/`authorId`/`authorIds` scoping fields from core's `buildChannelTargetSchema` plus Sabha-native `roomId`/`roomIds` aliases. `read` is the cursor-paginated single-room history shape (`GET /rooms/:id/messages`, newest-first); `reactions` returns aggregated boosts on a single message (`GET /rooms/:id/messages/:msg/boosts`). The `describeMessageTool` schema contribution publishes the genuinely Sabha-specific cursor-paginated read params (`before`/`after`/`limit`/`cursor`) — these serve both `search` and `read` because the underlying server concern is shared. Channel/author scoping is already advertised by core. Per the SDK doc: *"Channel plugins do not need their own send/edit/react tools. OpenClaw keeps one shared `message` tool in core."* Adding new message-action verbs means extending `SUPPORTED_ACTIONS` and `handleAction` together — peers (Mattermost, Slack) follow the same split.
-- **`directory: createChannelDirectoryAdapter(...)`** (wired in `channel.ts`, helpers in `src/directory.ts`) — `listGroups` (rooms, server-side paginated via `?query=&page=&per_page=` with a 100-page × 100-per-page = 10k ceiling), `listPeers` (bot-reachable users via `GET /api/bots/users`, paginated 100/page, capped at 10k), `listPeersLive` (autocompletable variant trimmed to ≤20). Replaces the old `sabha_list_rooms` / `sabha_search` agent tools. **`listGroupMembers` is intentionally NOT wired** — peers (Slack/Discord/Mattermost) don't wire it either; a full-room roster dump can't scale (a 100k-member room can't be paginated through a single agent call). Room-scoped name resolution (`given a roomId + partial name, find the user`) lives on the `sabha_search_members` agent tool — no SDK directory slot models `roomId + query`. Workspace-level name → id lives on `resolver.resolveTargets` (peer-parity with Discord / Slack / Telegram).
-- **`api.registerTool(factory)`** (`src/tools.ts`) — **two** tools, both verbs the SDK can't model: `sabha_search_members` (room-scoped name → user; no `roomId + query` directory slot exists) and `sabha_create_dm` (Sabha doesn't auto-create DMs on first send the way Slack/Discord do). Channel and member admin (create / archive / join / leave / add / remove / list-joinable) was dropped in 2026.4.29 to reduce the maintained code surface — humans handle those operations through the Sabha UI. See `docs/CHANNEL-ADMIN-DROP-PLAN.md`. Peers (Slack/Discord/Mattermost) wire **zero** `registerTool` factories; Sabha is one slot above zero, by design.
-
-Tool factories follow the **Feishu pattern**: the account id is never in the tool JSON schema — the LLM doesn't see an `accountId` param. Each invocation reads `ctx.agentAccountId` inside `execute` and routes through a shared `getClientForTool(cfg, params, agentAccountId)` helper with precedence `params.accountId ?? agentAccountId ?? resolveDefaultSabhaAccountId(cfg)`. Two safety guards on top of the precedence: an unknown id (e.g. an `agentAccountId` from a different channel's routing) falls back to the default instead of resolving a degenerate base-only config; a disabled account throws an explicit error rather than silently servicing tool calls.
-
-### Multi-account model
-
-The plugin supports N bot identities per install. The SDK drives the lifecycle — it calls `gateway.startAccount(ctx)` once per enabled bot account with `ctx.account: ResolvedSabhaAccount` already resolved. Nothing in the plugin loops over accounts; monitors, outbound adapters, tool routing, the doctor, and the setup wizard all operate on one account at a time and the SDK fans out.
-
-**Config keys are the canonical SDK ones.** `accounts:` and `defaultAccount:` — same as Feishu, Slack, Discord. The plugin uses `createAccountListHelpers("sabha")` directly; the SDK hardcodes those keys, and matching the ecosystem makes contributors' grep instincts work across plugins.
-
-**No boot-time config rewrite.** `index.ts:registerFull` doesn't promote base-level credentials or canonicalize the file shape on startup. Legacy single-account configs (`channels.sabha.botKey` at base, no `accounts` map) still work at runtime because `mergeSabhaAccountConfig` layers the base block over `accounts.default`. Canonicalization happens only when an operator runs `openclaw configure --section channels`, where the SDK's setup wizard calls `moveSingleAccountChannelSectionToDefaultAccount` against the arrays declared on `sabhaPlugin.setup`. This matches every other channel plugin (Discord/Slack/Feishu/Telegram/Matrix all canonicalize at wizard time, never at boot) and avoids SIGUSR1 restart loops from byte-identical writes when schema-defaulted base keys (e.g. `dmPolicy`) interact with the SDK's hardcoded `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set.
-
-**`threading.resolveReplyToMode` reads per-account.** The deliver callbacks in `monitor.ts` / `index.ts` read `account.replyToMode` directly; the SDK reply planner reads through this adapter. They must see the same per-account value, otherwise the SDK could plan inline replies while the plugin threads them (or vice-versa).
-
-### Retry runner + 429 handling
-
-Every HTTP request issued by `SabhaClient.fetch()` runs inside a Sabha-flavored retry runner (`src/retry.ts`), a thin wrapper around `plugin-sdk/retry-runtime`'s `createRateLimitRetryRunner`. Retryable status set is exactly `{429, 502, 503, 504}` — 4xx bugs and 500s are intentionally non-retryable so typos don't turn into retry storms. `Retry-After` is parsed in both forms (delta-seconds and HTTP-date) and surfaced to the runner via `sabhaRetryAfterMs` so the server's hint wins over the client's exponential backoff. Defaults: 3 attempts, 500ms..30s exponential with ±20% jitter.
-
-`SabhaApiError.retryable: boolean` mirrors `isRetryableSabhaError` so callers can branch directly on the flag. `SabhaClientOpts.verbose` plumbs `{verbose: true}` into `createSabhaRetryRunner` when no custom runner is supplied, so operators can flip on per-attempt WARN logging to diagnose a rate-limit storm without touching the SDK.
-
-`client.ts` also rebuilds the combined `AbortSignal` (per-request timeout + client-wide abort + external) on each attempt so a previous attempt's timeout never leaks into the retried request — a subtlety most reference plugins don't handle.
-
-### SSRF guard on attachment downloads
-
-Inbound and outbound attachment fetches go through `fetchGuardedAttachment` (`src/ssrf-guard.ts`), which wraps the SDK's `plugin-sdk/media-runtime` `fetchRemoteMedia` with a policy resolved from `ssrfPolicyFromAllowPrivateNetwork`. The underlying SDK helper pins DNS per fetch, blocks private/loopback/link-local/ULA/IPv4-mapped IPv6 ranges, and blocks the well-known cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, etc.) — Sabha delegates all of that.
-
-The per-bot-account `allowPrivateAttachmentHosts: true` config flag is the dangerous-opt-in escape hatch for corporate or split-horizon DNS setups that legitimately need to fetch from RFC1918 addresses. Labeled as `advanced` in the Zod UI hints and documented as dangerous.
-
-**Scope note:** the guard covers attachment downloads only. Sabha's own Bot API `baseUrl` is operator-configured and trusted by design — the plugin does not (and should not) SSRF-guard calls to it, since an attacker who controls `baseUrl` already controls the bot. If a defense-in-depth pass is ever desired, the places to audit are `client.ts` and `setup-wizard.ts` (the `POST /join/<code>` registration call and the `GET /skill` URL-verification probe).
-
-### Doctor / health checks
-
-`src/doctor.ts` exposes `runDoctor({ account })` which runs three checks per bot account: config validation (baseUrl + apiBaseUrl non-empty, botKey shape), API reachability via `listRooms({ perPage: 1 })` (with bearer header — a deliberate first-page-only probe; reporting a workspace count would mislead since `listRooms` is paginated), and a fresh WebSocket handshake (`connect → welcome → subscribe → confirmed`). Each check has a bounded timeout (5s WS, 10s API) and reports which phase it failed in.
-
-The doctor is surfaced as the `openclaw sabha doctor [--account <id>]` CLI subcommand, not as a plugin-object field, because the SDK's `ChannelDoctorAdapter` is config-validation only — there is no runtime-probe hook. The CLI loops over every enabled bot account (or the one specified by `--account`) and exits non-zero if any check fails. `warn` and `skip` statuses do not cause a non-zero exit.
-
-### Inbound event taxonomy & privacy invariant
-
-Sabha fires nine events on `BotEventsChannel`, reducing to seven distinct payload shapes (three message-bearing variants share a common shape, two boost variants share one, two user variants share another). The plugin models this as a discriminated union on `payload.event` and dispatches in `monitor.ts`.
-
-| Event | Handler | Behavior |
-|---|---|---|
-| `message_created` | `processInboundMessage` | Full reply pipeline |
-| `message_updated` | `handleMessageUpdated` | Stateless log (tolerates unseen originals — fans out to all eligible members, not just @mention targets) |
-| `message_deleted` | `handleMessageDeleted` | Log |
-| `boost_created` | `handleBoostCreated` | Log (Phase 2.2 will intercept for reaction-based approvals) |
-| `boost_deleted` | `handleBoostDeleted` | Log |
-| `user_created` | `handleUserCreated` | DEBUG-log stub |
-| `user_deleted` | `handleUserDeleted` | DEBUG-log stub |
-
-**`shouldHandleInbound` self-echo filter extends to updates and deletes**, not just creates — without this, a bot editing its own message via `Messages::ByBotsController#update` would loop back through its own monitor.
-
-**Privacy invariant on `user_*` events.** The Sabha server fans out `user_created` and `user_deleted` to **every** active bot in a workspace (`notify_bots.rb:19-24`), not scoped to a room or to any bot that cares. The stub handlers MUST NOT forward the payload to any agent-visible surface — that would let bot A observe bot B's user-creation patterns across tenants sharing a workspace. The stubs log at DEBUG and return. Any future welcome-DM / user-state-sync feature must opt in explicitly per bot account via a privacy-reviewed config flag; do not wire it through the shared dispatch path.
-
-### Pre-configured bot key
-
-The bot key is stored in `~/.openclaw/openclaw.json`, not obtained at runtime. Registration is a one-time action — either via the Sabha admin UI (`/account/bots`) or via `POST /join/{code}` triggered by the setup wizard.
-
-## Data Flow
-
-### Inbound, WebSocket path
-
-1. **`channel.ts` `gateway.startAccount`** is called once per enabled bot account by the SDK framework. It launches `monitorSabha` for that account when `baseUrl`, `apiBaseUrl`, and `botKey` are all set. The log prefix is `[sabha:<accountId>]`.
-2. **`monitor.ts`** runs `runWithReconnect` → `createSabhaConnectOnce` (`monitor-websocket.ts`), which opens the `/cable` connection and subscribes to `BotEventsChannel`. Multi-tenant workspaces pass `wid` in the query string (extracted from the numeric path prefix on `baseUrl`).
-3. For each incoming frame:
-   - `createDedupCache` drops duplicates by `${event}:${id}` (FIFO, 5 min TTL, 2000 entries).
-   - The frame is normalized via `parseWebhookPayload` into a `SabhaWebhookPayload` discriminated union.
-   - The monitor dispatches by `payload.event`. For `message_created`, `shouldHandleInbound(payload, botId)` gates typing indicators and `processInboundMessage` runs the shared inbound pipeline. For `message_updated` / `message_deleted` / `boost_*`, the typed handler in `inbound.ts` runs (log-only in 0.9.0). For `user_*`, the privacy stub runs at DEBUG level and the payload never reaches agent-visible surfaces.
-   - The `deliver` callback posts via `SabhaClient`; `TypingManager` stops whispering.
-4. Disconnects classified as `DisconnectNoReconnectError` / `SubscriptionRejectedError` are fatal; everything else triggers backoff via `runWithReconnect`.
-
-### Inbound pipeline (`processInboundMessage`)
-
-1. Skip if the message author is the bot itself.
-2. In groups, skip unless the bot was @mentioned (`wasBotMentioned`).
-3. Download each attachment now via `runtime.channel.media.fetchRemoteMedia` + `saveMediaBuffer`; append the saved path to the message body.
-4. Resolve the agent route with `runtime.channel.routing.resolveAgentRoute()`.
-5. Build the envelope via `runtime.channel.reply.formatAgentEnvelope()` using the session key from `resolveSessionFromPayload`.
-6. Dispatch via `dispatchInboundReplyWithBase`, which records the session and runs OpenClaw's reply pipeline.
-7. The caller-supplied `deliver` callback handles posting the final reply.
-
-### Outbound paths
-
-There are **five** outbound code paths and they all end up in `SabhaClient`. New features that produce outbound messages usually need to touch the relevant ones:
-
-- **A. Reply-pipeline `deliver` callback** — the lambda passed into `processInboundMessage` from both `index.ts` (webhook) and `monitor.ts` (WebSocket). Handles automatic replies to inbound events.
-- **B. `outbound.attachedResults.sendText` / `sendMedia`** — plugin-level adapters in `channel.ts` invoked by OpenClaw core's shared `message` tool when no channel-specific action is selected. `sendMedia` fetches the remote URL into a Blob and calls `client.sendAttachment`.
-- **C. `actions.handleAction`** (`src/message-actions.ts`) — Sabha's contribution to the shared `message` tool. The agent reaches this by selecting `action: "send" | "edit" | "unsend" | "react" | "thread-reply" | "search" | "member-info" | "read" | "reactions"` on the canonical message tool. Lets the agent target Sabha messages by id (edit, react, delete), read room history (cursor-paginated, newest-first), inspect aggregated reactions on a message, and look up individual user profiles instead of only sending replies.
-- **D. `directory` listings** (`src/directory.ts`) — `listGroups` (rooms), `listPeers` (bot-reachable users), `listPeersLive` (autocomplete-friendly). Read-only; agents discover rooms/users via core's directory layer rather than channel-specific tools. `listGroupMembers` is deliberately omitted — see the Outbound capability split section.
-- **E. Agent tools** in `tools.ts` — `sabha_search_members` (room-scoped name → user lookup) and `sabha_create_dm` (explicit DM materialization). Two SDK-gap verbs only; broader room/member admin was dropped in 2026.4.29.
-
-### Session routing
-
-| Sabha context        | OpenClaw session key                       |
-|----------------------|--------------------------------------------|
-| Open/Closed room     | `sabha:group:{room_id}`                    |
-| Direct message       | `sabha:direct:{room_id}`                   |
-| Thread               | `sabha:group:{room_id}:thread:{thread_id}` |
-
-Thread context is extracted from `message.thread`. `resolveSessionFromPayload` also emits a `parentConversationCandidates` array so OpenClaw can locate the parent room session when resolving a thread reply.
-
-## Configuration
-
-Single-bot:
-
-```json5
-{
-  channels: {
-    sabha: {
-      enabled: true,
-      baseUrl: "https://sabha.co/1000006",              // site root; setup wizard verifies via /skill
-      apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
-      accounts: {
-        default: {
-          botKey: "42-AbCdEfGhIjKl",          // bearer token
-          botName: "OpenClaw",                 // shown in typing indicators
-          dmPolicy: "open",                    // "open" | "allowlist"
-        },
-      },
-    }
-  }
-}
-```
-
-Multi-bot. Named accounts under `accounts.<id>` layer over the base, so unset fields on a named account inherit from the base:
-
-```json5
-{
-  channels: {
-    sabha: {
-      enabled: true,
-      // Shared base — inherited by every bot unless overridden
-      baseUrl: "https://sabha.co/1000006",
-      apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      accounts: {
-        default: {
-          botKey: "42-prodkey",
-          botName: "OpenClaw",
-        },
-        staging: {
-          baseUrl: "https://staging.sabha.co/1000006",
-          apiBaseUrl: "https://staging.sabha.co/1000006/api/bots",
-          botKey: "17-stagingkey",
-          botName: "OpenClaw (staging)",
-        },
-        "prod-eu": {
-          botKey: "23-eukey",
-          // baseUrl / apiBaseUrl / botName inherited from base
-        },
-      },
-      defaultAccount: "default",  // optional; alphabetic-first otherwise
-    }
-  }
-}
-```
-
-Multi-tenant note: `buildWebSocketUrl` extracts a 7+ digit path prefix from `baseUrl` and passes it as `wid` on the WebSocket query string.
-
-## Dependencies
-
-- `openclaw` — Plugin SDK. Subpaths used:
-  - `plugin-sdk/channel-core` — `createChatChannelPlugin`, `PluginRuntime`, `OpenClawConfig`
-  - `plugin-sdk/channel-entry-contract` — `defineBundledChannelEntry`, `defineBundledChannelSetupEntry`, `OpenClawPluginApi`
-  - `plugin-sdk/channel-setup` — `ChannelSetupWizard`
-  - `plugin-sdk/channel-inbound` + `plugin-sdk/inbound-reply-dispatch` — shared inbound dispatch
-  - `plugin-sdk/account-core` — `DEFAULT_ACCOUNT_ID`, `normalizeAccountId`, `listCombinedAccountIds`, `resolveListedDefaultAccountId`, `resolveMergedAccountConfig`
-  - `plugin-sdk/channel-config-primitives` — `buildChannelConfigSchema`
-  - `plugin-sdk/channel-status` — `createDefaultChannelRuntimeState`, `buildBaseChannelStatusSummary`
-  - `plugin-sdk/retry-runtime` — `createRateLimitRetryRunner`, `RetryRunner`
-  - `plugin-sdk/media-runtime` — `fetchRemoteMedia` (wrapped by `ssrf-guard.ts`)
-  - `plugin-sdk/ssrf-runtime` — `ssrfPolicyFromAllowPrivateNetwork`
-  - `plugin-sdk/zod`
-- `ws` — Node WebSocket client used by the monitor.
-- No other runtime dependencies. HTTP requests use `globalThis.fetch`.
-
-Dev: `vitest`, `typescript`, `eslint` + `typescript-eslint` flat config, `@types/ws`.
+`src/monitor-websocket.ts` handles ActionCable subscriptions, heartbeat,
+subscribe races, and disconnect classification. `src/reconnect.ts` owns
+backoff. The monitor reports `ready` only after BotEventsChannel subscription,
+`recovering` after disconnect, and `blocked` for fatal failures. Abort closes
+the transport and stops typing. Dedup is FIFO, capped at 2,000 entries with a
+five-minute TTL; in-flight work survives reconnects. Failed turns release
+the reservation; intentional admission drops do not run an agent.
+
+`src/inbound.ts` supplies Sabha facts to `runtime.channel.inbound.run`.
+Self echoes are ignored. Top-level rooms require a bot mention. DMs and
+existing thread rooms do not require another mention. The ingress resolver
+enforces account DM policy before typing or media download. Sabha's open DM
+policy supplies the SDK-required wildcard; command authorization uses the
+explicit account allowlist independently. Display names grant no authority.
+
+The final agent/session/message/event binding is established before ingress
+resolution. Its exact result goes to the injected context builder once.
+Community installation needs no privileged state-store access or owner claim.
+The kernel owns session recording, reply dispatch, modifying hooks, and the
+single canonical `message_sent` observation after native settlement.
+
+Attachments download immediately after admission because signed URLs expire.
+The guarded downloader blocks private hosts unless the account explicitly
+opts in. Local media facts use `saveMediaBuffer().path`, MIME type, and filename;
+attachment-only input retains an empty agent body. Download errors are redacted
+and nonfatal. Numeric native room/message ids survive context construction so
+shared message-tool target autofill works. The sender envelope includes the
+literal `@{id}` mention token. `user_created`/`user_deleted` are log-only and
+never seed agent context or the mention-name cache.
+
+## Sessions and threading
+
+Fresh session keys come from the public SDK route builder. Accounts are always
+isolated, including group rooms whose ids can overlap across Sabha servers:
+
+| Conversation | Session |
+| --- | --- |
+| DM room | `agent:<agent>:sabha:<account>:direct:<room>` |
+| Open/closed room | `agent:<agent>:sabha:group:<account>:<room>` |
+| Existing thread room | Same group pattern using the thread room id |
+
+Repeated events reuse the same conversation. Outbound session routing uses the
+same helper; delivery-target resolution removes the account scope before the
+wire call. A thread payload names its own room and parent message id, but does
+not identify its parent room. We do not fabricate a parent session key.
+
+New threaded replies use `sendMessage(parentRoom, text, { parentMessageId })`.
+Sabha idempotently creates/finds the thread and returns its resolved room id.
+Existing threads send directly to their room. DMs and `replyToMode: off` send
+inline. Modes `first` and `all` both select the parent message's thread.
+
+## Delivery and streaming
+
+`src/draft-stream.ts` wraps the public `channel-outbound` draft lifecycle.
+One message is created then edited from full accumulated snapshots. Finalization
+in `src/delivery.ts` gates on `isAlive()`, never on an id that may still be
+pending. It awaits the first send and final edit, then returns provider ids,
+resolved room, visible text, and a normalized receipt.
+
+A failed preview edit may be repaired directly. Replacement requires confirmed
+preview deletion. A failed deletion preserves partial-delivery evidence. A send
+attempt with no receipt is ambiguous and fails; it must never be described as
+not dispatched or retried by the preview fallback. The system does not promise
+exactly-once delivery after network failures.
+
+Accepted remote attachments use the same guarded upload helper on the outbound
+adapter and automatic reply path. Uploads retain `parentMessageId`, and multipart
+replies preserve confirmed text/media receipts if a later upload fails.
+
+Modifying `reply_payload_sending` or `message_sending` hooks disable eager
+previews. Only hook-approved final content is then sent. Observer-only hooks
+leave streaming enabled. Cancelled/silent turns clear pending previews. Typing
+and draft resources settle on success, failure, and abort. Error text is logged
+through `formatStreamError`, never posted through a hook-bypassing error path.
+
+The channel also exposes a derived `message` adapter from its outbound adapter.
+It advertises no durable final-delivery or privileged state capabilities.
+
+## API and agent surfaces
+
+All HTTP calls use `SabhaClient`: bearer auth, `/api/bots` paths, response parsing,
+retry policy, and Markdown-to-Trix conversion live there. Only 429/502/503/504
+retry; Retry-After is respected. Network errors do not retry non-idempotent POSTs.
+WebSocket auth remains a query parameter and must be redacted in logs.
+
+The shared `message` adapter owns send/edit/unsend/react/thread-reply/search/
+member-info/read/reactions. Directory and resolver own room/user discovery.
+Only `sabha_search_members` (room-scoped lookup) and `sabha_create_dm` lack SDK
+slots and remain custom tools. No room/member administration tools are exposed.
+
+`read` returns `{messages, hasMore, nextCursor}` with string ids, timestamp,
+authorTag, author.username, and text for the CLI formatter. `reactions` projects
+wire boosts into `{name, count, users, truncated}`. `search` retains its distinct
+`results` envelope. Composite cursors go to the wire's `before` parameter.
+Directory and resolver choose one account, never union overlapping tenant ids.
+
+Prompt identity/mention rules remain in both inbound formatting hints and
+message-tool hints because they serve different inbound/proactive render paths.
+Do not inject whole API docs into prompts or ask agents to invent numeric targets.
+
+## Verification
+
+`npm test`, `npm run lint`, `npm run build`, and `npm run manifest:check` cover
+local behavior. `npm run test:pack` installs the artifact in disposable state,
+checks host metadata/config/CLI loading, and runs a real external host registry
+against loopback-only fake Sabha HTTP and WebSocket servers. The agent producer
+is synthetic; registration, admission, sessions, transport, hooks, and delivery
+are real. Streaming, rewriting, cancellation, shared-message reaction routing,
+replay dedup, and fatal-disconnect shutdown are checked.
+No real bot messages, production reinstall, or publication happen in this test.

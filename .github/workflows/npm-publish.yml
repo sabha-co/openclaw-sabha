@@ -72,7 +72,11 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run manifest:check
+
       - run: npm test
+
+      - run: npm run test:pack
 
       - name: Publish package to npm
         run: |

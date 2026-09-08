@@ -1,6 +1,7 @@
 import { Type, type TSchema } from "typebox";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-core";
 
 
 import { SabhaClient } from "./client.js";
@@ -68,9 +69,9 @@ function getClientForTool(
   params: AccountAwareParams | undefined,
   agentAccountId: string | undefined,
 ): SabhaClient {
-  const requestedId = params?.accountId ?? agentAccountId;
+  const requestedId = normalizeOptionalAccountId(params?.accountId ?? agentAccountId);
   const knownIds = listSabhaAccountIds(cfg);
-  if (params?.accountId && !knownIds.includes(params.accountId)) {
+  if (params?.accountId && (!requestedId || !knownIds.includes(requestedId))) {
     throw new Error(`Unknown Sabha account "${params.accountId}"`);
   }
   const resolvedId =

@@ -2,7 +2,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   createAccountListHelpers,
 } from "openclaw/plugin-sdk/account-helpers";
-import { normalizeAccountId } from "openclaw/plugin-sdk/account-core";
+import { normalizeAccountId, resolveNormalizedAccountEntry } from "openclaw/plugin-sdk/account-core";
 
 import type { SabhaConfig, SabhaRoomConfig } from "./types.js";
 import { extractBotId } from "./bot-id.js";
@@ -46,7 +46,7 @@ export type ResolvedSabhaAccount = {
   rooms: Record<string, SabhaRoomConfig>;
 };
 
-const helpers = createAccountListHelpers("sabha");
+const helpers = createAccountListHelpers("sabha", { normalizeAccountId });
 
 /** Only explicitly configured accounts can start a monitor. */
 export const listSabhaAccountIds = (cfg: OpenClawConfig): string[] => helpers.listConfiguredAccountIds(cfg).sort();
@@ -79,7 +79,7 @@ export function mergeSabhaAccountConfig(
   accountId: string,
 ): SabhaConfig {
   const section = getSabhaSection(cfg);
-  const account = section?.accounts?.[accountId];
+  const account = resolveNormalizedAccountEntry(section?.accounts, accountId, normalizeAccountId);
   if (!account) return {};
   const { accounts: _accounts, defaultAccount: _default, botKey: _key, botName: _name, websocketUrl: _ws, ...shared } = section ?? {};
   return { ...shared, ...account };

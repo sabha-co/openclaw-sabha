@@ -145,6 +145,24 @@ describe("createSabhaTools — account routing", () => {
     expect(authHeader(call)).toBe("Bearer 20-StagingKey");
   });
 
+  it.each([
+    { context: "backup", params: { accountId: "PRIMARY" } },
+    { context: "PRIMARY", params: {} },
+    { context: "primary", params: {} },
+  ])("routes mixed-case accounts without falling back ($context, $params)", async ({ context, params }) => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(() => cfg({
+      defaultAccount: "backup",
+      accounts: {
+        backup: { apiBaseUrl: "https://backup.example/api/bots", botKey: "7-BackupKey" },
+        Primary: { apiBaseUrl: "https://primary.example/api/bots", botKey: "42-PrimaryKey" },
+      },
+    }))({ agentAccountId: context });
+    await tool.execute("id", params);
+    expect(String(mock.fetch.mock.calls[0][0])).toContain("https://primary.example/api/bots");
+    expect(authHeader(mock.fetch.mock.calls[0])).toBe("Bearer 42-PrimaryKey");
+  });
+
   it("works with a single-bot config", async () => {
     const mock = withMockedFetch();
     restore = mock.restore;

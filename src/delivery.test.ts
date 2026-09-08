@@ -54,6 +54,28 @@ describe("provider delivery settlement", () => {
     expect(await f.finalize(" ")).toMatchObject({ visibleReplySent: false, suppression: { reason: "no_visible_result" } });
     expect(f.client.sendMessage).not.toHaveBeenCalled();
   });
+  it("clears an unfinished preview when the accepted payload has no text", async () => {
+    const f = fixture();
+    f.draft.update("Unfinished preview");
+    await f.draft.flush();
+    await f.finalize("");
+    expect(f.client.deleteMessage).toHaveBeenCalledWith(12);
+  });
+  it("keeps committed text when a later payload is empty", async () => {
+    const f = fixture();
+    await f.finalize("Confirmed text");
+    await f.finalize("");
+    await f.draft.clear();
+    expect(f.client.deleteMessage).not.toHaveBeenCalled();
+  });
+  it("sends a subsequent text payload without overwriting the committed message", async () => {
+    const f = fixture();
+    f.client.sendMessage.mockResolvedValueOnce({ id: 12, roomId: 99 }).mockResolvedValueOnce({ id: 13, roomId: 99 });
+    expect(await f.finalize("First text")).toMatchObject({ messageIds: ["12"] });
+    expect(await f.finalize("Second text")).toMatchObject({ messageIds: ["13"] });
+    expect(f.client.editMessage).not.toHaveBeenCalled();
+    expect(f.client.deleteMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe("attachment delivery settlement", () => {
@@ -76,5 +98,17 @@ describe("attachment delivery settlement", () => {
       code: "CHANNEL_PARTIAL_DELIVERY", deliveryResult: { visibleReplySent: true, messageIds: ["12"] },
     });
     expect(f.client.deleteMessage).not.toHaveBeenCalled();
+  });
+  it("preserves an earlier text payload when a later payload contains only media", async () => {
+    vi.mocked(fetchGuardedAttachment).mockResolvedValue({ buffer: Buffer.from("image"), fileName: "image.png" });
+    const f = fixture();
+    const first = await f.finalize("Confirmed text");
+    const client = { ...f.client, sendAttachment: vi.fn().mockResolvedValue({ id: 13, roomId: 99 }) };
+    const second = await deliverSabhaPayload({ client: client as unknown as SabhaClient, account, draft: f.draft,
+      text: "", mediaUrls: ["https://example/image.png"], roomId: 5, parentMessageId: 10 });
+    expect(first).toMatchObject({ messageIds: ["12"], visibleReplySent: true });
+    expect(second).toMatchObject({ messageIds: ["13"], visibleReplySent: true });
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalledOnce();
   });
 });

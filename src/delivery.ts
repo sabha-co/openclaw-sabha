@@ -63,6 +63,12 @@ export async function finalizeSabhaReply(params: {
   parentMessageId?: number;
 }): Promise<DeliveryResult> {
   const { client, draft, text, roomId, parentMessageId } = params;
+  const commit = (sent: { id: number; roomId: number }): DeliveryResult => {
+    const result = sabhaDeliveryResult(text, sent);
+    // A confirmed message no longer belongs to preview cleanup or later payloads.
+    draft.forceNewMessage();
+    return result;
+  };
   if (!text.trim()) {
     await draft.clear();
     return { visibleReplySent: false, suppression: { reason: "no_visible_result" } };
@@ -72,13 +78,13 @@ export async function finalizeSabhaReply(params: {
     draft.update(text);
     await draft.stop();
     const sent = draft.sentMessage();
-    if (sent && draft.sentText() === text.trimEnd()) return sabhaDeliveryResult(text, sent);
+    if (sent && draft.sentText() === text.trimEnd()) return commit(sent);
   }
   const preview = draft.sentMessage();
   if (preview) {
     try {
       await client.editMessage(preview.id, text);
-      return sabhaDeliveryResult(text, preview);
+      return commit(preview);
     } catch {
       // Only replace a stale preview when its deletion is confirmed.
       try {
@@ -95,5 +101,5 @@ export async function finalizeSabhaReply(params: {
     ? await client.sendMessage(roomId, text)
     : await client.sendMessage(roomId, text, { parentMessageId });
   if (!sent) throw new Error("Sabha accepted a send attempt without returning a message receipt");
-  return sabhaDeliveryResult(text, sent);
+  return commit(sent);
 }

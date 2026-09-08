@@ -11,7 +11,7 @@ import {
   buildBaseChannelStatusSummary,
 } from "openclaw/plugin-sdk/channel-status";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
-import { z } from "openclaw/plugin-sdk/zod";
+import { z } from "zod";
 import { Type } from "typebox";
 
 import type { ResolvedSabhaAccount } from "./accounts.js";

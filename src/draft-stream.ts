@@ -1,22 +1,7 @@
 import { createFinalizableDraftLifecycle } from "openclaw/plugin-sdk/channel-outbound";
 import type { SabhaClient } from "./client.js";
 
-/**
- * Render an error as a safe, bounded user-visible string.
- *
- * `SabhaApiError` puts the fully-formed fetch URL — including the
- * `bot_key` path segment — inside its message (see `client.ts`, where
- * `throw new SabhaApiError(status, body, url)` and the super constructor
- * interpolates the url). Using `String(err)` on one of those errors
- * would PATCH the bot key into a public room message. Redact the
- * `{id}-{token}` pattern before it reaches any user-facing surface.
- *
- * Also trims to 500 chars so an LLM stack trace or a giant JSON error
- * body doesn't dwarf the reply.
- *
- * Exported because the monitor / webhook error paths use it to build
- * the Q12 error-replace text before calling `editMessage` directly.
- */
+/** Redact possible bot credentials and bound errors before operator logging. */
 export function formatStreamError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   // Bot keys are `{numeric-id}-{token}` with a token of at least ~10
@@ -81,6 +66,9 @@ export type SabhaDraftStream = {
   flush: () => Promise<void>;
   /** Current stream message id, or undefined if nothing has been sent yet. */
   messageId: () => number | undefined;
+  sentMessage: () => { id: number; roomId: number } | undefined;
+  sentText: () => string;
+  failure: () => unknown;
   /**
    * `true` while the loop can still accept `update` calls. Flips to
    * `false` the moment `sendOrEditStreamMessage` short-circuits due to an
@@ -152,6 +140,8 @@ export function createSabhaDraftStream(
   const state = { stopped: false, final: false };
   let streamMessageId: number | undefined;
   let lastSentText = "";
+  let streamRoomId = params.roomId;
+  let failure: unknown;
 
   const sendOrEditStreamMessage = async (text: string): Promise<boolean> => {
     // The final flush runs even after an explicit stop (e.g. `clear()`),
@@ -209,10 +199,8 @@ export function createSabhaDraftStream(
             })
           : await client.sendMessage(params.roomId, trimmed);
       if (sent == null) {
-        // Sabha's `sendMessage` returns `null` when neither the response
-        // body (parentMessageId case) nor the Location header (regular
-        // case) yields a usable message id. We can't edit a preview we
-        // can't address, so stop.
+        failure = new Error("Sabha preview send returned no message receipt");
+        // A missing response body cannot establish whether Sabha accepted the send.
         state.stopped = true;
         logger?.warn?.(
           "sabha draft stream stopped (sendMessage returned no id)",
@@ -220,9 +208,11 @@ export function createSabhaDraftStream(
         return false;
       }
       streamMessageId = sent.id;
+      streamRoomId = sent.roomId;
       lastSentText = trimmed;
       return true;
     } catch (err) {
+      failure = err;
       state.stopped = true;
       logger?.warn?.(
         `sabha draft stream failed: ${formatStreamError(err)}`,
@@ -256,6 +246,8 @@ export function createSabhaDraftStream(
 
   const forceNewMessage = () => {
     streamMessageId = undefined;
+    streamRoomId = params.roomId;
+    failure = undefined;
     lastSentText = "";
     loop.resetPending();
   };
@@ -268,6 +260,9 @@ export function createSabhaDraftStream(
     update,
     flush: loop.flush,
     messageId: readMessageId,
+    sentMessage: () => streamMessageId === undefined ? undefined : { id: streamMessageId, roomId: streamRoomId },
+    sentText: () => lastSentText,
+    failure: () => failure,
     isAlive: () => !state.stopped,
     clear,
     stop,

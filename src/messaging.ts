@@ -203,37 +203,13 @@ export function inferSabhaTargetChatType(
   return undefined;
 }
 
-/**
- * Plugin-owned mapping from session-grammar conversation ids to wire
- * delivery target. Read by the SDK at `delivery-context-BB8mcaUV.js:33,44`
- * (`formatConversationTarget` and `resolveConversationDeliveryTarget`).
- *
- * Mirrors the canonical pattern from Mattermost (`channel.ts:311-317`),
- * Slack, Telegram, Feishu, and Matrix: when a session has a parent
- * conversation distinct from the current one (i.e. it's a thread session),
- * deliver to the parent and surface the thread room as `threadId`. For
- * non-thread sessions, deliver to the conversation itself.
- *
- * Sabha's runtime delivery path goes through the draft-stream and doesn't
- * consult this hook today, but non-draft-stream apply paths (media
- * echo-transcript, captured registrations) read it. Without this hook,
- * the SDK fall-through at `delivery-context-BB8mcaUV.js:38` returns
- * `channel:${conversationId}` and loses the parent association — a
- * thread reply would then be attributed to the thread room, not the
- * parent room, which is the wrong shape for downstream consumers that
- * key on the parent room id.
- */
+/** Convert an account-scoped session peer back to Sabha's numeric room id. */
 export function resolveSabhaDeliveryTarget(params: {
   conversationId: string;
   parentConversationId?: string;
 }): { to?: string; threadId?: string } | null {
-  const child = params.conversationId.trim();
-  if (!child) return null;
-  const parent = params.parentConversationId?.trim();
-  if (parent && parent !== child) {
-    return { to: `channel:${parent}`, threadId: child };
-  }
-  return { to: `channel:${child}` };
+  const roomId = params.conversationId.trim().replace(/^[^:]+:(\d+)$/, "$1");
+  return /^\d+$/.test(roomId) ? { to: `channel:${roomId}` } : null;
 }
 
 type ThreadingToolContextInput = {

@@ -370,11 +370,16 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
     };
     const logs: CapturedLog[] = [];
     const ac = new AbortController();
+    const ctx = makeCtx(account, logs, ac.signal);
+    const statuses: unknown[] = [];
+    ctx.setStatus = (status) => { statuses.push(status); };
     const startPromise = sabhaPlugin.gateway!.startAccount!(
-      makeCtx(account, logs, ac.signal),
+      ctx,
     );
+    expect(statuses).toContainEqual(expect.objectContaining({ lifecycle: "blocked", connected: false }));
     ac.abort();
     await startPromise;
+    expect(statuses).toContainEqual(expect.objectContaining({ lifecycle: "stopped" }));
 
     expect(
       logs.some((l) => l.level === "info" && /Disabled/i.test(l.message)),

@@ -209,6 +209,21 @@ describe("createSabhaTools — account routing", () => {
     expect((result.details as { error?: string }).error).toMatch(/disabled/i);
   });
 
+  it("rejects an unknown explicit account without falling back across tenants", async () => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(multiBotCfg)({ agentAccountId: "production" });
+    const result = await tool.execute("id", { accountId: "missing" });
+    expect(result.content[0].text).toContain("Unknown Sabha account");
+    expect(mock.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a named account without credentials before making an API call", async () => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(() => cfg({ accounts: { default: { baseUrl: "https://sabha.example" } } }))({});
+    expect((await tool.execute("id", {})).content[0].text).toContain("not configured");
+    expect(mock.fetch).not.toHaveBeenCalled();
+  });
+
   it("returns a text + details result shape", async () => {
     const mock = withMockedFetch([{ id: 1, name: "Alice" }]);
     restore = mock.restore;

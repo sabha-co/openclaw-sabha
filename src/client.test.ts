@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SabhaClient, extractBotId } from "./client.js";
 import { parseWebhookPayload, wasBotMentioned, resolveChatType } from "./webhook.js";
-import { resolveSessionFromPayload, resolveSessionConversation } from "./session.js";
+import { resolveSessionFromPayload } from "./session.js";
 import { parseJoinUrl } from "./setup-wizard.js";
 
 describe("extractBotId", () => {
@@ -175,6 +175,7 @@ describe("resolveSessionFromPayload", () => {
   it("resolves thread context", () => {
     const threadPayload = {
       ...basePayload,
+      room: { ...basePayload.room, id: 99 },
       message: {
         ...basePayload.message,
         thread: { id: 99, parent_message_id: 10 },
@@ -182,23 +183,7 @@ describe("resolveSessionFromPayload", () => {
     };
     const result = resolveSessionFromPayload(threadPayload);
     expect(result.threadId).toBe("99");
-    expect(result.baseConversationId).toBe("5");
-    expect(result.parentConversationCandidates).toEqual(["5"]);
-  });
-});
-
-describe("resolveSessionConversation", () => {
-  it("resolves simple conversation", () => {
-    const result = resolveSessionConversation({ rawId: "5" });
-    expect(result.id).toBe("5");
-    expect(result.threadId).toBeUndefined();
-  });
-
-  it("resolves threaded conversation", () => {
-    const result = resolveSessionConversation({ rawId: "5", threadId: "99" });
-    expect(result.id).toBe("5");
-    expect(result.threadId).toBe("99");
-    expect(result.baseConversationId).toBe("5");
+    expect(result.conversationId).toBe("99");
   });
 });
 
@@ -356,6 +341,12 @@ describe("SabhaClient — bearer auth + URL shape", () => {
     // Content-Type must be left to fetch.
     expect(headers.get("Authorization")).toBe(`Bearer ${BOT_KEY}`);
     expect(headers.get("Content-Type")).toBeNull();
+  });
+
+  it("routes attachment uploads into the requested reply thread", async () => {
+    mockFetch();
+    await new SabhaClient(API, BOT_KEY).sendAttachment(5, new Blob(["hello"]), "note.txt", { parentMessageId: 10 });
+    expect(lastCall().url).toContain("/rooms/5/messages?parent_message_id=10");
   });
 
   it("never includes bot_key in the URL path", async () => {

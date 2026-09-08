@@ -446,8 +446,7 @@ export function isDefaultSabhaAccount(
 
 /**
  * Merged view of one bot account's setup-relevant fields. Reads the base
- * `channels.sabha` block for the default account and the named entry under
- * `accounts.<id>` for every other account, merged on top of the base.
+ * shared non-credential defaults plus the named `accounts.<id>` entry.
  */
 export function getSabhaAccountView(
   cfg: OpenClawConfig,
@@ -457,25 +456,7 @@ export function getSabhaAccountView(
   return mergeSabhaAccountConfig(cfg, id);
 }
 
-/**
- * Return every bot account id that has full credentials persisted —
- * `baseUrl`, `apiBaseUrl`, and `botKey` all set, either via its own
- * `accounts.<id>` entry or via the base layered through
- * `mergeSabhaAccountConfig`. Powers the multi-bot selector's Edit list
- * and the "Keep existing bot?" shortcut in `finalize`.
- *
- * Distinct from `accounts.ts`'s `listConfiguredSabhaAccountIds`, which
- * only checks key presence in the `accounts` map (no credential check,
- * no base-layer awareness). The wizard needs the richer credential view
- * because its UX hinges on "is this slot ready to use?", not just "did
- * the operator type something here?".
- *
- * `listSabhaAccountIds` includes the SDK's implicit `default` fallback
- * even when no explicit `accounts` map exists, so on a multi-bot config
- * where named accounts exist we still check the default slot explicitly
- * (its credentials may live at the channel root, layered in via the
- * base block).
- */
+/** Configured named accounts that have enough credentials for the wizard's edit list. */
 export function listSabhaAccountIdsWithCredentials(
   cfg: OpenClawConfig,
 ): string[] {

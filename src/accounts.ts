@@ -48,20 +48,10 @@ export type ResolvedSabhaAccount = {
 
 const helpers = createAccountListHelpers("sabha");
 
-/**
- * Every account id the plugin should spin up. Includes the SDK's implicit
- * `default` fallback when no `accounts` entries exist (matches peer
- * plugins) — `gateway.startAccount` will run for it but skip the
- * WebSocket monitor unless credentials are present.
- */
+/** Only explicitly configured accounts can start a monitor. */
 export const listSabhaAccountIds = (cfg: OpenClawConfig): string[] => helpers.listConfiguredAccountIds(cfg).sort();
 
-/**
- * Account ids the operator has *explicitly* configured under
- * `channels.sabha.accounts.<id>`. Distinct from `listSabhaAccountIds` in
- * that the SDK fallback `default` is NOT included. Use this for startup
- * warnings and any "did the operator actually configure anything?" check.
- */
+/** Configured ids without the runtime list's sorting. */
 export const listConfiguredSabhaAccountIds = helpers.listConfiguredAccountIds;
 
 function getSabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {

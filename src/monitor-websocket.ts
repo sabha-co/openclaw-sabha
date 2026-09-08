@@ -129,6 +129,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
     try {
       return await new Promise<void>((resolve, reject) => {
         let settled = false;
+        let terminalFailure = false;
 
         const resolveOnce = () => {
           if (settled) return;
@@ -138,6 +139,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
         const rejectOnce = (err: Error) => {
           if (settled) return;
           settled = true;
+          terminalFailure = true;
           reject(err);
         };
 
@@ -149,6 +151,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
         });
 
         ws.on("message", async (data) => {
+          if (terminalFailure) return;
           const raw = rawDataToString(data);
           const frame = parseFrame(raw);
           if (!frame) return;
@@ -168,6 +171,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
                   opts.logger?.info?.("[sabha] Subscribed to BotEventsChannel");
                   opts.statusSink?.({
                     connected: true,
+                    lifecycle: "ready",
                     lastConnectedAt: Date.now(),
                     lastError: null,
                   });
@@ -235,6 +239,7 @@ export function createSabhaConnectOnce(opts: ConnectOnceOpts): () => Promise<voi
           const msg = reasonToString(reason);
           opts.statusSink?.({
             connected: false,
+            lifecycle: opts.abortSignal?.aborted ? "stopped" : terminalFailure ? "blocked" : "recovering",
             lastDisconnect: { at: Date.now(), status: code, error: msg || undefined },
           });
           opts.logger?.info?.(`[sabha] WebSocket closed (code: ${code}${msg ? `, reason: ${msg}` : ""})`);

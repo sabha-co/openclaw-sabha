@@ -37,7 +37,7 @@ function toolError(err: unknown): ToolResult {
  * through `ctx.agentAccountId` (supplied by the SDK per invocation) with a
  * final fallback to `resolveDefaultSabhaAccountId`. This mirrors the Feishu
  * plugin's pattern — which was verified as the canonical multi-account
- * tool registration shape by the v1 scout work.
+ * tool registration shape.
  */
 type AccountAwareParams = { accountId?: string };
 
@@ -53,12 +53,12 @@ type AccountAwareParams = { accountId?: string };
  *      (applied inside `resolveSabhaAccount` when `accountId` is nullish).
  *
  * Two safety guards on top of the precedence:
- *   - **Unknown id falls back to default.** If the resolved id is not a
+ *   - **Unrelated context ids fall back to default.** If the context id is not a
  *     real Sabha account (e.g. a Slack workspace id reaching us via
  *     `agentAccountId` from a different channel's routing), we fall back
  *     to the configured default instead of returning a degenerate
  *     base-only config. Mirrors Feishu's `tool-account-routing.test.ts`
- *     behavior.
+ *     behavior. Explicit unknown overrides fail instead of changing tenants.
  *   - **Disabled accounts throw.** A bot account marked
  *     `enabled: false` should not silently service tool calls; surface
  *     that as an explicit error so operators can tell why a tool failed.
@@ -70,6 +70,9 @@ function getClientForTool(
 ): SabhaClient {
   const requestedId = params?.accountId ?? agentAccountId;
   const knownIds = listSabhaAccountIds(cfg);
+  if (params?.accountId && !knownIds.includes(params.accountId)) {
+    throw new Error(`Unknown Sabha account "${params.accountId}"`);
+  }
   const resolvedId =
     requestedId && knownIds.includes(requestedId)
       ? requestedId
@@ -80,6 +83,9 @@ function getClientForTool(
       `Sabha bot account "${account.accountId}" is disabled (channels.sabha.accounts.${account.accountId}.enabled === false). ` +
         `Re-enable it or pick a different accountId.`,
     );
+  }
+  if (!account.botKey || !account.apiBaseUrl) {
+    throw new Error(`Sabha account "${account.accountId}" is not configured`);
   }
   return new SabhaClient(account.apiBaseUrl, account.botKey);
 }

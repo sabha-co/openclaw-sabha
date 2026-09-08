@@ -136,11 +136,15 @@ export class SabhaClient {
     roomId: number,
     file: Blob,
     filename: string,
+    opts?: { parentMessageId?: number },
   ): Promise<{ id: number; roomId: number } | null> {
     const form = new FormData();
     form.append("attachment", file, filename);
 
-    const res = await this.fetch(`/rooms/${roomId}/messages`, {
+    const path = opts?.parentMessageId == null
+      ? `/rooms/${roomId}/messages`
+      : `/rooms/${roomId}/messages?parent_message_id=${opts.parentMessageId}`;
+    const res = await this.fetch(path, {
       method: "POST",
       body: form,
     });

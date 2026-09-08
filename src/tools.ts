@@ -1,5 +1,8 @@
 import { Type, type TSchema } from "typebox";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+
+export const SABHA_TOOL_NAMES = ["sabha_search_members", "sabha_create_dm"] as const;
 import { SabhaClient } from "./client.js";
 import {
   listSabhaAccountIds,
@@ -81,7 +84,7 @@ function getClientForTool(
   return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
-type ToolCtx = { agentAccountId?: string };
+type ToolCtx = OpenClawPluginToolContext;
 
 type ToolExecute<TParams> = (args: {
   cfg: OpenClawConfig;
@@ -113,7 +116,7 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
       parameters: def.parameters,
       async execute(_id: string, rawParams: unknown): Promise<ToolResult> {
         try {
-          const cfg = getConfig();
+          const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? getConfig();
           const params = (rawParams ?? {}) as TParams;
           const data = await def.execute({
             cfg,

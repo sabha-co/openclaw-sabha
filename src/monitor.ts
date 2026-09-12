@@ -25,6 +25,9 @@ import { runWithReconnect } from "./reconnect.js";
 import { createDedupCache } from "./dedup.js";
 import { TypingManager } from "./typing.js";
 import { createSabhaDraftStream, formatStreamError } from "./draft-stream.js";
+import { deliverSabhaPayload } from "./delivery.js";
+import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { MentionRewriter } from "./outbound/mention-rewrite.js";
 
 const DEDUP_TTL_MS = 5 * 60_000; // 5 minutes
@@ -261,21 +264,11 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       // self-echo as a defensive double-check (see src/inbound.ts).
       if (isSelfEchoEvent(payload, account.botId)) return;
 
-      // Diagnostic: log every inbound (non-self-echo) event so we can
-      // see what Sabha is sending us. Temporary — remove once threaded
-      // follow-ups are confirmed working.
-      if ("room" in payload && payload.room && "message" in payload && payload.message) {
-        const msg = payload.message as { id: number; thread?: unknown };
-        logger?.info?.(
-          `${logPrefix} inbound ${payload.event} room=${payload.room.id} type=${payload.room.type} msgId=${msg.id} inThread=${msg.thread != null}`,
-        );
-      }
-
-      // Feed every inbound event's user into the mention rewriter so
+      // Feed room-scoped inbound events' users into the mention rewriter so
       // outbound @DisplayName → @{id} rewrites work for every user
       // the bot has seen. Also feed mentionees from message events so
       // the bot can mention users it hasn't directly interacted with.
-      if ("user" in payload && payload.user) {
+      if ("room" in payload && payload.user) {
         mentionRewriter.add(payload.user.name, payload.user.id);
       }
       if ("message" in payload && payload.message?.mentionees) {
@@ -317,7 +310,6 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         // every transient failure into a silent lost reply.
         dedup.mark(dedupKey!);
         statusSink?.({ lastInboundAt: Date.now() });
-        typing?.start(payload.room.id);
 
         // Decide threading once for the turn. The SDK's internal reply
         // planner doesn't call our plugin's `threading.resolveReplyToMode`
@@ -370,7 +362,11 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
         // still embedded; we display text only. Reasoning previews are
         // their own lane (`onReasoningStream`) that we do NOT wire — the
         // bot surfaces the final assistant text, not its chain-of-thought.
+        let delivered = false;
+        const hooks = getGlobalHookRunner();
+        const allowPreview = !hooks?.hasHooks("reply_payload_sending") && !hooks?.hasHooks("message_sending");
         const onPartialReply = (partial: { text?: string }) => {
+          if (delivered || !allowPreview || abortSignal?.aborted) return;
           const text = partial.text;
           if (typeof text !== "string" || text.length === 0) return;
           draftStream.update(text);
@@ -386,74 +382,22 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
               runtime,
               cfg: config,
               account,
+              abortSignal,
+              onAdmitted: () => typing?.start(payload.room.id),
               onPartialReply,
               deliver: async (replyPayload) => {
-                const roomId = Number(replyPayload.to ?? payload.room.id);
-                const text = replyPayload.text ?? replyPayload.body ?? "";
-
-                // Streaming fast-path. Three cases:
-                //
-                //   (a) Stream is alive — route the final text through
-                //       `update + stop`. The `stop()` implementation
-                //       awaits the SDK loop's `inFlightPromise` before
-                //       sending the final edit, so this is correct even
-                //       when a partial's send is still pending and
-                //       `messageId()` is momentarily undefined. The
-                //       earlier gate `messageId() !== undefined`
-                //       double-posted because it fell through to plain
-                //       send while the in-flight partial was still
-                //       writing its id. `isAlive()` gates on "can the
-                //       loop still accept updates," which is what we
-                //       need. For the threading-on case the in-flight
-                //       send may be the threading first-send (creating
-                //       the thread server-side via `parentMessageId`);
-                //       `stop()` still awaits it correctly.
-                //
-                //   (b) Stream is dead but a preview exists — the SDK's
-                //       controls wrapper silently drops further updates
-                //       once stopped, so `update + stop` would no-op
-                //       and leave the preview stuck on partial N-1.
-                //       Bypass the loop and PATCH the final text
-                //       directly via the id-only `editMessage`. If even
-                //       the direct edit fails, delete the stale preview
-                //       and fall through.
-                //
-                //   (c) Stream is dead with no preview (first send
-                //       failed, or no partials ever arrived) — fall
-                //       through to a final fallback that honors the
-                //       threading decision: a unified `sendMessage` with
-                //       `parentMessageId` when we were supposed to
-                //       thread, plain `sendMessage` otherwise. Without
-                //       the `shouldThread` branch here, a thread-on
-                //       conversation that hit a streaming failure would
-                //       land in the parent room instead of being threaded.
-                if (draftStream.isAlive()) {
-                  draftStream.update(text);
-                  await draftStream.stop();
-                  return;
-                }
-                if (draftStream.messageId() !== undefined) {
-                  const previewId = draftStream.messageId()!;
-                  try {
-                    await client.editMessage(previewId, text);
-                    return;
-                  } catch (err) {
-                    logger?.error?.(
-                      `${logPrefix} Draft stream recovery edit failed: ${formatStreamError(err)}`,
-                    );
-                    await client
-                      .deleteMessage(previewId)
-                      .catch(() => undefined);
-                  }
-                }
-
-                if (shouldThread) {
-                  await client.sendMessage(roomId, text, {
-                    parentMessageId: payload.message.id,
+                try {
+                  const result = await deliverSabhaPayload({
+                    client, account, draft: draftStream, text: replyPayload.text ?? "", roomId: payload.room.id,
+                    mediaUrls: replyPayload.mediaUrls?.length ? replyPayload.mediaUrls : replyPayload.mediaUrl ? [replyPayload.mediaUrl] : [],
+                    ...(shouldThread ? { parentMessageId: payload.message.id } : {}),
                   });
-                  return;
+                  delivered ||= result.visibleReplySent === true;
+                  return result;
+                } catch (error) {
+                  delivered ||= isChannelPartialDeliveryError(error);
+                  throw error;
                 }
-                await client.sendMessage(roomId, text);
               },
               logger,
             });
@@ -462,36 +406,6 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // redelivery of this message_created event gets a fresh
             // attempt instead of being silently dropped as a duplicate.
             dedup.unmark(dedupKey!);
-            // Q12 error-replace: replace the preview with the error
-            // string so the user doesn't see a stuck partial. The
-            // stream may already be `stopped` from the failure that
-            // bubbled up here — going through `draftStream.update` /
-            // `stop` would be a silent no-op in that case (the SDK
-            // drops updates once stopped). Bypass the loop entirely
-            // and PATCH via the client. `formatStreamError` redacts
-            // bot keys from error messages before they land on a
-            // public room message — `SabhaApiError` embeds the fetch
-            // URL (which contains the bot key) in its message.
-            //
-            // Drain any in-flight partial send first so `messageId()`
-            // is accurate. Without the flush, an error arriving while
-            // a partial's send was pending would skip the error-replace
-            // entirely (messageId undefined → gate fails), leave the
-            // partial to land as a stale preview with no error
-            // indication, and the user would see whatever the last
-            // partial said instead of the error.
-            await draftStream.flush().catch(() => undefined);
-            if (draftStream.messageId() !== undefined) {
-              const previewId = draftStream.messageId()!;
-              const safe = formatStreamError(err);
-              await client
-                .editMessage(previewId, safe)
-                .catch((replaceErr) => {
-                  logger?.error?.(
-                    `${logPrefix} Error-replace edit failed: ${formatStreamError(replaceErr)}`,
-                  );
-                });
-            }
             logger?.error?.(`${logPrefix} Failed to process message ${payload.message.id}: ${formatStreamError(err)}`);
           } finally {
             // Draft stream cleanup: even on the success path, the SDK's
@@ -499,7 +413,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
             // loop so any pending tick is cleared and Node can exit
             // cleanly after an abort. Idempotent — calling stop on an
             // already-stopped loop is a no-op.
-            await draftStream.stop().catch(() => undefined);
+            await (delivered ? draftStream.stop() : draftStream.clear()).catch(() => undefined);
             typing?.stop(payload.room.id);
             inFlight.delete(dedupKey!);
           }
@@ -585,7 +499,7 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       logger?.error?.(
         `${logPrefix} Fatal Sabha error (${fatalReason}) — parking this account until gateway restart. Fix the bot_key / apiBaseUrl and run \`openclaw gateway restart\`.`,
       );
-      statusSink?.({ lastError: `fatal: ${fatalReason}` });
+      statusSink?.({ lastError: `fatal: ${fatalReason}`, lifecycle: "blocked", connected: false });
       await waitForAbort(abortSignal);
     }
   } finally {
@@ -599,6 +513,6 @@ export async function monitorSabha(opts: MonitorSabhaOpts): Promise<void> {
       logger?.info?.(`${logPrefix} Draining ${inFlight.size} in-flight message(s)`);
       await Promise.allSettled(inFlight.values());
     }
+    statusSink?.({ lifecycle: "stopped", connected: false });
   }
 }
-

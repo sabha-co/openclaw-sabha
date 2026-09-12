@@ -1,5 +1,9 @@
 import { Type, type TSchema } from "typebox";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-core";
+
+
 import { SabhaClient } from "./client.js";
 import {
   listSabhaAccountIds,
@@ -34,7 +38,7 @@ function toolError(err: unknown): ToolResult {
  * through `ctx.agentAccountId` (supplied by the SDK per invocation) with a
  * final fallback to `resolveDefaultSabhaAccountId`. This mirrors the Feishu
  * plugin's pattern — which was verified as the canonical multi-account
- * tool registration shape by the v1 scout work.
+ * tool registration shape.
  */
 type AccountAwareParams = { accountId?: string };
 
@@ -50,12 +54,12 @@ type AccountAwareParams = { accountId?: string };
  *      (applied inside `resolveSabhaAccount` when `accountId` is nullish).
  *
  * Two safety guards on top of the precedence:
- *   - **Unknown id falls back to default.** If the resolved id is not a
+ *   - **Unrelated context ids fall back to default.** If the context id is not a
  *     real Sabha account (e.g. a Slack workspace id reaching us via
  *     `agentAccountId` from a different channel's routing), we fall back
  *     to the configured default instead of returning a degenerate
  *     base-only config. Mirrors Feishu's `tool-account-routing.test.ts`
- *     behavior.
+ *     behavior. Explicit unknown overrides fail instead of changing tenants.
  *   - **Disabled accounts throw.** A bot account marked
  *     `enabled: false` should not silently service tool calls; surface
  *     that as an explicit error so operators can tell why a tool failed.
@@ -65,8 +69,11 @@ function getClientForTool(
   params: AccountAwareParams | undefined,
   agentAccountId: string | undefined,
 ): SabhaClient {
-  const requestedId = params?.accountId ?? agentAccountId;
+  const requestedId = normalizeOptionalAccountId(params?.accountId ?? agentAccountId);
   const knownIds = listSabhaAccountIds(cfg);
+  if (params?.accountId && (!requestedId || !knownIds.includes(requestedId))) {
+    throw new Error(`Unknown Sabha account "${params.accountId}"`);
+  }
   const resolvedId =
     requestedId && knownIds.includes(requestedId)
       ? requestedId
@@ -78,10 +85,13 @@ function getClientForTool(
         `Re-enable it or pick a different accountId.`,
     );
   }
+  if (!account.botKey || !account.apiBaseUrl) {
+    throw new Error(`Sabha account "${account.accountId}" is not configured`);
+  }
   return new SabhaClient(account.apiBaseUrl, account.botKey);
 }
 
-type ToolCtx = { agentAccountId?: string };
+type ToolCtx = OpenClawPluginToolContext;
 
 type ToolExecute<TParams> = (args: {
   cfg: OpenClawConfig;
@@ -113,7 +123,7 @@ export function createSabhaTools(getConfig: () => OpenClawConfig) {
       parameters: def.parameters,
       async execute(_id: string, rawParams: unknown): Promise<ToolResult> {
         try {
-          const cfg = getConfig();
+          const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? getConfig();
           const params = (rawParams ?? {}) as TParams;
           const data = await def.execute({
             cfg,

@@ -1,39 +1,28 @@
-// Loader-backed smoke test for the plugin's top-level entries.
-//
-// Catches the failure mode where `index.ts` or `setup-entry.ts` compiles
-// cleanly but produces a runtime shape OpenClaw's loader rejects — e.g. a
-// missing `kind` discriminator after a contract migration, an id/name drift,
-// or `setup-entry.ts` accidentally exporting the channel plugin object
-// instead of the SDK's bundled-setup-entry contract.
-//
-// Uses the SDK's canonical `assertBundledChannelEntries` helper for the
-// entry-contract surface (matches WhatsApp / Telegram bundled tests). The
-// third describe-it walks the plugin object directly to catch capability
-// regressions that the contract assertions can't see.
-
-import { assertBundledChannelEntries } from "openclaw/plugin-sdk/channel-test-helpers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
 import entry from "./index.js";
-import setupEntry from "./setup-entry.js";
-import { sabhaPlugin } from "./src/channel.js";
 
-describe("sabha bundled entries", () => {
-  assertBundledChannelEntries({
-    entry,
-    expectedId: "sabha",
-    expectedName: "Sabha",
-    setupEntry,
+describe("entry registration", () => {
+  it("registers both named factories synchronously without runtime in tool discovery", () => {
+    const registerTool = vi.fn();
+    const api = {
+      registrationMode: "tool-discovery",
+      registerTool,
+      get runtime() { throw new Error("runtime unavailable in discovery"); },
+      logger: { error: vi.fn(), warn: vi.fn() },
+    } as unknown as OpenClawPluginApi;
+    entry.register(api);
+    expect(registerTool).toHaveBeenCalledTimes(2);
+    expect(registerTool.mock.calls.map(([, options]) => options.name)).toEqual([
+      "sabha_search_members", "sabha_create_dm",
+    ]);
+    for (const [factory] of registerTool.mock.calls) expect(factory({}).execute).toBeTypeOf("function");
   });
 
-  it("plugin object declares the chat-channel surface the loader reads", () => {
-    expect(sabhaPlugin.id).toBe("sabha");
-    expect(sabhaPlugin.capabilities).toBeDefined();
-    expect(sabhaPlugin.gateway).toBeDefined();
-    expect(typeof sabhaPlugin.gateway?.startAccount).toBe("function");
-    expect(sabhaPlugin.outbound).toBeDefined();
-    expect(sabhaPlugin.directory).toBeDefined();
-    expect(sabhaPlugin.actions).toBeDefined();
-    expect(sabhaPlugin.messaging).toBeDefined();
-    expect(sabhaPlugin.setup).toBeDefined();
+  it("registers only CLI metadata in CLI mode", () => {
+    const registerCli = vi.fn();
+    entry.register({ registrationMode: "cli-metadata", registerCli } as unknown as OpenClawPluginApi);
+    expect(registerCli).toHaveBeenCalledOnce();
+    expect(registerCli.mock.calls[0][1].descriptors[0].name).toBe("sabha");
   });
 });

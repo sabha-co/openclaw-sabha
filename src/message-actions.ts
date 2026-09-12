@@ -1,4 +1,3 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { jsonResult } from "openclaw/plugin-sdk/channel-actions";
 import type {
   ChannelMessageActionAdapter,
@@ -273,7 +272,7 @@ export const sabhaMessageActions: ChannelMessageActionAdapter = {
 
 async function dispatchSabhaAction(
   ctx: ChannelMessageActionContext,
-): Promise<AgentToolResult<unknown>> {
+): Promise<ReturnType<typeof jsonResult>> {
   const { action, params } = ctx;
   const client = buildClient(ctx);
 

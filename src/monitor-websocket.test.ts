@@ -110,11 +110,13 @@ describe("createSabhaConnectOnce", () => {
 
   it("rejects on disconnect with reconnect: false", async () => {
     const { ws, emit } = createMockWebSocket();
+    const statuses: unknown[] = [];
 
     const connectOnce = createSabhaConnectOnce({
       wsUrl: "ws://localhost/cable",
       onMessage: noopMessage(),
       webSocketFactory: () => ws,
+      statusSink: (status) => statuses.push(status),
     });
 
     const done = connectOnce();
@@ -127,6 +129,8 @@ describe("createSabhaConnectOnce", () => {
     }));
 
     await expect(done).rejects.toThrow(DisconnectNoReconnectError);
+    emit("close", 1000, Buffer.from(""));
+    expect(statuses.at(-1)).toMatchObject({ lifecycle: "blocked", connected: false });
   });
 
   it("resolves on disconnect with reconnect: true", async () => {
@@ -189,12 +193,12 @@ describe("createSabhaConnectOnce", () => {
       identifier: JSON.parse(sent[0]).identifier,
     }));
 
-    expect(statuses).toContainEqual(expect.objectContaining({ connected: true }));
+    expect(statuses).toContainEqual(expect.objectContaining({ connected: true, lifecycle: "ready" }));
 
     emit("close", 1000, Buffer.from(""));
     await done;
 
-    expect(statuses).toContainEqual(expect.objectContaining({ connected: false }));
+    expect(statuses).toContainEqual(expect.objectContaining({ connected: false, lifecycle: "recovering" }));
   });
 
   it("terminates on abort signal", async () => {

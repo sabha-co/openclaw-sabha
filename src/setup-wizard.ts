@@ -5,7 +5,6 @@ import {
   normalizeAccountId,
 } from "openclaw/plugin-sdk/account-core";
 import type { SabhaConfig, SabhaRoom } from "./types.js";
-import { SabhaClient, SabhaApiError } from "./client.js";
 import {
   listSabhaAccountIds,
   mergeSabhaAccountConfig,
@@ -140,6 +139,7 @@ async function autoJoinOpenRooms(
   botKey: string,
   prompter: WizardPrompter,
 ): Promise<void> {
+  const { SabhaClient } = await import("./client.js");
   const client = new SabhaClient(apiBaseUrl, botKey);
 
   let joinable: SabhaRoom[];
@@ -285,6 +285,7 @@ async function probeBotKey(
   // `/api/bots` scope. If a self-hosted Sabha ever mounts the bot API
   // under a different path, this will false-negative — we can revisit
   // when that happens.
+  const { SabhaClient, SabhaApiError } = await import("./client.js");
   const client = new SabhaClient(`${baseUrl}/api/bots`, botKey);
   try {
     await client.listRooms({ joinable: true });
@@ -445,8 +446,7 @@ export function isDefaultSabhaAccount(
 
 /**
  * Merged view of one bot account's setup-relevant fields. Reads the base
- * `channels.sabha` block for the default account and the named entry under
- * `accounts.<id>` for every other account, merged on top of the base.
+ * shared non-credential defaults plus the named `accounts.<id>` entry.
  */
 export function getSabhaAccountView(
   cfg: OpenClawConfig,
@@ -456,47 +456,14 @@ export function getSabhaAccountView(
   return mergeSabhaAccountConfig(cfg, id);
 }
 
-/**
- * Return every bot account id that has full credentials persisted —
- * `baseUrl`, `apiBaseUrl`, and `botKey` all set, either via its own
- * `accounts.<id>` entry or via the base layered through
- * `mergeSabhaAccountConfig`. Powers the multi-bot selector's Edit list
- * and the "Keep existing bot?" shortcut in `finalize`.
- *
- * Distinct from `accounts.ts`'s `listConfiguredSabhaAccountIds`, which
- * only checks key presence in the `accounts` map (no credential check,
- * no base-layer awareness). The wizard needs the richer credential view
- * because its UX hinges on "is this slot ready to use?", not just "did
- * the operator type something here?".
- *
- * `listSabhaAccountIds` includes the SDK's implicit `default` fallback
- * even when no explicit `accounts` map exists, so on a multi-bot config
- * where named accounts exist we still check the default slot explicitly
- * (its credentials may live at the channel root, layered in via the
- * base block).
- */
+/** Configured named accounts that have enough credentials for the wizard's edit list. */
 export function listSabhaAccountIdsWithCredentials(
   cfg: OpenClawConfig,
 ): string[] {
-  const ids: string[] = [];
-
-  const defaultView = getSabhaAccountView(cfg, DEFAULT_ACCOUNT_ID);
-  if (defaultView.baseUrl && defaultView.apiBaseUrl && defaultView.botKey) {
-    ids.push(DEFAULT_ACCOUNT_ID);
-  }
-
-  for (const id of listSabhaAccountIds(cfg)) {
-    if (id === DEFAULT_ACCOUNT_ID) continue;
+  const ids = listSabhaAccountIds(cfg).filter((id) => {
     const view = getSabhaAccountView(cfg, id);
-    if (
-      view.baseUrl &&
-      view.apiBaseUrl &&
-      view.botKey &&
-      !ids.includes(id)
-    ) {
-      ids.push(id);
-    }
-  }
+    return Boolean(view.baseUrl && view.apiBaseUrl && view.botKey);
+  });
 
   return ids;
 }

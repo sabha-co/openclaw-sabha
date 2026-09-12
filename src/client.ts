@@ -136,11 +136,15 @@ export class SabhaClient {
     roomId: number,
     file: Blob,
     filename: string,
+    opts?: { parentMessageId?: number },
   ): Promise<{ id: number; roomId: number } | null> {
     const form = new FormData();
     form.append("attachment", file, filename);
 
-    const res = await this.fetch(`/rooms/${roomId}/messages`, {
+    const path = opts?.parentMessageId == null
+      ? `/rooms/${roomId}/messages`
+      : `/rooms/${roomId}/messages?parent_message_id=${opts.parentMessageId}`;
+    const res = await this.fetch(path, {
       method: "POST",
       body: form,
     });
@@ -602,11 +606,4 @@ export class SabhaApiError extends Error {
   }
 }
 
-/**
- * Extract the numeric bot ID from a bot key.
- * "42-AbCdEfGhIjKl" -> 42
- */
-export function extractBotId(botKey: string): number {
-  const dash = botKey.indexOf("-");
-  return dash > 0 ? Number(botKey.slice(0, dash)) : 0;
-}
+export { extractBotId } from "./bot-id.js";

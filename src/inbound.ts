@@ -1,6 +1,5 @@
 import type {
   ResolvedSabhaAccount,
-  DeliveryPayload,
   SabhaMessageCreatedPayload,
   SabhaMessageEventPayload,
   SabhaMessageUpdatedPayload,
@@ -12,11 +11,14 @@ import type {
 } from "./types.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { wasBotMentioned, resolveChatType } from "./webhook.js";
-import { resolveSessionFromPayload } from "./session.js";
+import { resolveSessionFromPayload, buildSabhaSessionRoute } from "./session.js";
 import { resolveAttachmentSsrfPolicy } from "./ssrf-guard.js";
 
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
-import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
+import { createChannelIngressResolver, defineStableChannelIngressIdentity } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import { readAgentRunTerminalOutcome } from "openclaw/plugin-sdk/channel-inbound";
+import type { ChannelInboundTurnPlan, BuildChannelInboundEventContextParams } from "openclaw/plugin-sdk/channel-inbound";
+import { formatStreamError } from "./draft-stream.js";
 
 type ChannelRuntime = PluginRuntime["channel"];
 
@@ -62,214 +64,107 @@ type InboundDeps = {
   runtime: PluginRuntime | ChannelRuntime;
   cfg: OpenClawConfig;
   account: ResolvedSabhaAccount;
-  deliver: (payload: DeliveryPayload) => Promise<void>;
+  deliver: NonNullable<ChannelInboundTurnPlan["delivery"]>["deliver"];
+  onAdmitted?: () => void;
+  abortSignal?: AbortSignal;
   logger?: Logger;
-  /**
-   * Streaming hook. Called by the OpenClaw runtime as the agent yields
-   * partial output during a turn. `payload.text` carries the full
-   * accumulated snapshot on every call, not a delta. Wired into
-   * `dispatchInboundReplyWithBase`'s `replyOptions.onPartialReply` so the
-   * draft stream can PATCH the preview message in place. Always defined
-   * now — every inbound case streams, whether the target room is known
-   * up front or resolved on the first send via the stream's
-   * `parentMessageId` option (threading-on path).
-   */
+  /** Full accumulated assistant text, never a token delta. */
   onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
 };
 
-/**
- * Process an inbound Sabha webhook event and dispatch it to OpenClaw's reply pipeline.
- */
+/** Adapt Sabha facts into the injected host's inbound kernel. */
 export async function processInboundMessage(
   payload: SabhaMessageCreatedPayload,
   deps: InboundDeps,
 ): Promise<void> {
-  const {
-    runtime: runtimeOrChannel,
-    cfg,
-    account,
-    deliver,
-    logger,
-    onPartialReply,
-  } = deps;
-
-  // Normalize: accept either PluginRuntime or ChannelRuntime directly
-  const channel: ChannelRuntime = "channel" in runtimeOrChannel
-    ? (runtimeOrChannel as PluginRuntime).channel
-    : runtimeOrChannel as ChannelRuntime;
-
-  // Skip messages from the bot itself
-  if (payload.user.id === account.botId) return;
-
+  const { cfg, account, deliver, logger, onPartialReply, onAdmitted, abortSignal } = deps;
+  const channel = "channel" in deps.runtime ? deps.runtime.channel : deps.runtime;
+  if (!account.enabled || abortSignal?.aborted || !shouldHandleInbound(payload, account.botId)) return;
   const chatType = resolveChatType(payload.room.type);
   const isDm = chatType === "direct";
-  const isThread = payload.message.thread != null;
-  const mentioned = wasBotMentioned(payload, account.botId);
-
-  // DMs and threads are always handled. Top-level group messages require mention.
-  if (!isDm && !isThread && !mentioned) return;
-
   const session = resolveSessionFromPayload(payload);
-  const accountId = account.accountId ?? "";
-
-  // Resolve agent route
-  const route = channel.routing.resolveAgentRoute({
-    cfg,
-    channel: CHANNEL_ID,
-    accountId,
-    peer: {
-      kind: chatType,
-      id: session.conversationId,
-    },
-  });
-
-  // Resolve store path
-  const storePath = channel.session.resolveStorePath(undefined, {
-    agentId: route.agentId,
-  });
-
-  // Download attachment immediately (signed URLs expire after 1 hour)
-  let attachmentPath: string | undefined;
-  if (payload.message.has_attachment && payload.message.attachment) {
-    try {
-      const { url, filename, content_type } = payload.message.attachment;
-      const ssrfPolicy = resolveAttachmentSsrfPolicy(account);
-      const fetched = await channel.media.fetchRemoteMedia({
-        url,
-        ...(ssrfPolicy ? { ssrfPolicy } : {}),
-      });
-      const saved = await channel.media.saveMediaBuffer(
-        fetched.buffer,
-        content_type,
-        "inbound",
-        undefined,
-        filename,
-      );
-      attachmentPath = saved.id;
-    } catch (err) {
-      logger?.error?.(`[sabha] Failed to download attachment: ${err}`);
-    }
-  }
-
-  // Build raw message body (clean text for the LLM)
+  const accountId = account.accountId;
+  const roomId = String(payload.room.id);
+  const messageId = String(payload.message.id);
   const rawBody = payload.message.body.plain;
-
-  // Build body with attachment context if present
-  const bodyWithAttachment = attachmentPath
-    ? `${rawBody}\n\n[Attachment: ${payload.message.attachment!.filename} — saved to ${attachmentPath}]`
-    : rawBody;
-
-  // Build the formatted envelope (with sender/timestamp context).
-  //
-  // Why the `from` field embeds `@{id}`: Sabha's mention syntax is
-  // `@{user_id}` (see `/skill` — "To mention a user, use @{user_id}
-  // syntax"). The envelope body the LLM reads is the only place the
-  // agent learns who sent the message, and `formatAgentEnvelope` only
-  // accepts `from: string` (no separate id field on the SDK type). If we
-  // pass just the display name the agent has no way to construct a
-  // mention, because the numeric id lives in `ctxPayload.SenderId` which
-  // is metadata, not prompt text. Folding the literal `@{id}` token into
-  // the from string gives the agent the exact syntax to echo back —
-  // nextcloud-talk sets precedent for non-plain-name from values
-  // (`user:42`, `room:General`). This is the fix for 0.9.4's "mentions
-  // never trigger server-side" bug where agents emitted plain-text
-  // `@Alice` instead of `@{1}`.
-  const envelopeOpts = channel.reply.resolveEnvelopeFormatOptions(cfg);
-  const envelope = channel.reply.formatAgentEnvelope({
-    channel: CHANNEL_ID,
-    from: `${payload.user.name} (@{${payload.user.id}})`,
-    timestamp: new Date(payload.message.created_at).getTime(),
-    envelope: envelopeOpts,
-    body: bodyWithAttachment,
+  const timestamp = new Date(payload.message.created_at).getTime();
+  const mentioned = wasBotMentioned(payload, account.botId);
+  const agentRoute = channel.routing.resolveAgentRoute({
+    cfg, channel: CHANNEL_ID, accountId,
+    peer: { kind: chatType, id: session.conversationId },
   });
-
-  // Resolve per-room system prompt (operator-defined via config)
-  const roomConfig = account.rooms?.[String(payload.room.id)];
-  const groupSystemPrompt = !isDm
-    ? roomConfig?.systemPrompt?.trim() || undefined
-    : undefined;
-
-  // Build the inbound context with PascalCase field names (MsgContext).
-  //
-  // `Provider` / `Surface` / `OriginatingChannel` are required by the
-  // SDK's `buildThreadingToolContext` (`agent-runner-utils-*.js`) — if
-  // they're missing, it short-circuits at `if (!rawProvider) return
-  // { currentMessageId };` and never populates `toolContext.currentChannelId`.
-  // That breaks the runner's auto-fill of `target` from
-  // `currentChannelId` (`message-action-runner-*.js:106-114`), which is
-  // what lets the agent call e.g. `react` with just `messageId` and
-  // have the gate auto-resolve the room target. Verified against peers:
-  // Telegram, Feishu, Mattermost all set these on every
-  // `finalizeInboundContext` call. Sabha was the only outlier.
-  // `OriginatingTo` mirrors `To` so the resolver picks the same room id
-  // either field is read.
-  const ctxPayload = channel.reply.finalizeInboundContext({
-    Body: envelope,
-    BodyForAgent: envelope,
-    RawBody: rawBody,
-    BodyForCommands: rawBody,
-    CommandBody: rawBody,
-    From: payload.user.name,
-    SenderId: String(payload.user.id),
-    SenderName: payload.user.name,
-    To: String(payload.room.id),
-    Provider: CHANNEL_ID,
-    Surface: CHANNEL_ID,
-    OriginatingChannel: CHANNEL_ID,
-    OriginatingTo: String(payload.room.id),
-    SessionKey: route.sessionKey,
-    AccountId: accountId,
-    ChatType: chatType,
-    ConversationLabel: payload.room.name,
-    Timestamp: new Date(payload.message.created_at).getTime(),
-    MessageSid: String(payload.message.id),
-    GroupSystemPrompt: groupSystemPrompt,
-    // `WasMentioned` is group-only by canonical convention. Peers
-    // (Mattermost, Telegram, Feishu) gate the field on `isGroup` —
-    // a DM is implicitly addressed to the bot, and feeding `true`
-    // there would make `ack-reactions-wu9Zf6cu.js:12` over-trigger
-    // on every direct reply. See `docs/SDK-PARITY-PLAN.md` Phase 1.
-    ...(isDm ? {} : { WasMentioned: mentioned }),
-    ...(session.threadId ? {
-      MessageThreadId: session.threadId,
-      ReplyToId: session.threadId,
-      ParentSessionKey: session.baseConversationId
-        ? route.sessionKey
-        : undefined,
-    } : {}),
-    ...(attachmentPath ? {
-      MediaPath: attachmentPath,
-    } : {}),
-  });
-
-  logger?.info?.(
-    `[sabha] Dispatching: ${payload.event} from ${payload.user.name} in ${payload.room.name}`,
-  );
-
-  // Record session and dispatch reply
-  await dispatchInboundReplyWithBase({
-    cfg,
-    channel: CHANNEL_ID,
-    accountId,
-    route,
-    storePath,
-    ctxPayload,
-    core: { channel },
-    deliver,
-    onRecordError: (err) => {
-      logger?.error?.(`[sabha] Session record error: ${err}`);
+  const sessionRoute = buildSabhaSessionRoute({ cfg, agentId: agentRoute.agentId, accountId, roomId, chatType, threadId: session.threadId });
+  const route = { ...agentRoute, sessionKey: sessionRoute.sessionKey, lastRoutePolicy: "session" as const };
+  const ingress = await createChannelIngressResolver({
+    channelId: CHANNEL_ID, accountId, cfg,
+    identity: defineStableChannelIngressIdentity({
+      key: "sabha-user-id", kind: "stable-id", authentication: "asserted",
+      normalize: (value) => /^\d+$/.test(value.trim()) ? value.trim() : null,
+      resolveParticipant: (subject) => ({ domain: account.baseUrl, idKind: "sabha-user-id", id: String(subject.stableId) }),
+    }),
+  }).message({
+    subject: { stableId: String(payload.user.id) },
+    conversation: { kind: chatType, id: roomId },
+    contextBinding: { agentId: route.agentId, sessionKey: route.sessionKey, messageId, inboundEventKind: "user_request" },
+    dmPolicy: account.dmPolicy, groupPolicy: "open", allowFrom: account.dmPolicy === "open" ? ["*"] : account.allowFrom,
+    mentionFacts: { canDetectMention: true, wasMentioned: mentioned, hasAnyMention: mentioned },
+    policy: {
+      groupAllowFromFallbackToAllowFrom: false,
+      activation: { requireMention: !isDm && !session.threadId, allowTextCommands: true },
     },
-    onDispatchError: (err, info) => {
-      logger?.error?.(`[sabha] Dispatch error (${info.kind}): ${err}`);
-    },
-    // `replyOptions` threads through to the agent runtime. `onPartialReply`
-    // is how streaming draft-stream previews are driven — each call carries
-    // the full accumulated text snapshot (not a delta), so the caller can
-    // feed it directly into `SabhaDraftStream.update`. See §2.1 of the
-    // plan for the Q10/Q12 decisions and `src/draft-stream.ts` for the
-    // throttle / lifecycle contract.
-    ...(onPartialReply ? { replyOptions: { onPartialReply } } : {}),
+    command: { commandOwnerAllowFrom: account.allowFrom, groupOwnerAllowFrom: "none", allowTextCommands: true, hasControlCommand: channel.commands.isControlCommandMessage(rawBody, cfg) },
   });
+  if (ingress.ingress.admission !== "dispatch" || abortSignal?.aborted) return;
+
+  const result = await channel.inbound.run({
+    channel: CHANNEL_ID, accountId, raw: payload,
+    adapter: {
+      ingest: () => ({ id: messageId, timestamp, rawText: rawBody, raw: payload }),
+      preflight: () => abortSignal?.aborted ? { kind: "drop", reason: "account stopped" } : undefined,
+      resolveTurn: async () => {
+        onAdmitted?.();
+        const media: NonNullable<BuildChannelInboundEventContextParams["media"]> = [];
+        if (payload.message.has_attachment && payload.message.attachment) {
+          try {
+            const { url, filename, content_type } = payload.message.attachment;
+            const ssrfPolicy = resolveAttachmentSsrfPolicy(account);
+            const fetched = await channel.media.fetchRemoteMedia({ url, ...(ssrfPolicy ? { ssrfPolicy } : {}) });
+            const saved = await channel.media.saveMediaBuffer(fetched.buffer, content_type, "inbound", undefined, filename);
+            media.push({ path: saved.path, contentType: content_type, fileName: filename });
+          } catch (err) {
+            logger?.error?.(`[sabha] Failed to download attachment: ${formatStreamError(err)}`);
+          }
+        }
+        const envelope = channel.reply.formatAgentEnvelope({
+          channel: CHANNEL_ID, from: `${payload.user.name} (@{${payload.user.id}})`, timestamp,
+          envelope: channel.reply.resolveEnvelopeFormatOptions(cfg), body: rawBody,
+        });
+        const ctxPayload = channel.inbound.buildContext({
+          channelIngress: ingress, channel: CHANNEL_ID, accountId, messageId, timestamp,
+          from: `sabha:${payload.user.id}`,
+          sender: { id: String(payload.user.id), name: payload.user.name },
+          conversation: { kind: chatType, id: roomId, label: payload.room.name, nativeChannelId: roomId, threadId: session.threadId },
+          route: { agentId: route.agentId, dmScope: route.dmScope, accountId, routeSessionKey: route.sessionKey },
+          reply: { to: roomId, originatingTo: roomId, nativeChannelId: roomId, messageThreadId: session.threadId },
+          message: { body: envelope, bodyForAgent: rawBody ? envelope : "", rawBody, commandBody: rawBody, inboundEventKind: "user_request" },
+          access: { commands: { authorized: ingress.commandAccess.authorized }, ...(!isDm ? { mentions: { canDetectMention: true, wasMentioned: mentioned } } : {}) },
+          media,
+          extra: { GroupSystemPrompt: !isDm ? account.rooms[roomId]?.systemPrompt?.trim() || undefined : undefined },
+        });
+        return {
+          cfg, channel: CHANNEL_ID, accountId, route, ctxPayload,
+          delivery: { deliver, observeMessageSent: true },
+          dispatchReplyFromConfig: channel.reply.dispatchReplyFromConfig,
+          record: { onRecordError: (error) => logger?.error?.(`[sabha] Session record failed: ${formatStreamError(error)}`) },
+          replyOptions: { onPartialReply, disableBlockStreaming: true },
+        };
+      },
+    },
+  });
+  if (result.dispatched && (readAgentRunTerminalOutcome(result.dispatchResult) === "failed" || Object.values(result.dispatchResult.failedCounts ?? {}).some((count) => count > 0))) {
+    throw new Error("Sabha inbound turn failed to settle delivery");
+  }
+  if (result.dispatched) logger?.info?.(`[sabha] Dispatched ${messageId} in ${roomId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +251,7 @@ export async function handleBoostDeleted(
 // same tenant. These stubs exist purely to keep the dispatch table
 // complete (so future hooks don't have to re-touch webhook parsing or
 // monitor dispatch); they MUST NOT emit the payload through
-// `dispatchInboundReplyWithBase`, `formatAgentEnvelope`, or any other
+// the inbound kernel, `formatAgentEnvelope`, or any other
 // agent-runtime path. Any future feature wiring `user_*` to a visible
 // surface must gate on a per-bot-account opt-in flag and document the
 // tradeoff in `docs/ARCHITECTURE.md`.

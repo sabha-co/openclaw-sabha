@@ -48,7 +48,7 @@ describe("sabhaPlugin.config", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co/1000006",
       apiBaseUrl: "https://sabha.co/1000006/api/bots",
-      botKey: "42-AbCdEfGhIjKl",
+      accounts: { default: { botKey: "42-AbCdEfGhIjKl" } },
     });
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;
@@ -82,7 +82,7 @@ describe("sabhaPlugin.config", () => {
   it("inspectAccount reports missing without apiBaseUrl", () => {
     const cfg = makeCfg({
       baseUrl: "https://sabha.co",
-      botKey: "42-AbCdEfGhIjKl",
+      accounts: { default: { botKey: "42-AbCdEfGhIjKl" } },
     });
     const result = sabhaPlugin.config.inspectAccount!(cfg) as {
       configured: boolean;
@@ -370,11 +370,16 @@ describe("sabhaPlugin.gateway.startAccount fail-closed paths", () => {
     };
     const logs: CapturedLog[] = [];
     const ac = new AbortController();
+    const ctx = makeCtx(account, logs, ac.signal);
+    const statuses: unknown[] = [];
+    ctx.setStatus = (status) => { statuses.push(status); };
     const startPromise = sabhaPlugin.gateway!.startAccount!(
-      makeCtx(account, logs, ac.signal),
+      ctx,
     );
+    expect(statuses).toContainEqual(expect.objectContaining({ lifecycle: "blocked", connected: false }));
     ac.abort();
     await startPromise;
+    expect(statuses).toContainEqual(expect.objectContaining({ lifecycle: "stopped" }));
 
     expect(
       logs.some((l) => l.level === "info" && /Disabled/i.test(l.message)),

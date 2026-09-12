@@ -1,8 +1,8 @@
-import {
-  createRateLimitRetryRunner,
-  type RetryConfig,
-  type RetryRunner,
-} from "openclaw/plugin-sdk/retry-runtime";
+import { retryAsync } from "openclaw/plugin-sdk/runtime-env";
+
+type RetryOptions = Exclude<Parameters<typeof retryAsync>[1], number | undefined>;
+export type RetryConfig = Pick<RetryOptions, "attempts" | "minDelayMs" | "maxDelayMs" | "jitter">;
+export type RetryRunner = <T>(fn: () => Promise<T>, label?: string) => Promise<T>;
 
 // Sabha's Bot API rejects excess traffic with 429 + a `Retry-After` header.
 // The 5xx gateway family can appear during deploys or upstream timeouts;
@@ -75,14 +75,11 @@ export function createSabhaRetryRunner(
     verbose?: boolean;
   } = {},
 ): RetryRunner {
-  return createRateLimitRetryRunner({
-    ...(params.retry ? { retry: params.retry } : {}),
-    ...(params.verbose != null ? { verbose: params.verbose } : {}),
-    defaults: SABHA_RETRY_DEFAULTS,
-    logLabel: "sabha",
+  return (fn, label) => retryAsync(fn, {
+    ...SABHA_RETRY_DEFAULTS,
+    ...params.retry,
+    label,
     shouldRetry: isRetryableSabhaError,
     retryAfterMs: sabhaRetryAfterMs,
   });
 }
-
-export type { RetryRunner, RetryConfig };

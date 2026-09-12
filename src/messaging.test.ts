@@ -372,7 +372,11 @@ describe("inferSabhaTargetChatType", () => {
 });
 
 describe("resolveSabhaDeliveryTarget", () => {
-  it("returns parent room with thread room as threadId for thread sessions", () => {
+  it("strips the account scope before selecting a wire room", () => {
+    expect(resolveSabhaDeliveryTarget({ conversationId: "primary:5" })).toEqual({ to: "channel:5" });
+  });
+
+  it("delivers directly to the thread room", () => {
     // Mirrors Mattermost's `channel.ts:311-317` exactly: parent ≠ child
     // means a thread session, so `to` is the parent and `threadId` is
     // the child (thread room).
@@ -381,7 +385,7 @@ describe("resolveSabhaDeliveryTarget", () => {
         conversationId: "99",
         parentConversationId: "5",
       }),
-    ).toEqual({ to: "channel:5", threadId: "99" });
+    ).toEqual({ to: "channel:99" });
   });
 
   it("returns just `to` for non-thread sessions", () => {

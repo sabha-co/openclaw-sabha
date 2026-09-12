@@ -3,7 +3,6 @@ import type {
   ChannelResolveResult,
 } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { resolveTargetsWithOptionalToken } from "openclaw/plugin-sdk/target-resolver-runtime";
 
 import { resolveSabhaAccount } from "./accounts.js";
 import { SabhaClient } from "./client.js";
@@ -225,24 +224,15 @@ export async function resolveSabhaTargets(params: {
   const tokenAvailable =
     account.enabled && Boolean(account.botKey) && Boolean(account.apiBaseUrl);
 
-  return resolveTargetsWithOptionalToken({
-    token: tokenAvailable ? account.botKey : null,
-    inputs: params.inputs,
-    missingTokenNote: account.enabled
-      ? "missing Sabha bot key or apiBaseUrl"
-      : "Sabha account disabled",
-    resolveWithToken: async ({ token, inputs }) => {
-      const client = new SabhaClient(account.apiBaseUrl, token);
-      return params.kind === "group"
-        ? await resolveGroupInputs(client, inputs)
-        : await resolveUserInputs(client, inputs);
-    },
-    mapResolved: (entry) => ({
-      input: entry.input,
-      resolved: entry.resolved,
-      id: entry.id,
-      name: entry.name,
-      note: entry.note,
-    }),
-  });
+  if (!tokenAvailable) {
+    return params.inputs.map((input) => ({
+      input,
+      resolved: false,
+      note: account.enabled ? "missing Sabha bot key or apiBaseUrl" : "Sabha account disabled",
+    }));
+  }
+  const client = new SabhaClient(account.apiBaseUrl, account.botKey);
+  return params.kind === "group"
+    ? resolveGroupInputs(client, params.inputs)
+    : resolveUserInputs(client, params.inputs);
 }

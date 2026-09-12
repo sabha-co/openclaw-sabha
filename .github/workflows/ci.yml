@@ -37,4 +37,8 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run manifest:check
+
       - run: npm test
+
+      - run: npm run test:pack

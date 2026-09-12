@@ -145,6 +145,24 @@ describe("createSabhaTools — account routing", () => {
     expect(authHeader(call)).toBe("Bearer 20-StagingKey");
   });
 
+  it.each([
+    { context: "backup", params: { accountId: "PRIMARY" } },
+    { context: "PRIMARY", params: {} },
+    { context: "primary", params: {} },
+  ])("routes mixed-case accounts without falling back ($context, $params)", async ({ context, params }) => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(() => cfg({
+      defaultAccount: "backup",
+      accounts: {
+        backup: { apiBaseUrl: "https://backup.example/api/bots", botKey: "7-BackupKey" },
+        Primary: { apiBaseUrl: "https://primary.example/api/bots", botKey: "42-PrimaryKey" },
+      },
+    }))({ agentAccountId: context });
+    await tool.execute("id", params);
+    expect(String(mock.fetch.mock.calls[0][0])).toContain("https://primary.example/api/bots");
+    expect(authHeader(mock.fetch.mock.calls[0])).toBe("Bearer 42-PrimaryKey");
+  });
+
   it("works with a single-bot config", async () => {
     const mock = withMockedFetch();
     restore = mock.restore;
@@ -207,6 +225,21 @@ describe("createSabhaTools — account routing", () => {
     expect(mock.fetch).not.toHaveBeenCalled();
     expect(result.content[0].text).toMatch(/disabled/i);
     expect((result.details as { error?: string }).error).toMatch(/disabled/i);
+  });
+
+  it("rejects an unknown explicit account without falling back across tenants", async () => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(multiBotCfg)({ agentAccountId: "production" });
+    const result = await tool.execute("id", { accountId: "missing" });
+    expect(result.content[0].text).toContain("Unknown Sabha account");
+    expect(mock.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a named account without credentials before making an API call", async () => {
+    const mock = withMockedFetch(); restore = mock.restore;
+    const tool = buildAccountRoutingTool(() => cfg({ accounts: { default: { baseUrl: "https://sabha.example" } } }))({});
+    expect((await tool.execute("id", {})).content[0].text).toContain("not configured");
+    expect(mock.fetch).not.toHaveBeenCalled();
   });
 
   it("returns a text + details result shape", async () => {

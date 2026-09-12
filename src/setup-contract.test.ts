@@ -1,125 +1,31 @@
 import { describe, expect, it } from "vitest";
-import {
-  sabhaNamedAccountPromotionKeys,
-  sabhaSetupAdapter,
-  sabhaSingleAccountKeysToMove,
-} from "./setup-contract.js";
+import { sabhaSetupContract } from "./setup-contract.js";
+import { SabhaConfigSchema } from "./config-schema.js";
 import { resolveSabhaAccount } from "./accounts.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
-// These tests pin the migration contract consumed by the SDK's setup wizard
-// (`setup-wizard-helpers-*.js` calls `moveSingleAccountChannelSectionToDefaultAccount`
-// during `openclaw configure`). The SDK's static
-// `COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE` set covers `dmPolicy`, `allowFrom`
-// (etc.) but NOT Sabha's actual credentials — so without these arrays the
-// wizard's promotion step is a no-op for the very fields it's supposed to
-// promote when an operator runs setup against a legacy single-account config.
-
-describe("sabhaSingleAccountKeysToMove", () => {
-  it("includes the core credential fields the SDK common set misses", () => {
-    // baseUrl / apiBaseUrl / botKey are not in
-    // COMMON_SINGLE_ACCOUNT_KEYS_TO_MOVE; if we drop them here, a
-    // legacy single-account install upgrades into a config where the
-    // resolver sees an empty `accounts.default` and falls back to
-    // base-layer inheritance forever.
-    expect(sabhaSingleAccountKeysToMove).toEqual(
-      expect.arrayContaining([
-        "baseUrl",
-        "apiBaseUrl",
-        "botKey",
-        "botName",
-        "websocketUrl",
-      ]),
-    );
+describe("canonical setup contract", () => {
+  it("writes named credentials with shared settings and account overrides", () => {
+    const cfg = { channels: { sabha: { baseUrl: "https://sabha.co/1000006", dmPolicy: "open" } } };
+    const next = sabhaSetupContract.applyAccountConfig({ cfg, accountId: "primary", input: {
+      botKey: "42-testkey", apiBaseUrl: "https://sabha.co/1000006/api/bots", dmPolicy: "allowlist", allowFrom: ["123"],
+    } });
+    expect(SabhaConfigSchema.safeParse(next.channels?.sabha).success).toBe(true);
+    expect(resolveSabhaAccount({ cfg: next, accountId: "primary" })).toMatchObject({ botKey: "42-testkey", dmPolicy: "allowlist", allowFrom: ["123"], enabled: true });
+    expect(cfg.channels.sabha).not.toHaveProperty("accounts");
   });
-
-  it("includes per-account behavioral fields without schema defaults", () => {
-    // `rooms` and `allowPrivateAttachmentHosts` have no `default:` in
-    // the JSON schema, so they only appear at the base block when an
-    // operator actually wrote them there pre-rename — those are
-    // genuine migration candidates.
-    expect(sabhaSingleAccountKeysToMove).toEqual(
-      expect.arrayContaining(["rooms", "allowPrivateAttachmentHosts"]),
-    );
+  it("rejects root credentials, with no runtime fallback or setup promotion", () => {
+    const section = { botKey: "42-rootkey", accounts: { other: {} } };
+    expect(SabhaConfigSchema.safeParse(section).success).toBe(false);
+    expect(resolveSabhaAccount({ cfg: { channels: { sabha: section } }, accountId: "other" }).botKey).toBe("");
+    expect(sabhaSetupContract.singleAccountKeysToMove).toBeUndefined();
+    expect(sabhaSetupContract.namedAccountPromotionKeys).toBeUndefined();
+    expect(sabhaSetupContract.configPromotion).toBe("preserve-root");
   });
-
-  it("excludes schema-defaulted behavioral keys", () => {
-    // `typingEnabled` and `replyToMode` have `default:` values in
-    // openclaw.plugin.json. The schema loader injects them into the
-    // in-memory cfg before the SDK's wizard-time promotion runs — listing
-    // them here would make the wizard "promote" defaults that were never
-    // on disk, churning the file shape during setup.
-    expect(sabhaSingleAccountKeysToMove).not.toContain("typingEnabled");
-    expect(sabhaSingleAccountKeysToMove).not.toContain("replyToMode");
+  it("accepts room overrides at both shared and named account scopes", () => {
+    expect(SabhaConfigSchema.safeParse({ rooms: { "1": { systemPrompt: "Shared" } }, accounts: { primary: { rooms: { "2": { systemPrompt: "Private" } } } } }).success).toBe(true);
   });
-
-  it("does not list channel-level keys that the SDK already filters", () => {
-    // The SDK auto-strips `accounts`, `defaultAccount`, and `enabled`
-    // from the migration set. Listing them here would be harmless but
-    // signals confusion about what the contract is for.
-    expect(sabhaSingleAccountKeysToMove).not.toContain("accounts");
-    expect(sabhaSingleAccountKeysToMove).not.toContain("defaultAccount");
-    expect(sabhaSingleAccountKeysToMove).not.toContain("enabled");
-  });
-});
-
-describe("sabhaNamedAccountPromotionKeys", () => {
-  it("includes per-account credentials and identity", () => {
-    // When named accounts already exist (e.g. operator added
-    // `accounts.staging` but legacy creds still sit at the channel
-    // root), the migration shim only promotes fields in this list.
-    // botKey MUST be here or the silent-leak footgun reopens —
-    // staging would silently inherit the base-level botKey instead
-    // of the migration moving it into accounts.default.
-    expect(sabhaNamedAccountPromotionKeys).toEqual(
-      expect.arrayContaining([
-        "botKey",
-        "botName",
-        "websocketUrl",
-      ]),
-    );
-  });
-
-  it("does not promote shared workspace fields when named accounts exist", () => {
-    // baseUrl / apiBaseUrl are commonly shared across bots in one
-    // Sabha tenant. Promoting them into accounts.default when named
-    // accounts exist would surprise an operator who intentionally set
-    // a workspace-wide baseUrl at the channel root.
-    expect(sabhaNamedAccountPromotionKeys).not.toContain("baseUrl");
-    expect(sabhaNamedAccountPromotionKeys).not.toContain("apiBaseUrl");
-    expect(sabhaNamedAccountPromotionKeys).not.toContain("dmPolicy");
-    expect(sabhaNamedAccountPromotionKeys).not.toContain("replyToMode");
-  });
-});
-
-describe("sabhaSetupAdapter.applyAccountConfig", () => {
-  // Smoke test the adapter satisfies the SDK contract. Heavier coverage
-  // of `setSabhaAccountConfig` lives in setup-wizard.test.ts.
-
-  it("writes into accounts.<id>, not the base block", () => {
-    const cfg = { channels: {} } as unknown as OpenClawConfig;
-    const next = sabhaSetupAdapter.applyAccountConfig({
-      cfg,
-      accountId: "default",
-      input: {},
-    });
-
-    const sabha = (next.channels as Record<string, unknown>).sabha as Record<
-      string,
-      unknown
-    >;
-    expect(sabha.accounts).toBeDefined();
-    expect(sabha.botKey).toBeUndefined();
-  });
-
-  it("enables the resolved account so a downstream resolveSabhaAccount sees enabled: true", () => {
-    const cfg = { channels: {} } as unknown as OpenClawConfig;
-    const next = sabhaSetupAdapter.applyAccountConfig({
-      cfg,
-      accountId: "staging",
-      input: {},
-    });
-
-    expect(resolveSabhaAccount({ cfg: next, accountId: "staging" }).enabled).toBe(true);
+  it("rejects invalid setup fields before writing config", () => {
+    expect(sabhaSetupContract.parseInput({ dmPolicy: "anyone" }).ok).toBe(false);
+    expect(sabhaSetupContract.metadata.fields.find((field) => field.key === "botKey")).toMatchObject({ sensitive: true });
   });
 });

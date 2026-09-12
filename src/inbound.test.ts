@@ -21,18 +21,20 @@ import type {
 } from "./types.js";
 import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 
-// We stub dispatchInboundReplyWithBase to capture ctxPayload without
-// needing the full OpenClaw runtime machinery.
-vi.mock("openclaw/plugin-sdk/inbound-reply-dispatch", () => ({
-  dispatchInboundReplyWithBase: vi.fn(),
-}));
-
-import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
-
-const mockDispatch = dispatchInboundReplyWithBase as ReturnType<typeof vi.fn>;
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+const mockDispatch = vi.fn();
 
 function makeChannelRuntime(): PluginRuntime["channel"] {
   return {
+    commands: { isControlCommandMessage: vi.fn().mockReturnValue(false) },
+    inbound: {
+      buildContext: vi.fn(buildChannelInboundEventContext),
+      run: async (params: any) => {
+        const plan = await params.adapter.resolveTurn();
+        mockDispatch(plan);
+        return { dispatched: true, dispatchResult: {} };
+      },
+    },
     routing: {
       resolveAgentRoute: vi.fn().mockReturnValue({
         agentId: "agent-default",
@@ -112,6 +114,33 @@ function makePayload(
 describe("processInboundMessage", () => {
   beforeEach(() => {
     mockDispatch.mockReset();
+  });
+
+  it("denies an unlisted DM before typing, media, or agent dispatch", async () => {
+    const runtime = makeChannelRuntime();
+    const onAdmitted = vi.fn();
+    const payload = makePayload(); payload.room.type = "Direct";
+    payload.message.has_attachment = true;
+    payload.message.attachment = { url: "https://files.example/x", filename: "x.png", content_type: "image/png", byte_size: 3 };
+    await processInboundMessage(payload, { runtime, cfg: baseCfg, account: { ...baseAccount, dmPolicy: "allowlist", allowFrom: ["99"] }, onAdmitted, deliver: vi.fn() });
+    expect(onAdmitted).not.toHaveBeenCalled();
+    expect(runtime.media.fetchRemoteMedia).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("admits an allowlisted DM and keeps attachment-only agent text empty", async () => {
+    const runtime = makeChannelRuntime();
+    vi.mocked(runtime.media.fetchRemoteMedia).mockResolvedValue({ buffer: Buffer.from("abc"), contentType: "image/png" });
+    vi.mocked(runtime.media.saveMediaBuffer).mockResolvedValue({ id: "opaque", path: "/tmp/inbound/x.png", size: 3, contentType: "image/png" });
+    const payload = makePayload(); payload.room.type = "Direct";
+    payload.message.body = { plain: "", html: "" }; payload.message.has_attachment = true;
+    payload.message.attachment = { url: "https://files.example/x", filename: "x.png", content_type: "image/png", byte_size: 3 };
+    await processInboundMessage(payload, { runtime, cfg: baseCfg, account: { ...baseAccount, dmPolicy: "allowlist", allowFrom: ["1"] }, deliver: vi.fn() });
+    expect(mockDispatch).toHaveBeenCalledOnce();
+    const facts = vi.mocked(runtime.inbound.buildContext).mock.calls[0][0];
+    expect(facts.media).toEqual([{ path: "/tmp/inbound/x.png", contentType: "image/png", fileName: "x.png" }]);
+    expect(facts.message.bodyForAgent).toBe("");
+    expect(facts.channelIngress).not.toBe("unsupported");
   });
 
   it("skips messages from the bot itself", async () => {
@@ -194,7 +223,7 @@ describe("processInboundMessage", () => {
     expect(ctx.RawBody).toBe("Hello @MyBot");
     expect(ctx.CommandBody).toBe("Hello @MyBot");
     expect(ctx.BodyForCommands).toBe("Hello @MyBot");
-    expect(ctx.From).toBe("Alice");
+    expect(ctx.From).toBe("sabha:1");
     expect(ctx.SenderId).toBe("1");
     expect(ctx.SenderName).toBe("Alice");
     // Envelope's `from` (distinct from `ctx.From` metadata) embeds the
@@ -203,7 +232,7 @@ describe("processInboundMessage", () => {
     // in the test stub.
     expect(ctx.Body).toContain("[Alice (@{1})]:");
     expect(ctx.To).toBe("5");
-    expect(ctx.SessionKey).toBe("sabha:group:5");
+    expect(ctx.SessionKey).toBe("agent:agent-default:sabha:group:default:5");
     expect(ctx.AccountId).toBe("default");
     expect(ctx.ChatType).toBe("group");
     expect(ctx.ConversationLabel).toBe("General");
@@ -254,7 +283,7 @@ describe("processInboundMessage", () => {
     expect(ctx.ChatType).toBe("direct");
   });
 
-  it("includes ReplyToId and MessageThreadId for threaded messages", async () => {
+  it("includes MessageThreadId without creating a nested reply target", async () => {
     // `MessageThreadId` is read by the SDK at four sites including
     // sub-agent spawn (`action-spawn-DNsZAtA6.js:37 → agentThreadId`)
     // and per-thread session transcript paths
@@ -278,7 +307,7 @@ describe("processInboundMessage", () => {
     const ctx = (mockDispatch.mock.calls[0][0] as {
       ctxPayload: { ReplyToId?: string; MessageThreadId?: string };
     }).ctxPayload;
-    expect(ctx.ReplyToId).toBe("99");
+    expect(ctx.ReplyToId).toBeUndefined();
     expect(ctx.MessageThreadId).toBe("99");
   });
 
@@ -372,7 +401,7 @@ describe("processInboundMessage", () => {
 
     const call = mockDispatch.mock.calls[0][0] as { channel: string; core: { channel: unknown } };
     expect(call.channel).toBe("sabha");
-    expect(call.core.channel).toBeDefined();
+    expect(call.delivery.observeMessageSent).toBe(true);
   });
 
   it("threads onPartialReply through replyOptions when provided", async () => {
@@ -454,7 +483,7 @@ describe("processInboundMessage", () => {
     expect(ctx.GroupSystemPrompt).toBeUndefined();
   });
 
-  it("omits replyOptions entirely when onPartialReply is not provided", async () => {
+  it("disables block streaming when no preview callback is provided", async () => {
     await processInboundMessage(makePayload(), {
       runtime: makeChannelRuntime(),
       cfg: baseCfg,
@@ -465,7 +494,7 @@ describe("processInboundMessage", () => {
     const call = mockDispatch.mock.calls[0][0] as {
       replyOptions?: unknown;
     };
-    expect(call.replyOptions).toBeUndefined();
+    expect(call.replyOptions).toMatchObject({ disableBlockStreaming: true, onPartialReply: undefined });
   });
 });
 

@@ -309,6 +309,7 @@ export type DeliveryPayload = {
 // --- WebSocket connection status ---
 
 export type ConnectionStatus = {
+  lifecycle?: "starting" | "ready" | "recovering" | "blocked" | "stopped";
   connected?: boolean;
   lastConnectedAt?: number;
   lastError?: string | null;

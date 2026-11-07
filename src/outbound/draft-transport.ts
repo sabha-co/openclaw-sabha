@@ -6,8 +6,9 @@
 // preview message ever exists: nothing to edit, delete or repair. `end` tears
 // down a draft that produced no message.
 //
-// Older servers ignore the unknown `draft` action, and the final post simply
-// appears as a normal message.
+// Older servers ignore the unknown `draft` action. One that also predates
+// client_message_id refuses it by name, and the client then posts the final
+// without it, as a normal message.
 import { randomUUID } from "node:crypto";
 import type { SabhaDraftFrame } from "../client/types.js";
 import type { SabhaTarget } from "./send.js";

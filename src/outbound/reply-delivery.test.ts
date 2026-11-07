@@ -13,9 +13,10 @@ function setup(options: { withDraft?: boolean; failSendAt?: number } = {}) {
   const frames: SabhaDraftFrame[] = [];
   const posts: Array<{ roomId: number; text: string; options: unknown }> = [];
   let nextId = 900;
+  let sends = 0;
   const client = {
     sendMessage: vi.fn(async (roomId: number, text: string, sendOptions: unknown) => {
-      if (options.failSendAt === posts.length) throw new Error("boom");
+      if (options.failSendAt === sends++) throw new Error("boom");
       posts.push({ roomId, text, options: sendOptions });
       return { id: nextId++, roomId: 221 };
     }),
@@ -65,6 +66,15 @@ describe("createSabhaReplyDelivery", () => {
     const { delivery, posts } = setup({ withDraft: false });
     await delivery.deliver({ text: "Hi" }, { kind: "final" });
     expect(posts[0]!.options).toEqual({ parentMessageId: 4214 });
+  });
+
+  it("reposts a failed final with the draft's id, so a saved one isn't doubled, and leaves the draft to it", async () => {
+    const { delivery, frames, posts } = setup({ failSendAt: 0 });
+    delivery.onPartialReply({ text: "Work" });
+    await delivery.deliver({ text: "Working on it." }, { kind: "final" });
+    await delivery.finish();
+    expect(posts).toEqual([{ roomId: 3, text: "Working on it.", options: { parentMessageId: 4214, clientMessageId: "draft-1" } }]);
+    expect(frames.map((frame) => frame.kind)).not.toContain("end");
   });
 
   it("does not repost a final whose first chunk already landed", async () => {

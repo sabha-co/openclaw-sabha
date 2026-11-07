@@ -49,10 +49,28 @@ describe("SabhaClient", () => {
     await expect(c.sendMessage(3, "x")).rejects.toBeInstanceOf(SabhaResponseError);
   });
 
-  it("never retries a create on an ambiguous gateway error", async () => {
-    const { client: c, calls } = client([json(503, {}), json(201, { id: 1, room_id: 3 })]);
-    await expect(c.sendMessage(3, "x")).rejects.toMatchObject({ status: 503 });
-    expect(calls).toHaveLength(1);
+  it("gives a post its own client_message_id and retries it with that id after a gateway error or a timeout", async () => {
+    const timeout = () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    };
+    const { client: c, calls } = client([json(503, {}), timeout, json(200, { id: 1, room_id: 3 })]);
+    await expect(c.sendMessage(3, "x")).resolves.toEqual({ id: 1, roomId: 3 });
+    const ids = calls.map((call) => JSON.parse(call.body as string).client_message_id);
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  it("posts without client_message_id on a server that refuses it", async () => {
+    const { client: c, calls } = client([
+      json(422, { error: "client_message_id is not permitted", code: "validation_failed" }),
+      json(201, { id: 1, room_id: 3 }),
+    ]);
+    await expect(c.sendMessage(3, "x", { clientMessageId: "d-1" })).resolves.toEqual({ id: 1, roomId: 3 });
+    expect(calls.map((call) => JSON.parse(call.body as string))).toEqual([
+      { body: "<p>x</p>", client_message_id: "d-1" },
+      { body: "<p>x</p>" },
+    ]);
   });
 
   it("retries a create Sabha refused with 429, honouring Retry-After", async () => {

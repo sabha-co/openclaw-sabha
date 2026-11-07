@@ -1,5 +1,6 @@
 // Every Sabha REST call lives here: bearer auth, /api/v1 routes, retry
 // classification, response parsing, and Markdown -> Sabha HTML.
+import { randomUUID } from "node:crypto";
 import { retryAsync } from "openclaw/plugin-sdk/runtime-env";
 import { markdownToSabhaHtml } from "./rich-text.js";
 import type {
@@ -74,7 +75,10 @@ type RequestOptions = {
   json?: unknown;
   text?: string;
   form?: FormData;
-  /** A create is retried only when Sabha refused it outright (429). */
+  /**
+   * Retried on gateway errors and timeouts as well as 429. A create is, only
+   * when it carries a client_message_id, so a repeat finds the first post.
+   */
   idempotent?: boolean;
 };
 
@@ -103,24 +107,49 @@ export class SabhaClient {
   /**
    * Post Markdown to a room. `parentMessageId` opens (or finds) the parent's
    * thread; the returned `roomId` is then the thread room. `clientMessageId`
-   * is the live draft's id, so the message replaces that draft in place.
+   * is the live draft's id, so the message replaces that draft in place;
+   * without one the post gets its own.
    */
   async sendMessage(
     roomId: number,
     markdown: string,
     options: { parentMessageId?: number; clientMessageId?: string } = {},
   ): Promise<SabhaSent> {
-    const path = `/rooms/${roomId}/messages`;
-    const body: Record<string, string> = { body: this.renderBody(markdown) };
-    if (options.clientMessageId) body.client_message_id = options.clientMessageId;
-    return parseSent(path, await this.json(path, { method: "POST", query: threadQuery(options.parentMessageId), json: body }));
+    const html = this.renderBody(markdown);
+    return this.createMessage(roomId, options.parentMessageId, options.clientMessageId ?? randomUUID(), (id) => ({
+      json: id ? { body: html, client_message_id: id } : { body: html },
+    }));
   }
 
   async sendAttachment(roomId: number, file: Blob, filename: string, options: { parentMessageId?: number } = {}): Promise<SabhaSent> {
-    const form = new FormData();
-    form.append("attachment", file, filename);
+    return this.createMessage(roomId, options.parentMessageId, randomUUID(), (id) => {
+      const form = new FormData();
+      form.append("attachment", file, filename);
+      if (id) form.append("client_message_id", id);
+      return { form };
+    });
+  }
+
+  /**
+   * A post that carries its own client_message_id, which makes it safe to
+   * retry: Sabha answers a repeat of a saved post with that post. A server
+   * that predates the field refuses it by name; the post then goes without
+   * it, and unretried, since a repeat there could post twice.
+   */
+  private async createMessage(
+    roomId: number,
+    parentMessageId: number | undefined,
+    clientMessageId: string,
+    body: (clientMessageId?: string) => Pick<RequestOptions, "json" | "form">,
+  ): Promise<SabhaSent> {
     const path = `/rooms/${roomId}/messages`;
-    return parseSent(path, await this.json(path, { method: "POST", query: threadQuery(options.parentMessageId), form }));
+    const query = threadQuery(parentMessageId);
+    try {
+      return parseSent(path, await this.json(path, { method: "POST", query, ...body(clientMessageId), idempotent: true }));
+    } catch (error) {
+      if (!refusesClientMessageId(error)) throw error;
+      return parseSent(path, await this.json(path, { method: "POST", query, ...body() }));
+    }
   }
 
   async editMessage(messageId: number, markdown: string): Promise<void> {
@@ -245,7 +274,9 @@ export class SabhaClient {
     const qs = options.query?.toString();
     const url = `${this.options.apiBaseUrl}${path}${qs ? `?${qs}` : ""}`;
     const shouldRetry = (error: unknown) =>
-      error instanceof SabhaApiError && (error.status === 429 || (idempotent && TRANSIENT_STATUS.has(error.status)));
+      error instanceof SabhaApiError
+        ? error.status === 429 || (idempotent && TRANSIENT_STATUS.has(error.status))
+        : idempotent && isTransportError(error) && !this.options.abortSignal?.aborted;
 
     return retryAsync(
       async () => {
@@ -280,6 +311,15 @@ export class SabhaClient {
       },
     );
   }
+}
+
+/** The request timed out or never reached Sabha, so its outcome is unknown. */
+function isTransportError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof Error && error.name === "TimeoutError");
+}
+
+function refusesClientMessageId(error: unknown): boolean {
+  return error instanceof SabhaApiError && error.status === 422 && error.body.includes("client_message_id is not permitted");
 }
 
 function threadQuery(parentMessageId: number | undefined): URLSearchParams | undefined {

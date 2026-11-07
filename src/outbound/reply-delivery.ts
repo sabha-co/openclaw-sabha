@@ -80,10 +80,21 @@ export function createSabhaReplyDelivery(params: {
     return sent;
   };
 
+  // The draft id a failed final posted with. The repost after it reuses the id,
+  // so a final that Sabha saved before the failure answers again rather than
+  // landing twice, and replaces the draft as the final would have.
+  let failedFinalId: string | undefined;
+
   const deliverNormally = async (payload: ReplyPayload): Promise<LivePreviewDeliveryResult> => {
     const parts = resolveSendableOutboundReplyParts(payload);
+    const clientMessageId = failedFinalId;
+    failedFinalId = undefined;
     const sent: SabhaSent[] = [];
-    if (parts.hasText) sent.push(...(await postText(parts.text)));
+    if (parts.hasText) {
+      sent.push(...(await postText(parts.text, clientMessageId)));
+      // It took the draft's place; ending the draft now would remove it.
+      if (clientMessageId) draft?.markFinalized();
+    }
     try {
       for (const url of parts.mediaUrls) {
         sent.push(await sendSabhaMedia({ client, runtime: params.runtime, account, target, url, ...(params.mediaAccess ? { mediaAccess: params.mediaAccess } : {}) }));
@@ -137,6 +148,7 @@ export function createSabhaReplyDelivery(params: {
             } catch (error) {
               // The first chunk replaced the draft; it is no longer ours to end.
               if (isChannelPartialDeliveryError(error)) draft?.markFinalized();
+              else failedFinalId = draftId;
               throw error;
             }
           },

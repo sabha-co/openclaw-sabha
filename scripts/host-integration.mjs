@@ -1,142 +1,277 @@
-// The packed plugin runs in the real host registry against fake Sabha transports.
-// The only agent substitution is the model/reply producer; admission, session
-// recording, hooks, delivery settlement, registration, and transports are real.
+// The packed plugin runs in the real host registry against a fake Sabha
+// (REST + AppEventsChannel cable). The only agent substitution is the reply
+// producer; admission, ingress, session recording, hooks, delivery and
+// registration are the host's own.
+//
+//   stream   live draft frames, final replaces the draft, react via the real
+//            message-action runner, fatal disconnect parks the account
+//   rewrite  a message_sending hook rewrites the final (livePreview off)
+//   cancel   a message_sending hook cancels the final (livePreview off)
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, readdirSync, copyFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { WebSocketServer } from "ws";
+import { pathToFileURL } from "node:url";
+import { WebSocketServer } from "openclaw/plugin-sdk/websocket-runtime";
 
 const mode = process.argv[2];
+assert(["stream", "rewrite", "cancel"].includes(mode), "usage: host-integration.mjs stream|rewrite|cancel");
 const state = process.env.OPENCLAW_STATE_DIR;
 assert(state && state.includes("sabha-pack."), "only run in verify-pack's disposable state");
+
+const APP_KEY = "sabha_app_0123456789abcdef0123456789abcdef";
+const APP_ID = 508;
+const IDENTIFIER = JSON.stringify({ channel: "AppEventsChannel" });
 const pluginPath = `${state}/extensions/sabha`;
+// Modes share one state dir, and durable ingress remembers handled ids across runs.
+const INBOUND_ID = { stream: 10, rewrite: 11, cancel: 12 }[mode];
+
+// --- Fake Sabha ---
 const requests = [];
+let nextMessageId = 900;
 const server = createServer(async (req, res) => {
   let body = "";
   for await (const chunk of req) body += chunk;
   requests.push({ method: req.method, url: req.url, body, auth: req.headers.authorization });
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ id: 12, room_id: 99 }));
+  const reply = (status, json) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(json));
+  };
+  if (req.headers.authorization !== `Bearer ${APP_KEY}`) return reply(401, { error: "unauthorized" });
+  const path = req.url.split("?")[0];
+  if (req.method === "GET" && path === "/api/v1/me") return reply(200, { id: APP_ID, name: "Claw" });
+  if (req.method === "POST" && /^\/api\/v1\/rooms\/\d+\/messages$/.test(path)) return reply(201, { id: nextMessageId++, room_id: 99 });
+  if (req.method === "POST" && /^\/api\/v1\/messages\/\d+\/reactions$/.test(path)) return reply(201, { id: 31 });
+  reply(404, { error: "not found" });
 });
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const port = server.address().port;
-const wss = new WebSocketServer({ server });
+
+const frames = [];
 let socket;
-wss.on("connection", (ws) => {
+const wss = new WebSocketServer({ server, path: "/cable" });
+wss.on("connection", (ws, req) => {
+  assert.equal(req.headers.authorization, `Bearer ${APP_KEY}`);
   socket = ws;
   ws.send(JSON.stringify({ type: "welcome" }));
   ws.on("message", (raw) => {
     const frame = JSON.parse(String(raw));
     if (frame.command === "subscribe") ws.send(JSON.stringify({ type: "confirm_subscription", identifier: frame.identifier }));
+    if (frame.command === "history") ws.send(JSON.stringify({ type: "confirm_history", identifier: frame.identifier }));
+    if (frame.command === "message") frames.push(JSON.parse(frame.data));
   });
 });
+const pushEvent = (message, offset) =>
+  socket.send(JSON.stringify({ identifier: IDENTIFIER, message, stream_id: "app:508", epoch: "e1", offset }));
+
+// --- Host config ---
 const cfg = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
-cfg.channels = { sabha: { accounts: { primary: {
-  baseUrl: `http://127.0.0.1:${port}`, apiBaseUrl: `http://127.0.0.1:${port}/api/bots`, botKey: "42-testkey",
-  typingEnabled: false, replyToMode: "first",
-} } } };
+cfg.channels = {
+  sabha: {
+    accounts: {
+      primary: {
+        url: `http://127.0.0.1:${port}`,
+        appKey: APP_KEY,
+        cableUrl: `ws://127.0.0.1:${port}/cable`,
+        replyToMode: "first",
+        livePreview: mode === "stream",
+      },
+    },
+  },
+};
 cfg.session = { dmScope: "per-account-channel-peer", store: `${state}/sessions/{agentId}.json` };
 writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(cfg));
-// Capture the genuine external-plugin runtime, without changing the installed
-// implementation. Optional hooks are test instrumentation on this local copy.
+
+// Capture the real external-plugin runtime without changing the installed
+// implementation. The hooks are test instrumentation on this local copy.
 if (!existsSync(`${pluginPath}/dist/original-entry.js`)) copyFileSync(`${pluginPath}/dist/index.js`, `${pluginPath}/dist/original-entry.js`);
-writeFileSync(`${pluginPath}/dist/index.js`, `import entry from './original-entry.js';
+writeFileSync(
+  `${pluginPath}/dist/index.js`,
+  `import entry from './original-entry.js';
 export default {...entry, register(api) {
   globalThis.sabhaTestRuntime = api.runtime;
+  // inbound.run takes its reply producer from the resolved turn, so the test
+  // producer is attached there; everything around it stays the host's.
+  const inbound = api.runtime.channel.inbound;
+  const run = inbound.run;
+  inbound.run = (params) => run({ ...params, adapter: { ...params.adapter,
+    resolveTurn: async (...args) => ({ ...(await params.adapter.resolveTurn(...args)), dispatchReplyFromConfig: globalThis.sabhaTestDispatch }),
+  } });
   entry.register(api);
-  api.on('message_sent', event => { globalThis.sabhaTestObserved.push(event); });
-  ${mode === "stream" ? "" : `api.on('message_sending', () => { globalThis.sabhaTestHookCalls++; return ${mode === "rewrite" ? "{content:'Safe replacement'}" : "{cancel:true}"}; });`}
-}};`);
+  api.on('message_sent', (event) => { globalThis.sabhaTestObserved.push(event); });
+  ${mode === "stream" ? "" : `api.on('message_sending', () => { globalThis.sabhaTestHookCalls++; return ${mode === "rewrite" ? "{ content: 'Safe replacement' }" : "{ cancel: true }"}; });`}
+}};`,
+);
 globalThis.sabhaTestObserved = [];
 globalThis.sabhaTestHookCalls = 0;
-// Private host loader is confined to this version-pinned integration harness.
-// Production code imports public SDK subpaths exclusively.
+
+// --- Host loader (private; confined to this version-pinned harness) ---
 const hostDist = resolve("node_modules/openclaw/dist");
-const loaderPath = readdirSync(hostDist).find((name) => /^loader-.*\.js$/.test(name) && readFileSync(`${hostDist}/${name}`, "utf8").includes("function loadOpenClawPlugins("));
+const findHostModule = (pattern, marker) =>
+  readdirSync(hostDist).find((name) => pattern.test(name) && readFileSync(`${hostDist}/${name}`, "utf8").includes(marker));
+const loaderPath = findHostModule(/^loader-.*\.m?js$/, "function loadOpenClawPlugins(");
 assert(loaderPath, "pinned host loader not found");
 const loader = await import(pathToFileURL(`${hostDist}/${loaderPath}`));
 const load = Object.values(loader).find((value) => typeof value === "function" && value.name === "loadOpenClawPlugins");
+assert(load, "loadOpenClawPlugins export not found");
+
 let dispatched = 0;
 let context;
+globalThis.sabhaTestDispatch = async ({ ctx, dispatcher, replyOptions }) => {
+  context = ctx;
+  dispatched++;
+  await replyOptions?.onPartialReply?.({ text: "Preview before final" });
+  await delay(300); // let the throttled draft frame go out
+  dispatcher.sendFinalReply({ text: "Host final reply" });
+  return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+};
 const registry = await load({
-  config: cfg, onlyPluginIds: ["sabha"], cache: false, activate: true, throwOnLoadError: true, preferBuiltPluginArtifacts: true,
-  runtimeOptions: { dispatchReplyFromConfig: async ({ ctx, dispatcher, replyOptions }) => {
-    context = ctx; dispatched++;
-    await replyOptions?.onPartialReply?.({ text: "Preview before final" });
-    // Allow a real preview POST to begin; finalization must reuse it.
-    await delay(20);
-    dispatcher.sendFinalReply({ text: "Host final reply" });
-    return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
-  } },
+  config: cfg,
+  onlyPluginIds: ["sabha"],
+  cache: false,
+  activate: true,
+  throwOnLoadError: true,
+  preferBuiltPluginArtifacts: true,
 });
-assert.equal(registry.plugins.find((p) => p.id === "sabha").origin, "global");
-assert.equal(registry.tools.length, 2);
-const channel = registry.channels.find((c) => c.plugin.id === "sabha").plugin;
+assert.equal(registry.plugins.find((plugin) => plugin.id === "sabha")?.origin, "global");
+assert.deepEqual(registry.tools.flatMap((tool) => tool.names ?? [tool.name]).sort(), ["sabha_create_dm", "sabha_search_members"]);
+const channel = registry.channels.find((entry) => entry.plugin.id === "sabha").plugin;
+assert.equal(channel.gateway.apiVersion, 2);
 const account = channel.config.resolveAccount(cfg, "primary");
+
+// --- Gateway v2 account lifecycle ---
 const abort = new AbortController();
 let status = {};
+const timers = new Set();
+const scheduler = {
+  signal: abort.signal,
+  schedule: ({ delayMs, run }) => {
+    const timer = setTimeout(() => (timers.delete(timer), run()), delayMs);
+    timers.add(timer);
+    return { cancel: () => (clearTimeout(timer), timers.delete(timer)) };
+  },
+};
 const monitor = channel.gateway.startAccount({
-  account, accountId: "primary", cfg, abortSignal: abort.signal,
-  channelRuntime: globalThis.sabhaTestRuntime.channel,
-  log: { info() {}, error: console.error },
-  getStatus: () => status, setStatus: (next) => { status = next; },
+  account,
+  accountId: "primary",
+  cfg,
+  abortSignal: abort.signal,
+  scheduler,
+  log: { info() {}, warn() {}, error: console.error },
+  getStatus: () => status,
+  setStatus: (next) => {
+    status = { ...status, ...next };
+  },
 });
-async function until(check, label) {
-  const deadline = Date.now() + 10_000;
-  while (!check()) { if (Date.now() > deadline) throw new Error(`Timed out: ${label}`); await delay(20); }
-}
-try {
-  await until(() => status.lifecycle === "ready", "subscription readiness");
-  const payload = { event: "message_created", user: { id: 1, name: "Alice", role: "member", url: "http://example/users/1" },
-    room: { id: 5, name: "Test", type: "Open", members: 2, has_bot: true, messages_url: "" },
-    message: { id: 10, body: { plain: "Hello @{42}", html: "Hello" }, has_attachment: false, attachment: null, mentionees: [{ id: 42, name: "Bot" }], url: "", created_at: new Date().toISOString(), updated_at: new Date().toISOString(), thread: null } };
-  socket.send(JSON.stringify({ identifier: JSON.stringify({ channel: "BotEventsChannel" }), message: payload }));
-  await until(() => dispatched === 1, "inbound dispatch");
-  await until(() => mode === "cancel" ? globalThis.sabhaTestHookCalls === 1 : globalThis.sabhaTestObserved.length === 1, "settled delivery");
-  await delay(60);
-  assert.equal(context.To, "5"); assert.equal(context.AccountId, "primary"); assert.equal(context.SenderId, "1");
-  assert.match(context.Body, /@\{1\}/);
-  assert.match(context.SessionKey, /sabha/);
-  if (mode === "cancel") {
-    assert.equal(requests.length, 0, "cancellation must leave no preview or final");
-    assert.equal(globalThis.sabhaTestObserved.length, 0);
+
+async function until(check, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+    await delay(20);
   }
-  else {
-    const sends = requests.filter((r) => r.method === "POST");
-    assert.equal(sends.length, 1, "one native send per turn");
-    assert.match(sends[0].url, /parent_message_id=10/);
-    assert.equal(sends[0].auth, "Bearer 42-testkey");
-    assert.equal(globalThis.sabhaTestObserved.length, 1);
+}
+
+const now = new Date().toISOString();
+const event = {
+  event: "message_created",
+  mentions_app: true,
+  user: { id: 1, name: "Alice" },
+  room: { id: 5, name: "general", type: "Open" },
+  message: {
+    id: INBOUND_ID,
+    body: { html: "<p>Hello @Claw</p>", plain: "Hello @Claw", markdown: "Hello @{508}" },
+    attachment: null,
+    thread: null,
+    mentionees: [{ id: APP_ID, name: "Claw" }],
+    created_at: now,
+    updated_at: now,
+  },
+};
+const messagePosts = () => requests.filter((request) => request.method === "POST" && /\/rooms\/\d+\/messages/.test(request.url));
+const draftText = () => frames.filter((frame) => frame.action === "draft" && frame.kind === "text");
+
+try {
+  await until(() => status.lifecycle === "ready" && socket, "subscription readiness");
+  pushEvent(event, 1);
+  await until(() => dispatched === 1, "inbound dispatch");
+  await until(
+    () => (mode === "cancel" ? globalThis.sabhaTestHookCalls === 1 : globalThis.sabhaTestObserved.length === 1),
+    "settled delivery",
+  );
+  await delay(100);
+
+  assert.equal(context.AccountId, "primary");
+  assert.equal(context.SenderId, "1");
+  assert.match(context.SessionKey, /sabha/);
+  assert.match(context.SessionKey, /primary/);
+
+  if (mode === "cancel") {
+    assert.equal(messagePosts().length, 0, "a cancelled final sends nothing");
+    assert.equal(draftText().length, 0, "no preview text with livePreview off");
+    assert.equal(globalThis.sabhaTestObserved.length, 0);
+  } else {
+    const posts = messagePosts();
+    assert.equal(posts.length, 1, "one native send per turn");
+    assert.equal(posts[0].url, `/api/v1/rooms/5/messages?parent_message_id=${INBOUND_ID}`, "first reply threads under the inbound message");
+    assert.equal(posts[0].auth, `Bearer ${APP_KEY}`);
+    const body = JSON.parse(posts[0].body);
     if (mode === "rewrite") {
       assert.equal(globalThis.sabhaTestHookCalls, 1);
-      assert.match(sends[0].body, /Safe replacement/);
-      assert.ok(requests.every((r) => !r.body.includes("Preview before final") && !r.body.includes("Host final reply")));
-    } else assert.ok(requests.some((r) => r.method === "PATCH" && r.body.includes("Host final reply")));
+      assert.match(body.body, /Safe replacement/);
+      assert.equal(draftText().length, 0, "pre-hook text never reaches Sabha");
+      assert.ok(requests.every((request) => !request.body.includes("Preview before final") && !request.body.includes("Host final reply")));
+    } else {
+      assert.match(body.body, /Host final reply/);
+      const [start] = frames.filter((frame) => frame.kind === "start");
+      assert.ok(start, "a live draft started");
+      assert.equal(start.room_id, 5);
+      assert.equal(start.parent_message_id, INBOUND_ID);
+      assert.ok(draftText().some((frame) => frame.text.includes("Preview before final")), "the partial streamed into the draft");
+      assert.equal(body.client_message_id, start.draft_id, "the final replaces the draft in place");
+    }
   }
-  // Replayed event is deduplicated after the real dispatch settles.
-  socket.send(JSON.stringify({ identifier: JSON.stringify({ channel: "BotEventsChannel" }), message: payload }));
-  await delay(80); assert.equal(dispatched, 1);
-  await until(() => globalThis.sabhaTestRuntime.agent.session.getSessionEntry({ sessionKey: context.SessionKey, storePath: `${state}/sessions/main.json` }), "host session recording");
-  assert.match(context.SessionKey, /primary/);
+
+  // A replayed event (same id, e.g. after resume) is deduplicated by durable ingress.
+  pushEvent(event, 2);
+  await delay(200);
+  assert.equal(dispatched, 1, "replayed event is not dispatched twice");
+
+  await until(
+    () => globalThis.sabhaTestRuntime.agent.session.getSessionEntry({ sessionKey: context.SessionKey, storePath: `${state}/sessions/main.json` }),
+    "host session recording",
+  );
+
   if (mode === "stream") {
-    const actionPath = readdirSync(hostDist).find((name) => /^message-action-runner-.*\.js$/.test(name) && readFileSync(`${hostDist}/${name}`, "utf8").includes("export { getToolResult, runMessageAction }"));
-    const { runMessageAction } = await import(pathToFileURL(`${hostDist}/${actionPath}`));
-    await runMessageAction({ cfg, action: "react", agentId: "main", sessionKey: context.SessionKey, requesterAccountId: context.AccountId,
-      params: { channel: "sabha", accountId: "primary", messageId: "12", emoji: "👍" },
-      toolContext: { currentChannelProvider: "sabha", currentChannelId: "5", currentMessageId: "10" },
+    const actionPath = findHostModule(/^message-action-runner-.*\.m?js$/, "runMessageAction");
+    const runner = await import(pathToFileURL(`${hostDist}/${actionPath}`));
+    const runMessageAction = Object.values(runner).find((value) => typeof value === "function" && value.name === "runMessageAction");
+    assert(runMessageAction, "runMessageAction export not found");
+    await runMessageAction({
+      cfg,
+      action: "react",
+      agentId: "main",
+      sessionKey: context.SessionKey,
+      requesterAccountId: context.AccountId,
+      params: { channel: "sabha", accountId: "primary", emoji: "👍" },
+      toolContext: { currentChannelProvider: "sabha", currentChannelId: "channel:5", currentMessageId: "10" },
     });
-    assert.ok(requests.some((request) => request.url.includes("/messages/12/boosts")), "real message runner target autofill reached Sabha react");
-    socket.send(JSON.stringify({ type: "disconnect", reconnect: false, reason: "test revoked bot" }));
+    assert.ok(
+      requests.some((request) => request.method === "POST" && request.url === "/api/v1/messages/10/reactions" && request.body === "👍"),
+      "the real message runner reached Sabha react with the current message",
+    );
+
+    socket.send(JSON.stringify({ type: "disconnect", reconnect: false, reason: "unauthorized" }));
     await until(() => status.lifecycle === "blocked", "fatal account parking");
   }
   console.log(`PASS packed host integration: ${mode}`);
 } finally {
-  abort.abort(); await monitor;
-  for (const ws of wss.clients) ws.terminate();
-  await new Promise((resolve) => wss.close(resolve));
-  await new Promise((resolve) => server.close(resolve));
+  abort.abort();
+  await monitor;
+  for (const timer of timers) clearTimeout(timer);
+  for (const client of wss.clients) client.terminate();
+  await new Promise((done) => wss.close(done));
+  await new Promise((done) => server.close(done));
 }
-assert.equal(status.lifecycle, "stopped", "aborted monitor must leave a stopped lifecycle");
+assert.equal(status.lifecycle, "stopped", "an aborted monitor leaves a stopped lifecycle");

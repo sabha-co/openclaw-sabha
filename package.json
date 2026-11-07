@@ -26,55 +26,39 @@
     "channel": {
       "id": "sabha",
       "label": "Sabha",
-      "selectionLabel": "Sabha (Bot API)",
-      "detailLabel": "Sabha Bot",
+      "selectionLabel": "Sabha (app)",
+      "detailLabel": "Sabha app",
       "docsPath": "/channels/sabha",
       "docsLabel": "sabha",
       "systemImage": "bubble.left.and.bubble.right",
-      "blurb": "Connect OpenClaw to a Sabha chat server.",
+      "blurb": "Connect OpenClaw to a Sabha workspace as an app.",
       "markdownCapable": true,
       "setup": {
         "fields": [
           {
             "kind": "string",
             "cli": {
-              "flags": "--base-url <url>",
-              "description": "Sabha server URL including workspace prefix"
+              "flags": "--url <url>",
+              "description": "Sabha workspace URL"
             },
-            "key": "baseUrl"
-          },
-          {
-            "kind": "string",
-            "cli": {
-              "flags": "--api-base-url <url>",
-              "description": "Sabha bot API URL"
-            },
-            "key": "apiBaseUrl"
+            "key": "url"
           },
           {
             "kind": "string",
             "sensitive": true,
             "cli": {
-              "flags": "--bot-key <key>",
-              "description": "Sabha bot key"
+              "flags": "--app-key <key>",
+              "description": "Sabha app key (sabha_app_…)"
             },
-            "key": "botKey"
+            "key": "appKey"
           },
           {
             "kind": "string",
             "cli": {
-              "flags": "--bot-name <name>",
-              "description": "Bot display name"
+              "flags": "--cable-url <url>",
+              "description": "Override the Sabha WebSocket URL"
             },
-            "key": "botName"
-          },
-          {
-            "kind": "string",
-            "cli": {
-              "flags": "--websocket-url <url>",
-              "description": "Sabha cable URL"
-            },
-            "key": "websocketUrl"
+            "key": "cableUrl"
           },
           {
             "kind": "choice",
@@ -92,7 +76,7 @@
             "kind": "string-list",
             "cli": {
               "flags": "--allow-from <ids>",
-              "description": "Allowed Sabha user IDs"
+              "description": "Allowed Sabha user ids"
             },
             "key": "allowFrom"
           }
@@ -112,25 +96,23 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "manifest:generate": "npm run build && node scripts/generate-manifest.mjs",
-    "manifest:check": "node scripts/generate-manifest.mjs --check",
+    "manifest:check": "npm run build && node scripts/generate-manifest.mjs --check",
     "prepack": "npm run manifest:generate",
     "test:pack": "bash scripts/verify-pack.sh"
   },
   "dependencies": {
     "markdown-it": "^14.1.0",
     "typebox": "1.3.35",
-    "ws": "8.22.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
-    "@types/ws": "^8.18.1",
     "eslint": "^9.39.4",
     "globals": "^15.15.0",
     "openclaw": "2026.11.1",

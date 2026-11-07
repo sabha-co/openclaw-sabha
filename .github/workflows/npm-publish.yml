@@ -34,7 +34,7 @@ jobs:
           # the Node floor ever drops back to 22.x, re-add a
           # `npm install -g npm@^11` step here or publish will fail with
           # `ENEEDAUTH`.
-          node-version: "24.15"
+          node-version: "24.16"
           cache: npm
           registry-url: "https://registry.npmjs.org"
 

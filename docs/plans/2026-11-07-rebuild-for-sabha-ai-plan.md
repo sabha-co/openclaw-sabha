@@ -273,3 +273,22 @@ Against the local sabha-ai dev server with a throwaway app (`OpenClaw Spike`, bo
   `parent_message_id`; `user:<id>` / `@{id}` goes through `POST /direct_messages`.
 - **`ws`.** Only `scripts/host-integration.mjs` still uses it. Move that script to
   `websocket-runtime` in Phase 7, then drop the dependency.
+
+## Phase 7 results (2026-11-07)
+
+- **Manifests** are generated from `src/config/schema.ts`, `src/config/setup-contract.ts`
+  and `src/plugin/meta.ts`. `build` cleans `dist/` first, so stale output from the old
+  layout cannot ship.
+- **`ws` dropped.** `scripts/host-integration.mjs` uses `WebSocketServer` from
+  `websocket-runtime`. In 2026.11.1, `inbound.run` takes its reply producer from the
+  resolved turn, not from the loader's `runtimeOptions`, so the harness attaches the
+  test producer in `resolveTurn` on its installed copy.
+- **End to end against local sabha-ai** (app 508, AnyCable on :8080):
+  - `sabha setup` and `sabha doctor` pass.
+  - A mention gets exactly one reply in a new thread.
+  - An unaddressed message is ignored.
+  - A thread follow-up without a mention is its own session, and the reply stays in the thread.
+- **Finding: the server has no live drafts.** sabha-ai rejects `client_message_id`
+  (422) and drops `AppEventsChannel#draft`. The fallback posted correctly, but every
+  reply paid a failed POST and partial text reached the server log. `livePreview` is
+  now opt-in until Part A ships.

@@ -67,6 +67,6 @@ export const sabhaConfigSchema: ReturnType<typeof buildChannelConfigSchema> = bu
       label: "Reply threading",
       help: '"off" replies inline, "first" threads the first reply, "all" threads every reply',
     },
-    livePreview: { label: "Live drafts", advanced: true, help: "Stream replies into a live draft while the agent writes" },
+    livePreview: { label: "Live drafts", advanced: true, help: "Stream replies into a live draft while the agent writes. Needs a Sabha server with live drafts; off by default" },
   },
 });

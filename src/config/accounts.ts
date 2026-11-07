@@ -111,7 +111,8 @@ export function resolveSabhaAccount(cfg: OpenClawConfig, accountId?: string | nu
     allowFrom: (merged.allowFrom ?? []).map((entry) => entry.trim()).filter(Boolean),
     allowPrivateNetwork: merged.allowPrivateNetwork === true,
     replyToMode: merged.replyToMode ?? "first",
-    livePreview: merged.livePreview !== false,
+    // Opt-in until the Sabha server ships live drafts (AppEventsChannel#draft + client_message_id).
+    livePreview: merged.livePreview === true,
     rooms: merged.rooms ?? {},
     config: merged,
   };

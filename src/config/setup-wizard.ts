@@ -3,7 +3,9 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ChannelSetupWizard } from "openclaw/plugin-sdk/channel-setup";
 import { APP_KEY_PATTERN, describeProbeFailure, probeSabhaApp } from "../client/probe.js";
 import {
+  deriveCableUrl,
   listSabhaAccountIds,
+  normalizeCableUrl,
   normalizeWorkspaceUrl,
   patchSabhaAccount,
   resolveDefaultSabhaAccountId,
@@ -20,19 +22,34 @@ function configuredAccountIds(cfg: OpenClawConfig): string[] {
 async function promptCredentials(params: {
   prompter: Prompter;
   url: string;
+  cableUrl: string;
   appKey: string;
-}): Promise<{ url: string; appKey: string } | undefined> {
+}): Promise<{ url: string; cableUrl?: string; appKey: string } | undefined> {
   const { prompter } = params;
-  let { url, appKey } = params;
+  let { url, cableUrl, appKey } = params;
+  await prompter.note(
+    "Copy these from the app's page in Sabha (Settings → Apps). The key is shown once, when the app is made.",
+    "Sabha",
+  );
   for (;;) {
     url = normalizeWorkspaceUrl(
       await prompter.text({
-        message: "Sabha workspace URL",
-        placeholder: "https://sabha.co/1000006",
-        initialValue: url,
+        message: "API base URL",
+        placeholder: "https://sabha.example.com/api/v1",
+        initialValue: url ? `${url}/api/v1` : "",
         validate: (value) => (normalizeWorkspaceUrl(value) ? undefined : "Enter an http(s) URL"),
       }),
     );
+    // The WebSocket can live on another host or port than the API, so ask rather than assume.
+    const derived = deriveCableUrl(url);
+    cableUrl = normalizeCableUrl(
+      await prompter.text({
+        message: "WebSocket URL",
+        placeholder: derived,
+        initialValue: cableUrl || derived,
+        validate: (value) => (!value.trim() || normalizeCableUrl(value) ? undefined : "Enter a ws(s) URL"),
+      }),
+    ) || derived;
     appKey = (
       await prompter.text({
         message: "App key",
@@ -46,20 +63,20 @@ async function promptCredentials(params: {
     const result = await probeSabhaApp({ apiBaseUrl: `${url}/api/v1`, appKey });
     if (result.ok) {
       progress.stop(`Connected as ${result.identity.name}`);
-      return { url, appKey };
+      return { url, appKey, ...(cableUrl !== derived ? { cableUrl } : {}) };
     }
     progress.stop("Sabha didn't accept these details");
     await prompter.note(describeProbeFailure(result), "Sabha");
     const next = await prompter.select<"retry" | "save" | "cancel">({
       message: "What next?",
       options: [
-        { value: "retry", label: "Re-enter the URL and key" },
+        { value: "retry", label: "Re-enter the URLs and key" },
         { value: "save", label: "Save anyway", hint: "The gateway will keep retrying until Sabha accepts it" },
         { value: "cancel", label: "Cancel" },
       ],
       initialValue: "retry",
     });
-    if (next === "save") return { url, appKey };
+    if (next === "save") return { url, appKey, ...(cableUrl !== derived ? { cableUrl } : {}) };
     if (next === "cancel") return undefined;
   }
 }
@@ -127,9 +144,9 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
       const keep = await prompter.confirm({ message: `Keep the Sabha app saved for ${current.url}?`, initialValue: true });
       if (keep) return { cfg };
     }
-    const credentials = await promptCredentials({ prompter, url: current.url, appKey: current.appKey });
+    const credentials = await promptCredentials({ prompter, url: current.url, cableUrl: current.config.cableUrl ?? "", appKey: current.appKey });
     if (!credentials) return { cfg };
-    return { cfg: patchSabhaAccount(cfg, id, { url: credentials.url, appKey: credentials.appKey, dmPolicy: current.dmPolicy }) };
+    return { cfg: patchSabhaAccount(cfg, id, { ...credentials, dmPolicy: current.dmPolicy }) };
   },
 
   completionNote: {

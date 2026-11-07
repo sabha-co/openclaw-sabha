@@ -70,7 +70,31 @@ export function normalizeWorkspaceUrl(raw: string | undefined): string {
     if (url.protocol !== "https:" && url.protocol !== "http:") return "";
     url.search = "";
     url.hash = "";
+    // Sabha's app page shows the API base URL (`…/api/v1`); accept it as the workspace URL.
+    url.pathname = url.pathname.replace(/\/+$/, "").replace(/\/api\/v1$/i, "");
     return url.toString().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A cable URL as configured or pasted from Sabha's app page. That page appends
+ * `bot_key=<key>`; the plugin sends the key as a Bearer header instead, so the
+ * parameter is dropped and the key never sits in a non-secret field or a log.
+ * Other parameters (`wid` on sabha.co) are kept.
+ */
+export function normalizeCableUrl(raw: string | undefined): string {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "https:") url.protocol = "wss:";
+    else if (url.protocol === "http:") url.protocol = "ws:";
+    if (url.protocol !== "wss:" && url.protocol !== "ws:") return "";
+    url.searchParams.delete("bot_key");
+    url.hash = "";
+    return url.toString();
   } catch {
     return "";
   }
@@ -97,7 +121,7 @@ export function resolveSabhaAccount(cfg: OpenClawConfig, accountId?: string | nu
   const merged = mergeSabhaAccountConfig(cfg, id);
   const url = normalizeWorkspaceUrl(merged.url);
   const appKey = merged.appKey?.trim() ?? "";
-  const cableUrl = merged.cableUrl?.trim() || deriveCableUrl(url);
+  const cableUrl = normalizeCableUrl(merged.cableUrl) || deriveCableUrl(url);
   return {
     accountId: id,
     enabled: sabhaSection(cfg)?.enabled !== false && merged.enabled !== false,
@@ -161,6 +185,10 @@ export function patchSabhaAccount(
   const section = (channels.sabha ?? {}) as SabhaChannelConfig;
   const id = normalizeAccountId(accountId);
   const accounts = { ...(section.accounts ?? {}) };
-  accounts[id] = { ...(accounts[id] ?? {}), ...patch, enabled: true };
+  // Store what Sabha's app page shows in its canonical form; never the key inside the cable URL.
+  const normalized = { ...patch };
+  if (typeof patch.url === "string") normalized.url = normalizeWorkspaceUrl(patch.url) || patch.url;
+  if (typeof patch.cableUrl === "string") normalized.cableUrl = normalizeCableUrl(patch.cableUrl) || patch.cableUrl.replace(/([?&])bot_key=[^&]*&?/, "$1").replace(/[?&]$/, "");
+  accounts[id] = { ...(accounts[id] ?? {}), ...normalized, enabled: true };
   return { ...cfg, channels: { ...channels, sabha: { ...section, accounts } } } as OpenClawConfig;
 }

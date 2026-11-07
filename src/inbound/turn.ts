@@ -12,7 +12,7 @@ import { ssrfPolicyFromAllowPrivateNetwork } from "openclaw/plugin-sdk/ssrf-runt
 import type { SabhaClient } from "../client/client.js";
 import type { SabhaAppEvent, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
-import { chatTypeOf, isMessageEvent, isReactionEvent, mentionsApp, type SabhaChatType } from "../monitor/events.js";
+import { chatTypeOf, isMentionGatedRoom, isMessageEvent, isReactionEvent, mentionsApp, type SabhaChatType } from "../monitor/events.js";
 import type { SabhaIngressLifecycle } from "../monitor/ingress.js";
 import { createSabhaDraft, type PerformDraft } from "../outbound/draft-transport.js";
 import { createSabhaReplyDelivery } from "../outbound/reply-delivery.js";
@@ -57,9 +57,9 @@ function resolveConversation(deps: SabhaTurnDeps, event: SabhaMessageEvent | Sab
   return { chatType, roomId, ...(threadId ? { threadId } : {}), agentId: agentRoute.agentId, dmScope: agentRoute.dmScope, sessionKey: session.sessionKey };
 }
 
-/** Thread mode: a top-level group message gets its reply in a thread unless replyToMode is off. */
+/** Thread mode: a message in an Open or Closed room gets its reply in a thread unless replyToMode is off. DMs can't hold threads. */
 export function replyTargetFor(event: SabhaMessageEvent, account: Pick<ResolvedSabhaAccount, "replyToMode">): SabhaTarget {
-  const threads = chatTypeOf(event.room) === "group" && event.message.thread == null && account.replyToMode !== "off";
+  const threads = isMentionGatedRoom(event.room) && event.message.thread == null && account.replyToMode !== "off";
   return { roomId: event.room.id, ...(threads ? { parentMessageId: event.message.id } : {}) };
 }
 
@@ -93,7 +93,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
     ...(conversation.threadId ? { threadId: conversation.threadId } : {}),
     chatType: conversation.chatType,
     mentioned,
-    requireMention: !isDm && !conversation.threadId,
+    requireMention: isMentionGatedRoom(event.room) && !conversation.threadId,
     eventKind: "message",
     hasControlCommand: channel.commands.isControlCommandMessage(rawBody, cfg),
     contextBinding: {
@@ -214,7 +214,7 @@ async function admitSystemEvent(event: SabhaMessageEvent | SabhaReactionEvent, d
     ...(conversation.threadId ? { threadId: conversation.threadId } : {}),
     chatType: conversation.chatType,
     mentioned,
-    requireMention: kind === "message" && conversation.chatType === "group" && !conversation.threadId,
+    requireMention: kind === "message" && isMentionGatedRoom(event.room) && !conversation.threadId,
     eventKind: kind,
   });
   const allowed = access.ingress.decision === "allow" && !access.activationAccess.shouldSkip;
@@ -222,7 +222,7 @@ async function admitSystemEvent(event: SabhaMessageEvent | SabhaReactionEvent, d
 }
 
 const where = (event: SabhaMessageEvent | SabhaReactionEvent) =>
-  chatTypeOf(event.room) === "direct" ? "a direct message" : `room ${event.room.name ?? event.room.id}`;
+  event.room.type === "Direct" ? (chatTypeOf(event.room) === "direct" ? "a direct message" : "a group DM") : `room ${event.room.name ?? event.room.id}`;
 
 async function noteEdit(event: SabhaMessageEvent, deps: SabhaTurnDeps) {
   const conversation = await admitSystemEvent(event, deps, "message");

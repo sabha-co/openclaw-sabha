@@ -37,7 +37,16 @@ export function parseSabhaEvent(raw: unknown): SabhaAppEvent {
 export const isMessageEvent = (event: SabhaAppEvent): event is SabhaMessageEvent => MESSAGE_EVENTS.has(event.event);
 export const isReactionEvent = (event: SabhaAppEvent): event is SabhaReactionEvent => REACTION_EVENTS.has(event.event);
 
-export const chatTypeOf = (room: SabhaEventRoom): SabhaChatType => (room.type === "Direct" ? "direct" : "group");
+/**
+ * Open and Closed rooms are the only ones where Sabha sends an app just its
+ * mentions, and the only ones whose messages can hold a thread. DMs (group
+ * DMs too), threads and forum posts send the app every message.
+ */
+export const isMentionGatedRoom = (room: Pick<SabhaEventRoom, "type">): boolean => room.type === "Open" || room.type === "Closed";
+
+/** A Direct room with more than the app and one person is a group DM: a group chat that needs no mention. */
+export const chatTypeOf = (room: SabhaEventRoom): SabhaChatType =>
+  room.type === "Direct" && (room.members ?? 2) <= 2 ? "direct" : "group";
 
 /** Sabha computes `mentions_app` server-side; mentionees cover events that predate it. */
 export function mentionsApp(event: SabhaMessageEvent, selfId: number): boolean {
@@ -50,7 +59,7 @@ export function mentionsApp(event: SabhaMessageEvent, selfId: number): boolean {
  * the message mentions the app.
  */
 export function addressesApp(event: SabhaMessageEvent, selfId: number): boolean {
-  if (chatTypeOf(event.room) === "direct" || event.message.thread != null) return true;
+  if (!isMentionGatedRoom(event.room) || event.message.thread != null) return true;
   return mentionsApp(event, selfId);
 }
 

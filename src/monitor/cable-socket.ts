@@ -14,7 +14,7 @@ const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 export type CableTimeouts = { handshakeMs: number; subscribeMs: number; silenceMs: number };
 export const DEFAULT_CABLE_TIMEOUTS: CableTimeouts = { handshakeMs: 10_000, subscribeMs: 10_000, silenceMs: 10_000 };
 
-/** Last seen position per AnyCable stream, kept by the monitor across connections. */
+/** Last durably handled position per AnyCable stream, kept by the monitor across connections. */
 export type StreamPositions = Map<string, { epoch: string; offset: number }>;
 
 export type CableEventMeta = { streamId?: string; epoch?: string; offset?: number };
@@ -22,6 +22,8 @@ export type CableEventMeta = { streamId?: string; epoch?: string; offset?: numbe
 export type CableSession = {
   /** Perform a channel action (e.g. `draft`). False when the socket is no longer open. */
   perform(action: string, data: Record<string, unknown>): boolean;
+  /** Drop this connection so the monitor reconnects and replays from the positions it holds. */
+  close(): void;
 };
 
 export type CableOutcome = {
@@ -130,6 +132,7 @@ export function connectCable(params: {
     const session: CableSession = {
       perform: (action, data) =>
         send({ command: "message", identifier: APP_EVENTS_IDENTIFIER, data: JSON.stringify({ ...data, action }) }),
+      close: () => ws.terminate(),
     };
 
     const requestHistory = () => {
@@ -188,12 +191,7 @@ export function connectCable(params: {
           return;
       }
       if (frame.identifier !== APP_EVENTS_IDENTIFIER || frame.message == null) return;
-      if (frame.stream_id && frame.epoch && typeof frame.offset === "number") {
-        const known = params.positions.get(frame.stream_id);
-        if (!known || known.epoch !== frame.epoch || frame.offset > known.offset) {
-          params.positions.set(frame.stream_id, { epoch: frame.epoch, offset: frame.offset });
-        }
-      }
+      // Positions are the monitor's to advance, once the event is durably stored.
       params.onEvent(frame.message, { streamId: frame.stream_id, epoch: frame.epoch, offset: frame.offset });
     });
 

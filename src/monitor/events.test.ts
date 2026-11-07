@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SabhaMessageEvent } from "../client/types.js";
-import { addressesApp, eventFacts, parseSabhaEvent, SabhaEventShapeError } from "./events.js";
+import { addressesApp, chatTypeOf, eventFacts, isMentionGatedRoom, parseSabhaEvent, SabhaEventShapeError } from "./events.js";
 
 const SELF = 508;
 
@@ -30,6 +30,17 @@ describe("addressesApp", () => {
     expect(addressesApp(message({ mentionees: [SELF] }), SELF)).toBe(true);
     expect(addressesApp(message({ thread: true }), SELF)).toBe(true);
     expect(addressesApp(message({ room: { id: 9, name: null, type: "Direct" } }), SELF)).toBe(true);
+  });
+});
+
+describe("room kinds", () => {
+  it("treats a Direct room with more than two members as a group that hears everything", () => {
+    const groupDm = { id: 9, name: null, type: "Direct", members: 3 } as const;
+    expect(chatTypeOf(groupDm)).toBe("group");
+    expect(chatTypeOf({ id: 9, name: null, type: "Direct", members: 2 })).toBe("direct");
+    expect(isMentionGatedRoom(groupDm)).toBe(false);
+    expect(addressesApp(message({ room: groupDm }), SELF)).toBe(true);
+    expect(isMentionGatedRoom({ type: "Closed" })).toBe(true);
   });
 });
 

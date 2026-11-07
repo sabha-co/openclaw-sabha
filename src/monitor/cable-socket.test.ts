@@ -44,6 +44,7 @@ const confirming = (frame: Record<string, unknown>, ws: WebSocket) => {
 function run(server: Server, overrides: Partial<Parameters<typeof connectCable>[0]> = {}) {
   const controller = new AbortController();
   const events: unknown[] = [];
+  const metas: unknown[] = [];
   const positions: StreamPositions = new Map();
   let session: Parameters<Parameters<typeof connectCable>[0]["onReady"]>[0] | undefined;
   const outcome = connectCable({
@@ -52,10 +53,13 @@ function run(server: Server, overrides: Partial<Parameters<typeof connectCable>[
     abortSignal: controller.signal,
     positions,
     onReady: (s) => (session = s),
-    onEvent: (message) => events.push(message),
+    onEvent: (message, meta) => {
+      events.push(message);
+      metas.push(meta);
+    },
     ...overrides,
   });
-  return { controller, events, positions, outcome, session: () => session };
+  return { controller, events, metas, positions, outcome, session: () => session };
 }
 
 const until = async (check: () => boolean) => {
@@ -64,7 +68,7 @@ const until = async (check: () => boolean) => {
 };
 
 describe("connectCable", () => {
-  it("authenticates by header, subscribes, delivers events and tracks positions", async () => {
+  it("authenticates by header, subscribes, and delivers events with their stream position", async () => {
     const server = await fakeAnyCable((frame, ws) => {
       confirming(frame, ws);
       if (frame.command === "subscribe") {
@@ -75,7 +79,9 @@ describe("connectCable", () => {
     await until(() => run1.events.length === 1);
     expect(server.headers.authorization).toBe("Bearer sabha_app_k");
     expect(server.headers["sec-websocket-protocol"]).toBe(CABLE_PROTOCOL);
-    expect(run1.positions.get("app_events:508")).toEqual({ epoch: "e1", offset: 4 });
+    expect(run1.metas[0]).toEqual({ streamId: "app_events:508", epoch: "e1", offset: 4 });
+    // Advancing positions is the monitor's job, after the event is durably stored.
+    expect(run1.positions.size).toBe(0);
 
     expect(run1.session()!.perform("draft", { kind: "start", draft_id: "d" })).toBe(true);
     await until(() => server.received.length === 2);

@@ -4,6 +4,7 @@ import {
   deriveCableUrl,
   inspectSabhaAccount,
   listSabhaAccountIds,
+  normalizeCableUrl,
   normalizeWorkspaceUrl,
   patchSabhaAccount,
   resolveDefaultSabhaAccountId,
@@ -20,6 +21,17 @@ describe("workspace URLs", () => {
     expect(normalizeWorkspaceUrl("https://chat.example.test/?x=1#y")).toBe("https://chat.example.test");
     expect(normalizeWorkspaceUrl("ftp://x")).toBe("");
     expect(normalizeWorkspaceUrl("not a url")).toBe("");
+  });
+
+  it("accepts the API base URL the app page shows", () => {
+    expect(normalizeWorkspaceUrl("https://sabha.co/1000006/api/v1")).toBe("https://sabha.co/1000006");
+    expect(normalizeWorkspaceUrl("https://chat.example.test/api/v1/")).toBe("https://chat.example.test");
+  });
+
+  it("accepts the app page's WebSocket URL, dropping its key", () => {
+    expect(normalizeCableUrl("wss://chat.example.test/cable?bot_key=sabha_app_x")).toBe("wss://chat.example.test/cable");
+    expect(normalizeCableUrl("https://sabha.co/cable?wid=1000006&bot_key=k")).toBe("wss://sabha.co/cable?wid=1000006");
+    expect(normalizeCableUrl("ftp://x")).toBe("");
   });
 
   it("puts the sabha.co workspace in ?wid=, never under the path prefix", () => {

@@ -1,3 +1,4 @@
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { describe, expect, it, vi } from "vitest";
 import type { SabhaClient } from "../client/client.js";
 import type { SabhaDraftFrame } from "../client/types.js";
@@ -72,6 +73,16 @@ describe("createSabhaReplyDelivery", () => {
     const long = `${"a".repeat(11_000)}\n\n${"b".repeat(11_000)}`;
     await expect(delivery.deliver({ text: long }, { kind: "final" })).rejects.toThrow();
     expect(posts).toHaveLength(1);
+  });
+
+  it("reports only the chunks that landed when a later chunk fails", async () => {
+    const { delivery } = setup({ withDraft: false, failSendAt: 1 });
+    const first = "a".repeat(11_000);
+    const error = await delivery.deliver({ text: `${first}\n\n${"b".repeat(11_000)}` }, { kind: "final" }).catch((caught: unknown) => caught);
+    expect(isChannelPartialDeliveryError(error)).toBe(true);
+    const result = (error as { deliveryResult: { content: string; messageIds: string[] } }).deliveryResult;
+    expect(result.messageIds).toEqual(["900"]);
+    expect(result.content).toBe(first);
   });
 
   it("skips reasoning payloads", async () => {

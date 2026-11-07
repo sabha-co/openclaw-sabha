@@ -1,5 +1,6 @@
 import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { describe, expect, it, vi } from "vitest";
 import type { SabhaClient } from "../client/client.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
@@ -8,11 +9,16 @@ import { runSabhaAction, SABHA_ACTIONS } from "./handlers.js";
 
 const account = { accountId: "default" } as ResolvedSabhaAccount;
 
-function setup(action: string, params: Record<string, unknown>, toolContext: Record<string, unknown> = {}) {
+function setup(action: string, params: Record<string, unknown>, toolContext: Record<string, unknown> = {}, failSendAt?: number) {
   const calls: string[] = [];
+  let sends = 0;
   const client = {
     renderBody: (text: string) => text,
-    sendMessage: vi.fn(async (roomId: number) => (calls.push("send"), { id: 900, roomId })),
+    sendMessage: vi.fn(async (roomId: number) => {
+      if (sends === failSendAt) throw new Error("boom");
+      calls.push("send");
+      return { id: 900 + sends++, roomId };
+    }),
     editMessage: vi.fn(async () => void calls.push("edit")),
     deleteMessage: vi.fn(async () => void calls.push("delete")),
     addReaction: vi.fn(async () => (calls.push("react"), 31)),
@@ -82,6 +88,19 @@ describe("message actions", () => {
     const { run, client } = setup("search", { query: "deploy", channelIds: "21, 22", authorId: "5" });
     await run();
     expect(client.search).toHaveBeenCalledWith({ query: "deploy", roomIds: [21, 22], authorIds: [5] });
+  });
+
+  it.each(["send", "thread-reply"])("%s reports a partial delivery when a later chunk fails", async (action) => {
+    const first = "a".repeat(11_000);
+    const { run } = setup(action, { target: "21", messageId: "4214", message: `${first}\n\n${"b".repeat(11_000)}` }, {}, 1);
+    const error = await run().catch((caught: unknown) => caught);
+    expect(isChannelPartialDeliveryError(error)).toBe(true);
+    expect((error as { deliveryResult: unknown }).deliveryResult).toMatchObject({ messageIds: ["900"], content: first });
+  });
+
+  it("rethrows a failure before anything landed as is", async () => {
+    const error = await setup("send", { target: "21", message: "hi" }, {}, 0).run().catch((caught: unknown) => caught);
+    expect(isChannelPartialDeliveryError(error)).toBe(false);
   });
 
   it("rejects unknown actions", async () => {

@@ -11,7 +11,8 @@ import { MentionRewriter } from "../client/mention-rewrite.js";
 import type { SabhaAppEvent, SabhaDraftFrame } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
 import { handleSabhaEvent } from "../inbound/turn.js";
-import { connectCable, type CableSession, type CreateCableSocket, type StreamPositions } from "./cable-socket.js";
+import { connectCable, type CableEventMeta, type CableSession, type CreateCableSocket } from "./cable-socket.js";
+import { createReplayPositions } from "./replay-positions.js";
 import { isMessageEvent, isReactionEvent, parseSabhaEvent } from "./events.js";
 import { createSabhaIngress } from "./ingress.js";
 
@@ -116,43 +117,55 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
   });
   ingress.start();
 
+  const replay = createReplayPositions();
+  let connection = 0;
+
   // Admit in arrival order; each admission is a durable write.
   let admissions = Promise.resolve();
-  const onEvent = (message: unknown) => {
+  const onEvent = (message: unknown, meta: CableEventMeta, from: number) => {
     status({ lastEventAt: Date.now() });
-    let event: SabhaAppEvent;
+    let event: SabhaAppEvent | undefined;
     try {
       event = parseSabhaEvent(message);
     } catch (error) {
       log.warn?.(`${prefix} ignoring event: ${String(error)}`);
-      return;
     }
-    if (event.event === "draft_refused") {
+    if (event?.event === "draft_refused") {
       log.warn?.(`${prefix} Sabha refused draft ${String(event.draft_id)}: ${String(event.error)}`);
-      return;
     }
-    if (isMessageEvent(event) || isReactionEvent(event)) {
+    if (event && (isMessageEvent(event) || isReactionEvent(event))) {
       mentions.add(event.user.name, event.user.id);
       for (const user of event.message.mentionees ?? []) mentions.add(user.name, user.id);
     }
-    admissions = admissions
-      .then(() => ingress.receive(event))
-      .then((admission) => {
-        if (admission.kind === "invalid") log.warn?.(`${prefix} rejected event: ${admission.message}`);
-      })
-      .catch((error: unknown) => log.error?.(`${prefix} could not store event ${event.event}: ${String(error)}`));
+    const admit = event && event.event !== "draft_refused" ? event : undefined;
+    admissions = admissions.then(async () => {
+      if (admit) {
+        try {
+          const admission = await ingress.receive(admit);
+          if (admission.kind === "invalid") log.warn?.(`${prefix} rejected event: ${admission.message}`);
+        } catch (error) {
+          log.error?.(`${prefix} could not store event ${admit.event}; will replay it after reconnecting: ${String(error)}`);
+          replay.freeze(meta, from);
+          // Reconnect now, so history replays the gap instead of waiting for the next drop.
+          if (from === connection) session?.close();
+          return;
+        }
+      }
+      // Stored, or deliberately not stored (malformed, refused draft): either way handled.
+      replay.commit(meta, from);
+    });
   };
 
-  const positions: StreamPositions = new Map();
   let resumeSince: number | undefined;
   let failures = 0;
   try {
     while (!abortSignal.aborted) {
+      const current = ++connection;
       const outcome = await connectCable({
         url: account.cableUrl,
         appKey: account.appKey,
         abortSignal,
-        positions,
+        positions: replay.positions,
         ...(resumeSince !== undefined ? { resumeSince } : {}),
         onReady: (live) => {
           session = live;
@@ -160,7 +173,7 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
           resumeSince = Math.floor(Date.now() / 1000) - RESUME_OVERLAP_SECONDS;
           status(channelReadyPatch());
         },
-        onEvent,
+        onEvent: (message, meta) => onEvent(message, meta, current),
         log,
         ...(params.createSocket ? { createSocket: params.createSocket } : {}),
       });

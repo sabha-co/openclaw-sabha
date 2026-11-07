@@ -1,8 +1,9 @@
 import type { ChannelMessageActionContext, ChannelMessageActionName } from "openclaw/plugin-sdk/channel-contract";
 import type { SabhaClient } from "../client/client.js";
-import type { SabhaMessage, SabhaReactionGroup, SabhaSearchResult } from "../client/types.js";
+import type { SabhaMessage, SabhaReactionGroup, SabhaSearchResult, SabhaSent } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
-import { sendSabhaMedia, sendSabhaText } from "../outbound/send.js";
+import { partialDelivery } from "../outbound/reply-delivery.js";
+import { acceptedText, sendSabhaMedia, sendSabhaText, type SabhaTarget } from "../outbound/send.js";
 import { resolveSendTarget } from "../outbound/target.js";
 import { getSabhaRuntime } from "../runtime.js";
 import { readId, readIds, readLimit, readText, requireValue } from "./params.js";
@@ -26,6 +27,29 @@ function targetOf(ctx: ChannelMessageActionContext): string {
 
 async function roomOf(deps: ActionDeps): Promise<number> {
   return (await resolveSendTarget({ client: deps.client, to: targetOf(deps.ctx) })).roomId;
+}
+
+/**
+ * Post text, appending each message to `sent` as it lands. A failure after
+ * the first chunk is a partial delivery carrying only what landed, so the
+ * host records it and a retry doesn't repeat it. Returns the landed text.
+ */
+async function postTracked(deps: ActionDeps, target: SabhaTarget, text: string, sent: SabhaSent[]): Promise<string> {
+  const before = sent.length;
+  const chunks: string[] = [];
+  try {
+    await beforeWrite(deps.ctx);
+    await sendSabhaText({
+      client: deps.client, cfg: deps.ctx.cfg, accountId: deps.account.accountId, target, text,
+      onSent: (message, chunk) => {
+        sent.push(message);
+        chunks.push(chunk);
+      },
+    });
+  } catch (error) {
+    throw sent.length > before ? partialDelivery(error, sent, acceptedText(text, chunks)) : error;
+  }
+  return text;
 }
 
 const messageIdOf = (ctx: ChannelMessageActionContext, required = true) => {
@@ -75,14 +99,16 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
       threadId: readText(ctx.params, "threadId"),
       replyToId: readText(ctx.params, "replyToId", "replyTo"),
     });
-    const sent = [];
-    if (text) {
-      await beforeWrite(ctx);
-      sent.push(...(await sendSabhaText({ client, cfg: ctx.cfg, accountId: account.accountId, target, text })));
-    }
+    const sent: SabhaSent[] = [];
+    let landedText = "";
+    if (text) landedText = await postTracked({ ctx, client, account }, target, text, sent);
     if (media) {
-      await beforeWrite(ctx);
-      sent.push(await sendSabhaMedia({ client, runtime: getSabhaRuntime(), account, target, url: media, ...(ctx.mediaAccess ? { mediaAccess: ctx.mediaAccess } : {}) }));
+      try {
+        await beforeWrite(ctx);
+        sent.push(await sendSabhaMedia({ client, runtime: getSabhaRuntime(), account, target, url: media, ...(ctx.mediaAccess ? { mediaAccess: ctx.mediaAccess } : {}) }));
+      } catch (error) {
+        throw partialDelivery(error, sent, landedText, "media");
+      }
     }
     return {
       ok: true,
@@ -97,8 +123,8 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
     const text = requireValue(textOf(ctx), "Sabha thread-reply needs 'message'.");
     const parent = requireValue(readId(ctx.params, "messageId", "message_id", "replyToId", "replyTo"), "Sabha thread-reply needs 'messageId' (the top-level message).");
     const roomId = await roomOf({ ctx, client, account });
-    await beforeWrite(ctx);
-    const sent = await sendSabhaText({ client, cfg: ctx.cfg, accountId: account.accountId, target: { roomId, parentMessageId: parent }, text });
+    const sent: SabhaSent[] = [];
+    await postTracked({ ctx, client, account }, { roomId, parentMessageId: parent }, text, sent);
     return { ok: true, messageId: String(sent[0]!.id), roomId: String(sent[0]!.roomId), parentMessageId: String(parent) };
   },
 

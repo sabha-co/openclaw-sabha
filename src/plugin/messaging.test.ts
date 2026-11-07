@@ -14,6 +14,7 @@ const {
   resolveSabhaDeliveryTarget,
   resolveSabhaOutboundSessionRoute,
 } = await import("./messaging.js");
+const { noteRoomThreading } = await import("../inbound/room-threading.js");
 
 const KEY = "sabha_app_0123456789abcdef0123456789abcdef";
 const cfg = { channels: { sabha: { url: "https://sabha.test", appKey: KEY } } } as unknown as OpenClawConfig;
@@ -94,5 +95,13 @@ describe("buildSabhaThreadingToolContext", () => {
       currentThreadTs: "221",
     });
     expect(buildSabhaThreadingToolContext({ cfg, context: { To: "channel:9", ChatType: "direct" } }).replyToMode).toBe("off");
+  });
+
+  it("does not thread in group rooms that cannot hold threads (group DMs)", () => {
+    noteRoomThreading("default", "31", false);
+    noteRoomThreading("default", "32", true);
+    const groupDm = buildSabhaThreadingToolContext({ cfg, context: { To: "channel:31", NativeChannelId: "31", ChatType: "group" } });
+    expect(groupDm.replyToMode).toBe("off");
+    expect(buildSabhaThreadingToolContext({ cfg, context: { To: "channel:32", ChatType: "group" } }).replyToMode).not.toBe("off");
   });
 });

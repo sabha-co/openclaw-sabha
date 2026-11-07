@@ -15,7 +15,7 @@ import type { SabhaClient } from "../client/client.js";
 import type { SabhaSent } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
 import type { SabhaDraft } from "./draft-transport.js";
-import { sendSabhaMedia, sendSabhaText, type SabhaTarget } from "./send.js";
+import { acceptedText, sendSabhaMedia, sendSabhaText, type SabhaTarget } from "./send.js";
 
 export type SabhaDeliveryKind = "tool" | "block" | "final";
 
@@ -34,10 +34,13 @@ export function sabhaDeliveryResult(sent: readonly SabhaSent[], content: string,
   };
 }
 
-/** Wrap a mid-way failure so core keeps the messages that did land. */
-function partial(error: unknown, sent: readonly SabhaSent[], content: string): unknown {
+/**
+ * Wrap a mid-way failure so core keeps the messages that did land. `content`
+ * must be only what landed: core reports it as sent (message_sent hooks too).
+ */
+export function partialDelivery(error: unknown, sent: readonly SabhaSent[], content: string, kind: "text" | "media" = "text"): unknown {
   if (!sent.length) return error;
-  return createChannelPartialDeliveryError(error, { ...sabhaDeliveryResult(sent, content), visibleReplySent: true });
+  return createChannelPartialDeliveryError(error, { ...sabhaDeliveryResult(sent, content, kind), visibleReplySent: true });
 }
 
 export function createSabhaReplyDelivery(params: {
@@ -61,14 +64,18 @@ export function createSabhaReplyDelivery(params: {
 
   const postText = async (text: string, clientMessageId?: string): Promise<SabhaSent[]> => {
     const sent: SabhaSent[] = [];
+    const chunks: string[] = [];
     try {
       await sendSabhaText({
         client, cfg: params.cfg, accountId: account.accountId, target, text,
         ...(clientMessageId ? { clientMessageId } : {}),
-        onSent: (message) => sent.push(message),
+        onSent: (message, chunk) => {
+          sent.push(message);
+          chunks.push(chunk);
+        },
       });
     } catch (error) {
-      throw partial(error, sent, text);
+      throw partialDelivery(error, sent, acceptedText(text, chunks));
     }
     return sent;
   };
@@ -82,7 +89,8 @@ export function createSabhaReplyDelivery(params: {
         sent.push(await sendSabhaMedia({ client, runtime: params.runtime, account, target, url, ...(params.mediaAccess ? { mediaAccess: params.mediaAccess } : {}) }));
       }
     } catch (error) {
-      throw partial(error, sent, parts.text);
+      // All text landed (postText throws otherwise); the media failed.
+      throw partialDelivery(error, sent, parts.text, "media");
     }
     if (sent.length) params.onDelivered?.();
     return sabhaDeliveryResult(sent, parts.text, parts.hasMedia ? "media" : "text");

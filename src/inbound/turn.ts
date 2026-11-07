@@ -14,6 +14,7 @@ import type { SabhaAppEvent, SabhaMessageEvent, SabhaReactionEvent } from "../cl
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
 import { chatTypeOf, isMentionGatedRoom, isMessageEvent, isReactionEvent, mentionsApp, type SabhaChatType } from "../monitor/events.js";
 import type { SabhaIngressLifecycle } from "../monitor/ingress.js";
+import { noteRoomThreading } from "./room-threading.js";
 import { createSabhaDraft, type PerformDraft } from "../outbound/draft-transport.js";
 import { createSabhaReplyDelivery } from "../outbound/reply-delivery.js";
 import { SABHA_MEDIA_MAX_BYTES, type SabhaTarget } from "../outbound/send.js";
@@ -106,6 +107,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
     return;
   }
   deps.onInbound?.();
+  noteRoomThreading(account.accountId, conversation.roomId, isMentionGatedRoom(event.room));
 
   const target = replyTargetFor(event, account);
   const draft = account.livePreview ? createSabhaDraft({ perform: deps.performDraft, target }) : undefined;
@@ -115,6 +117,19 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
     log: (message) => log.info?.(`[sabha:${account.accountId}] ${message}`),
   });
 
+  // Ending the draft happens exactly once: when this call returns, or, for a
+  // follow-up deferred to an active run, when the host settles that follow-up
+  // (run finished, dropped, cancelled or abandoned).
+  let finished: Promise<void> | undefined;
+  const finish = (failed: boolean) =>
+    (finished ??= reply.finish({ failed }).catch((error: unknown) => log.error?.(`[sabha:${account.accountId}] reply cleanup failed: ${String(error)}`)));
+  const turnLifecycle = {
+    ...lifecycle,
+    onSettled: () => {
+      void finish(false);
+    },
+  };
+
   let deferredFollowup = false;
   let failed = false;
   try {
@@ -122,7 +137,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
       channel: CHANNEL,
       accountId: account.accountId,
       raw: event,
-      turnAdoptionLifecycle: lifecycle,
+      turnAdoptionLifecycle: turnLifecycle,
       adapter: {
         ingest: () => ({ id: messageId, timestamp, rawText: rawBody, textForAgent: rawBody, textForCommands: rawBody, raw: event }),
         resolveTurn: async () => {
@@ -179,8 +194,8 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
     failed = true;
     throw error;
   } finally {
-    // A follow-up replies later through this same delivery; its draft is still live.
-    if (!deferredFollowup) await reply.finish({ failed });
+    // A follow-up replies later through this same delivery; onSettled ends its draft.
+    if (!deferredFollowup) await finish(failed);
   }
 }
 

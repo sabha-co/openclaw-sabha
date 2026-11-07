@@ -8,6 +8,7 @@
 import type { ChannelThreadingToolContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { resolveSabhaAccount } from "../config/accounts.js";
+import { roomCanThread } from "../inbound/room-threading.js";
 import { parseSabhaTarget } from "../outbound/target.js";
 import { buildSabhaSessionRoute } from "../session.js";
 
@@ -101,24 +102,29 @@ export async function resolveSabhaOutboundSessionRoute(params: {
 /**
  * Thread context for message-tool sends. Top-level group turns carry the
  * account's replyToMode so the host threads the first reply under the
- * inbound message. In a thread or DM the current room is already the right
- * place, so replyToMode is off: threading again would nest a thread.
+ * inbound message. In a thread or DM (group DMs included) the current room is
+ * already the right place, so replyToMode is off: threading again would nest
+ * a thread, and Sabha refuses threads in DMs.
  */
 export function buildSabhaThreadingToolContext(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
-  context: { To?: string; ChatType?: string; CurrentMessageId?: string | number; MessageThreadId?: string | number };
+  context: { To?: string; ChatType?: string; CurrentMessageId?: string | number; MessageThreadId?: string | number; NativeChannelId?: string };
   hasRepliedRef?: { value: boolean };
 }): ChannelThreadingToolContext {
   const { context } = params;
+  const account = resolveSabhaAccount(params.cfg, params.accountId);
   const inThread = context.MessageThreadId != null;
   const isDm = context.ChatType === "direct";
   const to = context.To?.trim();
+  // Group DMs report ChatType "group" but can't hold threads; the inbound turn recorded the room's kind.
+  const roomId = (context.NativeChannelId ?? to ?? "").replace(/^(?:sabha:)?(?:channel:|room:|group:)?/i, "");
+  const cannotThread = /^\d+$/.test(roomId) && roomCanThread(account.accountId, roomId) === false;
   return {
     ...(to ? { currentChannelId: to } : {}),
     ...(context.CurrentMessageId != null ? { currentMessageId: context.CurrentMessageId } : {}),
     ...(inThread ? { currentThreadTs: String(context.MessageThreadId) } : {}),
-    replyToMode: inThread || isDm ? "off" : resolveSabhaAccount(params.cfg, params.accountId).replyToMode,
+    replyToMode: inThread || isDm || cannotThread ? "off" : account.replyToMode,
     ...(params.hasRepliedRef ? { hasRepliedRef: params.hasRepliedRef } : {}),
   };
 }

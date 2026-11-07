@@ -35,7 +35,8 @@ export async function sendSabhaText(params: {
   target: SabhaTarget;
   text: string;
   clientMessageId?: string;
-  onSent?: (sent: SabhaSent) => void;
+  /** Called as each chunk lands, with the chunk's own text. */
+  onSent?: (sent: SabhaSent, chunk: string) => void;
 }): Promise<SabhaSent[]> {
   const sent: SabhaSent[] = [];
   for (const [index, chunk] of chunkSabhaText(params.cfg, params.accountId, params.text).entries()) {
@@ -44,7 +45,7 @@ export async function sendSabhaText(params: {
       ...(index === 0 && params.clientMessageId ? { clientMessageId: params.clientMessageId } : {}),
     });
     sent.push(message);
-    params.onSent?.(message);
+    params.onSent?.(message, chunk);
   }
   return sent;
 }
@@ -95,4 +96,20 @@ export async function sendSabhaMedia(params: {
     media.fileName,
     params.target.parentMessageId !== undefined ? { parentMessageId: params.target.parentMessageId } : {},
   );
+}
+
+/**
+ * The part of `text` that reached Sabha, given the chunks that landed. Chunks
+ * are taken from the text in order, so this is the text up to the end of the
+ * last accepted chunk; if the chunker rewrote a chunk (e.g. re-opened a code
+ * fence) the accepted chunks themselves are the best account.
+ */
+export function acceptedText(text: string, accepted: readonly string[]): string {
+  let end = 0;
+  for (const chunk of accepted) {
+    const at = text.indexOf(chunk, end);
+    if (at < 0) return accepted.join("\n\n");
+    end = at + chunk.length;
+  }
+  return text.slice(0, end).trimEnd();
 }

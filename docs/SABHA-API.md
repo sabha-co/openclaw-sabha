@@ -30,8 +30,9 @@ the server code, the code wins, and so does this file.
   replays missed events. The server answers `confirm_history` or
   `reject_history` (history expired or epoch changed).
 - Pings every 3 s. `disconnect` with `reconnect: false` means stop.
-- App → server actions: only `answer` (for `command` events). **There is no
-  `draft` action yet.** The plugin's live drafts need one (plan Part A).
+- App → server actions: `answer` (for `command` events) and `draft` (live
+  draft frames: `start`, `text`, `activity`, `end`). A refused frame comes back
+  as `{event: "draft_refused", draft_id, error}`.
 
 ### Who hears what
 
@@ -41,8 +42,9 @@ the server code, the code wins, and so does this file.
   `@everyone`). Updates, deletes and reactions reach every member app.
 - DMs and sub-rooms (threads, forum posts): every member app hears everything.
 - Threads: the app must be a member of the thread room. It becomes one by
-  posting there, including a post with `parent_message_id`. A mention inside a
-  thread the app never joined does not reach it.
+  posting there, including a post with `parent_message_id`. Before that, a
+  message in the thread reaches it only when it mentions the app by name, and
+  only if the app is in the room above.
 
 ### Events
 
@@ -99,9 +101,6 @@ the plugin renders Markdown to Lexxy's own export markup
 
 ## Not available to apps (yet)
 
-- **Live drafts.** There is no `AppEventsChannel#draft` action, and
-  `client_message_id` is rejected (`422 client_message_id is not permitted`).
-  The plugin keeps `livePreview` off by default until both ship.
 - **Typing indicators.** There is no app endpoint (`/api/typing` is dev-only).
   The plugin sends none.
 - **Ephemerals, Block Kit interactions, slash commands.** Not handled by the

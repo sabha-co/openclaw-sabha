@@ -205,7 +205,7 @@
         "livePreview": {
           "label": "Live drafts",
           "advanced": true,
-          "help": "Stream replies into a live draft while the agent writes. Needs a Sabha server with live drafts; off by default"
+          "help": "Stream replies into a live draft while the agent writes. On by default; a Sabha server without live drafts posts the reply as usual"
         }
       }
     }

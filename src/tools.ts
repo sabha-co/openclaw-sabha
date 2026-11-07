@@ -1,192 +1,82 @@
-import { Type, type TSchema } from "typebox";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+// Agent tools (tool context v2). The account comes from trusted host context:
+// the current turn's account when the agent is on Sabha, else the default.
+import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
-import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-core";
+import { Type, type TSchema } from "typebox";
+import { accountClient } from "./client/account-client.js";
+import type { SabhaClient } from "./client/client.js";
+import { SABHA_CHANNEL_ID, type SabhaToolName } from "./plugin/meta.js";
 
+type ToolContext = OpenClawPluginToolContext<2>;
+type ToolResult = { content: Array<{ type: "text"; text: string }>; details: unknown };
 
-import { SabhaClient } from "./client.js";
-import {
-  listSabhaAccountIds,
-  resolveDefaultSabhaAccountId,
-  resolveSabhaAccount,
-} from "./accounts.js";
-
-type ToolResult = {
-  content: Array<{ type: "text"; text: string }>;
-  details: unknown;
+const ok = (data: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(data) }], details: data });
+const fail = (error: unknown): ToolResult => {
+  const message = error instanceof Error ? error.message : String(error);
+  return { content: [{ type: "text", text: `Error: ${message}` }], details: { error: message } };
 };
 
-function toolResult(data: unknown): ToolResult {
-  return {
-    content: [{ type: "text", text: JSON.stringify(data) }],
-    details: data,
-  };
-}
+const onSabha = (ctx: ToolContext) => ctx.messageChannel === SABHA_CHANNEL_ID;
 
-function toolError(err: unknown): ToolResult {
-  const message = err instanceof Error ? err.message : String(err);
-  return {
-    content: [{ type: "text", text: `Error: ${message}` }],
-    details: { error: message },
-  };
-}
-
-/**
- * Every Sabha agent tool accepts an optional `accountId` override that is
- * read at execute time but NOT advertised in the tool's JSON schema. The
- * LLM therefore never sees a bot-account picker; routing flows implicitly
- * through `ctx.agentAccountId` (supplied by the SDK per invocation) with a
- * final fallback to `resolveDefaultSabhaAccountId`. This mirrors the Feishu
- * plugin's pattern — which was verified as the canonical multi-account
- * tool registration shape.
- */
-type AccountAwareParams = { accountId?: string };
-
-/**
- * Resolve the SabhaClient to route a tool invocation through.
- *
- * Precedence (high → low):
- *   1. `params.accountId` — explicit override (hidden from LLM schema but
- *      readable at execute time). Used by internal routing and tests.
- *   2. `ctx.agentAccountId` — supplied by the OpenClaw SDK based on the
- *      agent's current session / routing context.
- *   3. `resolveDefaultSabhaAccountId(cfg)` — fallback when neither is set
- *      (applied inside `resolveSabhaAccount` when `accountId` is nullish).
- *
- * Two safety guards on top of the precedence:
- *   - **Unrelated context ids fall back to default.** If the context id is not a
- *     real Sabha account (e.g. a Slack workspace id reaching us via
- *     `agentAccountId` from a different channel's routing), we fall back
- *     to the configured default instead of returning a degenerate
- *     base-only config. Mirrors Feishu's `tool-account-routing.test.ts`
- *     behavior. Explicit unknown overrides fail instead of changing tenants.
- *   - **Disabled accounts throw.** A bot account marked
- *     `enabled: false` should not silently service tool calls; surface
- *     that as an explicit error so operators can tell why a tool failed.
- */
-function getClientForTool(
-  cfg: OpenClawConfig,
-  params: AccountAwareParams | undefined,
-  agentAccountId: string | undefined,
-): SabhaClient {
-  const requestedId = normalizeOptionalAccountId(params?.accountId ?? agentAccountId);
-  const knownIds = listSabhaAccountIds(cfg);
-  if (params?.accountId && (!requestedId || !knownIds.includes(requestedId))) {
-    throw new Error(`Unknown Sabha account "${params.accountId}"`);
-  }
-  const resolvedId =
-    requestedId && knownIds.includes(requestedId)
-      ? requestedId
-      : resolveDefaultSabhaAccountId(cfg);
-  const account = resolveSabhaAccount({ cfg, accountId: resolvedId });
-  if (!account.enabled) {
-    throw new Error(
-      `Sabha bot account "${account.accountId}" is disabled (channels.sabha.accounts.${account.accountId}.enabled === false). ` +
-        `Re-enable it or pick a different accountId.`,
-    );
-  }
-  if (!account.botKey || !account.apiBaseUrl) {
-    throw new Error(`Sabha account "${account.accountId}" is not configured`);
-  }
-  return new SabhaClient(account.apiBaseUrl, account.botKey);
-}
-
-type ToolCtx = OpenClawPluginToolContext;
-
-type ToolExecute<TParams> = (args: {
-  cfg: OpenClawConfig;
-  params: TParams;
-  agentAccountId: string | undefined;
-}) => Promise<unknown>;
-
-type ToolDefinition<TParams extends AccountAwareParams> = {
-  name: string;
+type ToolSpec<P> = {
+  name: SabhaToolName;
   label: string;
   description: string;
   parameters: TSchema;
-  execute: ToolExecute<TParams>;
+  run: (args: { client: SabhaClient; params: P; ctx: ToolContext }) => Promise<unknown>;
 };
 
-/**
- * Sabha agent tool factory. Returns per-invocation factories that the
- * host registers via `api.registerTool((ctx) => ...)`, so each call picks
- * up a fresh `ctx.agentAccountId` from the SDK.
- */
-export function createSabhaTools(getConfig: () => OpenClawConfig) {
-  const build = <TParams extends AccountAwareParams>(
-    def: ToolDefinition<TParams>,
-  ) => {
-    return (ctx: ToolCtx) => ({
-      name: def.name,
-      label: def.label,
-      description: def.description,
-      parameters: def.parameters,
-      async execute(_id: string, rawParams: unknown): Promise<ToolResult> {
+function defineTool<P>(spec: ToolSpec<P>, getConfig: () => OpenClawConfig) {
+  return {
+    contextVersion: 2 as const,
+    create: (ctx: ToolContext) => ({
+      name: spec.name,
+      label: spec.label,
+      description: spec.description,
+      parameters: spec.parameters,
+      async execute(_toolCallId: string, rawParams: unknown): Promise<ToolResult> {
         try {
           const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? getConfig();
-          const params = (rawParams ?? {}) as TParams;
-          const data = await def.execute({
-            cfg,
-            params,
-            agentAccountId: ctx.agentAccountId,
-          });
-          return toolResult(data);
-        } catch (err) {
-          return toolError(err);
+          const { client } = accountClient(cfg, onSabha(ctx) ? ctx.agentAccountId : undefined);
+          return ok(await spec.run({ client, params: (rawParams ?? {}) as P, ctx }));
+        } catch (error) {
+          return fail(error);
         }
       },
-    });
+    }),
   };
+}
 
+export function createSabhaTools(getConfig: () => OpenClawConfig) {
   return [
-    // Sabha exposes only two `registerTool` factories. Everything else an
-    // agent might want — room listing, message search, workspace-level
-    // user lookup, send/edit/react/read — flows through canonical SDK
-    // slots (directory adapter, message-action adapter, resolver). Channel
-    // and member admin (create / archive / join / leave / add / remove)
-    // were dropped in favor of letting humans run those operations through
-    // the Sabha UI; see `docs/CHANNEL-ADMIN-DROP-PLAN.md`. The two retained
-    // verbs are the ones with no SDK slot and no human-side substitute the
-    // agent can reach:
-    //
-    //   - `sabha_search_members`: room-scoped name → user lookup. The SDK
-    //     directory has no `roomId + query` slot; workspace-level
-    //     `listPeers({ query })` is too broad when multiple users share a
-    //     name.
-    //   - `sabha_create_dm`: explicit DM materialization. Sabha doesn't
-    //     auto-create on first send, so without this verb an agent can
-    //     only reply in DMs that already exist.
-    build<AccountAwareParams & { room_id: number; query?: string }>({
+    defineTool<{ room_id?: number; query?: string }>({
       name: "sabha_search_members",
       label: "Search Sabha room members",
       description:
-        "Find users in a specific Sabha room by partial name. Returns up to 20 candidates; refine the query if you receive exactly 20.",
+        "Find people in a Sabha room by partial name, to mention them as @{USER_ID}. Returns up to 20 candidates; refine the query if you get exactly 20. Defaults to the current room.",
       parameters: Type.Object({
-        room_id: Type.Number({ description: "Room ID to search within" }),
-        query: Type.Optional(
-          Type.String({
-            description:
-              "Partial name to match (server runs prefix-style match via User.matching). Omit to fetch recent posters.",
-          }),
-        ),
+        room_id: Type.Optional(Type.Number({ description: "Room to search. Defaults to the room of the current conversation." })),
+        query: Type.Optional(Type.String({ description: "Partial name. Omit to list the room's recent posters." })),
       }),
-      execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).searchUsers({
-          roomId: params.room_id,
-          query: params.query,
-        }),
-    }),
-    build<AccountAwareParams & { user_id: number }>({
+      run: async ({ client, params, ctx }) => {
+        const current = onSabha(ctx) && ctx.nativeChannelId && /^\d+$/.test(ctx.nativeChannelId) ? Number(ctx.nativeChannelId) : undefined;
+        const roomId = params.room_id ?? current;
+        if (roomId === undefined) throw new Error("room_id is required outside a Sabha conversation");
+        const users = await client.searchUsers({ roomId, ...(params.query ? { query: params.query } : {}) });
+        return users.map((user) => ({ id: user.id, name: user.name, mention: `@{${user.id}}`, ...(user.bot ? { app: true } : {}) }));
+      },
+    }, getConfig),
+    defineTool<{ user_id: number }>({
       name: "sabha_create_dm",
-      label: "Create Sabha DM",
-      description: "Create a direct message conversation with a user in Sabha",
-      parameters: Type.Object({
-        user_id: Type.Number({ description: "User ID to DM" }),
-      }),
-      execute: async ({ cfg, params, agentAccountId }) =>
-        await getClientForTool(cfg, params, agentAccountId).createDm([
-          params.user_id,
-        ]),
-    }),
+      label: "Open a Sabha DM",
+      description: "Open (or find) the direct-message room with a Sabha user. Returns the room id to send to.",
+      parameters: Type.Object({ user_id: Type.Number({ description: "User id to DM" }) }),
+      run: async ({ client, params, ctx }) => {
+        if (!Number.isInteger(params.user_id)) throw new Error("user_id must be a Sabha user id");
+        ctx.assertInvocationCurrent();
+        const { roomId } = await client.createDm([params.user_id]);
+        return { roomId, target: `channel:${roomId}` };
+      },
+    }, getConfig),
   ];
 }

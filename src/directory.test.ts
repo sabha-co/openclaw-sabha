@@ -1,455 +1,94 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SabhaAccountUnavailableError } from "./client/account-client.js";
 
-import {
-  listSabhaDirectoryGroups,
-  listSabhaDirectoryPeers,
-  listSabhaDirectoryPeersLive,
-} from "./directory.js";
-
-type FetchMock = ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
-
-function withMockedFetch(responses: Array<{ body: unknown; status?: number }>) {
-  let i = 0;
-  const fetch = vi.fn(async () => {
-    const r = responses[Math.min(i++, responses.length - 1)];
-    return new Response(JSON.stringify(r.body), {
-      status: r.status ?? 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as unknown as FetchMock;
-  const original = globalThis.fetch;
-  globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+const client = {
+  listRooms: vi.fn(),
+  listUsers: vi.fn(),
+  searchUsers: vi.fn(),
+};
+let unavailable = false;
+vi.mock("./client/account-client.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./client/account-client.js")>();
   return {
-    fetch,
-    restore: () => {
-      globalThis.fetch = original;
+    ...original,
+    accountClient: () => {
+      if (unavailable) throw new original.SabhaAccountUnavailableError({ accountId: "default", enabled: false });
+      return { account: { accountId: "default" }, client };
     },
   };
-}
+});
 
-function multiBotCfg(): OpenClawConfig {
-  return {
-    channels: {
-      sabha: {
-        accounts: {
-          a: {
-            apiBaseUrl: "https://sabha.example/a/api/bots",
-            botKey: "1-A",
-          },
-          b: {
-            apiBaseUrl: "https://sabha.example/b/api/bots",
-            botKey: "2-B",
-          },
-        },
-        defaultAccount: "a",
-      },
-    },
-  } as unknown as OpenClawConfig;
-}
+const { listSabhaGroupMembers, listSabhaPeers, listSabhaPeersLive, resolveSabhaTargets } = await import("./directory.js");
+const cfg = {} as OpenClawConfig;
+const user = (id: number, name: string, bot = false) => ({ id, name, bot });
 
-function disabledDefaultCfg(): OpenClawConfig {
-  return {
-    channels: {
-      sabha: {
-        accounts: {
-          a: {
-            enabled: false,
-            apiBaseUrl: "https://sabha.example/a/api/bots",
-            botKey: "1-A",
-          },
-        },
-      },
-    },
-  } as unknown as OpenClawConfig;
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+  unavailable = false;
+});
 
-describe("listSabhaDirectoryGroups", () => {
-  let restore: (() => void) | null = null;
-  afterEach(() => {
-    restore?.();
-    restore = null;
+describe("directory listings", () => {
+  it("pages through users, skipping apps, until a short page", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => user(i + 1, `User ${i + 1}`, i === 0));
+    client.listUsers.mockResolvedValueOnce(full).mockResolvedValueOnce([user(500, "Last")]);
+    const peers = await listSabhaPeers({ cfg });
+    expect(client.listUsers).toHaveBeenCalledTimes(2);
+    expect(peers).toHaveLength(100);
+    expect(peers[0]).toEqual({ kind: "user", id: "2", name: "User 2", handle: "User 2" });
   });
 
-  it("returns rooms from the resolved bot as group entries", async () => {
-    const mock = withMockedFetch([
-      { body: [{ id: 1, name: "general", type: "Open" }, { id: 2, name: "random", type: "Open" }] },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
-
-    expect(entries).toHaveLength(2);
-    expect(entries[0]).toMatchObject({ kind: "group", id: "1", name: "general" });
-    expect(entries[1]).toMatchObject({ kind: "group", id: "2", name: "random" });
+  it("stops at the limit", async () => {
+    client.listUsers.mockResolvedValue(Array.from({ length: 100 }, (_, i) => user(i + 1, `U${i}`)));
+    expect(await listSabhaPeers({ cfg, limit: 3 })).toHaveLength(3);
+    expect(client.listUsers).toHaveBeenCalledTimes(1);
   });
 
-  it("scopes to the default account when accountId is null (does NOT union all accounts)", async () => {
-    // Cross-tenant safety: account 'a' and account 'b' may be different
-    // workspaces with overlapping room ids. Listing only the default
-    // account guarantees ids round-trip cleanly to message-action sends.
-    const mock = withMockedFetch([
-      { body: [{ id: 1, name: "default-only", type: "Open" }] },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
-
-    // One fetch only — to the default account 'a', not both. A 1-room
-    // page is shorter than perPage (100), so the loop terminates after
-    // page 1.
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("https://sabha.example/a/api/bots/rooms");
-    expect(url).toContain("page=1");
-    expect(url).toContain("per_page=100");
-    expect(entries.map((e) => e.id)).toEqual(["1"]);
+  it("propagates lookup errors instead of returning nobody", async () => {
+    client.searchUsers.mockRejectedValue(new Error("500"));
+    await expect(listSabhaPeersLive({ cfg, query: "an" })).rejects.toThrow("500");
   });
 
-  it("returns [] when the resolved account is disabled", async () => {
-    const mock = withMockedFetch([{ body: [] }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: disabledDefaultCfg() });
-
-    expect(entries).toEqual([]);
-    expect(mock.fetch).not.toHaveBeenCalled();
-  });
-
-  it("propagates the query param to the server (filtering happens server-side)", async () => {
-    // Server-side query → small payload, scoped on the wire. The wrapper
-    // no longer does an in-memory filter; the mock simulates the server
-    // returning only matches.
-    const mock = withMockedFetch([
-      { body: [{ id: 2, name: "Random", type: "Open" }] },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({
-      cfg: multiBotCfg(),
-      query: "rand",
-    });
-
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).toContain("query=rand");
-    expect(entries.map((e) => e.id)).toEqual(["2"]);
-  });
-
-  it("trims whitespace-only queries to undefined so the server gets no query param", async () => {
-    const mock = withMockedFetch([{ body: [] }]);
-    restore = mock.restore;
-
-    await listSabhaDirectoryGroups({ cfg: multiBotCfg(), query: "   " });
-
-    const url = String(mock.fetch.mock.calls[0][0]);
-    expect(url).not.toContain("query=");
-  });
-
-  it("respects limit", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 1, name: "a", type: "Open" },
-          { id: 2, name: "b", type: "Open" },
-          { id: 3, name: "c", type: "Open" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg(), limit: 2 });
-    expect(entries).toHaveLength(2);
-  });
-
-  it("scopes to one account when accountId is provided", async () => {
-    const mock = withMockedFetch([
-      { body: [{ id: 9, name: "only-on-a", type: "Open" }] },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({
-      cfg: multiBotCfg(),
-      accountId: "a",
-    });
-
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(String(mock.fetch.mock.calls[0][0])).toContain(
-      "https://sabha.example/a/api/bots/rooms",
-    );
-    expect(entries).toHaveLength(1);
-  });
-
-  it("paginates: walks pages until a short page terminates the loop", async () => {
-    // Mirrors the listSabhaDirectoryPeers pagination tests. With
-    // perPage=100, returning 100 then a short page (or empty) ends the loop.
-    const fullPage = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `room-${i + 1}`,
-      type: "Open" as const,
-    }));
-    const tail = [{ id: 101, name: "room-101", type: "Open" as const }];
-    const mock = withMockedFetch([{ body: fullPage }, { body: tail }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
-
-    expect(mock.fetch).toHaveBeenCalledTimes(2);
-    expect(entries).toHaveLength(101);
-    // Second call should be page=2.
-    expect(String(mock.fetch.mock.calls[1][0])).toContain("page=2");
-  });
-
-  it("stops the pagination loop on an empty page", async () => {
-    const fullPage = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `room-${i + 1}`,
-      type: "Open" as const,
-    }));
-    const mock = withMockedFetch([{ body: fullPage }, { body: [] }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
-
-    expect(mock.fetch).toHaveBeenCalledTimes(2);
-    expect(entries).toHaveLength(100);
-  });
-
-  it("returns partial results when a mid-stream page throws", async () => {
-    const fullPage = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `room-${i + 1}`,
-      type: "Open" as const,
-    }));
-    const mock = withMockedFetch([
-      { body: fullPage },
-      { body: "boom", status: 500 },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryGroups({ cfg: multiBotCfg() });
-
-    expect(entries).toHaveLength(100);
+  it("lists room members by prefixed id", async () => {
+    client.listUsers.mockResolvedValue([user(5, "Ann")]);
+    expect(await listSabhaGroupMembers({ cfg, groupId: "sabha:channel:21" })).toEqual([{ kind: "user", id: "5", name: "Ann", handle: "Ann" }]);
+    expect(client.listUsers).toHaveBeenCalledWith({ roomId: 21, page: 1, perPage: 100 });
+    await expect(listSabhaGroupMembers({ cfg, groupId: "general" })).rejects.toThrow("Not a Sabha room id");
   });
 });
 
-describe("listSabhaDirectoryPeers", () => {
-  let restore: (() => void) | null = null;
-  afterEach(() => {
-    restore?.();
-    restore = null;
-  });
-
-  it("returns reachable users from /api/bots/users with page=1 perPage=100", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 100, name: "Alice", role: "member", bot: false, url: "/u/alice" },
-          { id: 200, name: "Bob", role: "moderator", bot: false, url: "/u/bob" },
-        ],
-      },
+describe("resolveSabhaTargets", () => {
+  it("passes ids through and prefers an exact name", async () => {
+    client.searchUsers.mockResolvedValue([user(6, "Annie"), user(5, "ann"), user(9, "Bot", true)]);
+    const results = await resolveSabhaTargets({ cfg, inputs: ["@{7}", "user:8", "@Ann", ""], kind: "user" });
+    expect(results).toEqual([
+      { input: "@{7}", resolved: true, id: "7" },
+      { input: "user:8", resolved: true, id: "8" },
+      { input: "@Ann", resolved: true, id: "5", name: "ann" },
+      { input: "", resolved: false, note: "empty input" },
     ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
-
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    // Short page (2 < 100) signals last page — no extra round-trip.
-    expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/users?page=1&per_page=100",
-    );
-    expect(entries).toHaveLength(2);
-    expect(entries[0]).toMatchObject({ kind: "user", id: "100", name: "Alice" });
   });
 
-  it("paginates through multiple pages until a short page signals the last", async () => {
-    // Page 1: 100 users (full page → fetch more); page 2: 50 users (short → stop).
-    const page1 = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `U${i + 1}`,
-      role: "member",
-      bot: false,
-      url: `/u/${i + 1}`,
-    }));
-    const page2 = Array.from({ length: 50 }, (_, i) => ({
-      id: 101 + i,
-      name: `U${101 + i}`,
-      role: "member",
-      bot: false,
-      url: `/u/${101 + i}`,
-    }));
-    const mock = withMockedFetch([{ body: page1 }, { body: page2 }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
-
-    expect(mock.fetch).toHaveBeenCalledTimes(2);
-    expect(String(mock.fetch.mock.calls[0][0])).toContain("page=1");
-    expect(String(mock.fetch.mock.calls[1][0])).toContain("page=2");
-    expect(entries).toHaveLength(150);
-    expect(entries[0].id).toBe("1");
-    expect(entries[149].id).toBe("150");
+  it("notes ambiguity and misses, and caches repeated queries", async () => {
+    client.listRooms.mockResolvedValueOnce([{ id: 1, name: "general-a" }, { id: 2, name: "general-b" }]).mockResolvedValueOnce([]);
+    const results = await resolveSabhaTargets({ cfg, inputs: ["#general", "general", "#nothing"], kind: "group" });
+    expect(results[0]).toMatchObject({ resolved: true, id: "1", note: "2 matches; chose general-a" });
+    expect(results[1]).toMatchObject({ resolved: true, id: "1" });
+    expect(results[2]).toEqual({ input: "#nothing", resolved: false, note: "no match" });
+    expect(client.listRooms).toHaveBeenCalledTimes(2);
   });
 
-  it("stops paginating early when caller's limit is reached mid-page", async () => {
-    const page1 = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `U${i + 1}`,
-      role: "member",
-      bot: false,
-      url: `/u/${i + 1}`,
-    }));
-    const mock = withMockedFetch([{ body: page1 }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({
-      cfg: multiBotCfg(),
-      limit: 5,
-    });
-
-    // Only one fetch — the limit is satisfied within page 1, so we never
-    // request page 2. (Workspace might have thousands of users; we stop.)
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(entries).toHaveLength(5);
-    expect(entries.map((e) => e.id)).toEqual(["1", "2", "3", "4", "5"]);
+  it("reports lookup failures distinctly from no match", async () => {
+    client.searchUsers.mockRejectedValue(new Error("boom"));
+    const [result] = await resolveSabhaTargets({ cfg, inputs: ["Ann"], kind: "user" });
+    expect(result).toMatchObject({ resolved: false });
+    expect(result!.note).toMatch(/^lookup failed: /);
   });
 
-  it("returns partial results on a mid-stream fetch failure", async () => {
-    // Page 1 succeeds with a full page; page 2 errors. Adapter returns
-    // the page-1 entries it already has rather than throwing or wiping.
-    const page1 = Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      name: `U${i + 1}`,
-      role: "member",
-      bot: false,
-      url: `/u/${i + 1}`,
-    }));
-    const mock = withMockedFetch([{ body: page1 }, { body: "boom", status: 500 }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
-
-    expect(entries).toHaveLength(100);
-    expect(entries[0].id).toBe("1");
-  });
-
-  it("filters out bot users so agents don't see other bots in the directory", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 1, name: "Alice", role: "member", bot: false, url: "/u/1" },
-          { id: 2, name: "OpsBot", role: "bot", bot: true, url: "/u/2" },
-          { id: 3, name: "Bob", role: "member", bot: false, url: "/u/3" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
-
-    expect(entries.map((e) => e.id)).toEqual(["1", "3"]);
-  });
-
-  it("filters by query (case-insensitive substring on name)", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 1, name: "Alice", role: "member", bot: false, url: "/u/1" },
-          { id: 2, name: "Albert", role: "member", bot: false, url: "/u/2" },
-          { id: 3, name: "Bob", role: "member", bot: false, url: "/u/3" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({
-      cfg: multiBotCfg(),
-      query: "AL",
-    });
-
-    expect(entries.map((e) => e.id)).toEqual(["1", "2"]);
-  });
-
-  it("scopes to the default account when accountId is null", async () => {
-    const mock = withMockedFetch([
-      { body: [{ id: 9, name: "Carol", role: "member", bot: false, url: "/u/9" }] },
-    ]);
-    restore = mock.restore;
-
-    await listSabhaDirectoryPeers({ cfg: multiBotCfg() });
-
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(String(mock.fetch.mock.calls[0][0])).toContain(
-      "https://sabha.example/a/api/bots/users",
-    );
-  });
-
-  it("returns [] when the account is disabled", async () => {
-    const mock = withMockedFetch([{ body: [] }]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeers({ cfg: disabledDefaultCfg() });
-
-    expect(entries).toEqual([]);
-    expect(mock.fetch).not.toHaveBeenCalled();
-  });
-});
-
-describe("listSabhaDirectoryPeersLive", () => {
-  let restore: (() => void) | null = null;
-  afterEach(() => {
-    restore?.();
-    restore = null;
-  });
-
-  it("hits /autocompletable/users with the trimmed query", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 5, name: "Ash", role: "member", bot: false, url: "/u/5" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeersLive({
-      cfg: multiBotCfg(),
-      query: "  Ash  ",
-    });
-
-    expect(mock.fetch).toHaveBeenCalledOnce();
-    expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/autocompletable/users?query=Ash",
-    );
-    expect(entries.map((e) => e.id)).toEqual(["5"]);
-  });
-
-  it("omits the query param when query is empty/whitespace", async () => {
-    const mock = withMockedFetch([{ body: [] }]);
-    restore = mock.restore;
-
-    await listSabhaDirectoryPeersLive({ cfg: multiBotCfg(), query: "   " });
-
-    expect(String(mock.fetch.mock.calls[0][0])).toBe(
-      "https://sabha.example/a/api/bots/autocompletable/users",
-    );
-  });
-
-  it("filters out bot users", async () => {
-    const mock = withMockedFetch([
-      {
-        body: [
-          { id: 1, name: "Alice", role: "member", bot: false, url: "/u/1" },
-          { id: 2, name: "OpsBot", role: "bot", bot: true, url: "/u/2" },
-        ],
-      },
-    ]);
-    restore = mock.restore;
-
-    const entries = await listSabhaDirectoryPeersLive({
-      cfg: multiBotCfg(),
-      query: "a",
-    });
-
-    expect(entries.map((e) => e.id)).toEqual(["1"]);
+  it("notes an unavailable account on every input", async () => {
+    unavailable = true;
+    const results = await resolveSabhaTargets({ cfg, inputs: ["Ann", "5"], kind: "user" });
+    expect(results.every((result) => !result.resolved && result.note?.includes("disabled"))).toBe(true);
+    expect(SabhaAccountUnavailableError).toBeDefined();
   });
 });

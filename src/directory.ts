@@ -1,212 +1,139 @@
-import type { ChannelDirectoryEntry } from "openclaw/plugin-sdk/channel-contract";
+// Directory listings and name → id resolution for one account at a time.
+// A failed lookup throws (or reports "lookup failed"); it is never presented
+// as an empty result, which would read as "nobody by that name".
+import type { ChannelDirectoryEntry, ChannelResolveKind, ChannelResolveResult } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { SabhaClient } from "./client.js";
-import { resolveDefaultSabhaAccountId, resolveSabhaAccount } from "./accounts.js";
+import { accountClient, SabhaAccountUnavailableError } from "./client/account-client.js";
+import type { SabhaClient } from "./client/client.js";
+import type { SabhaRoom, SabhaUser } from "./client/types.js";
 
-/**
- * Channel directory adapter — surfaces Sabha rooms (as groups), per-room
- * members, and reachable users (peers) to OpenClaw's directory layer.
- * Replaces `sabha_list_rooms` / `sabha_list_members` agent tools and
- * routes through the canonical SDK slot peers use (Slack/Mattermost).
- * Cross-channel agent verbs ("list conversations", "members of channel X",
- * "find user named …") work uniformly.
- *
- * `listPeers` hits `GET /api/bots/users` (server-side scoped to "users
- * sharing rooms with the bot" via `User.sharing_rooms_with`). That's
- * narrower than a workspace user list, but it's the right scope for a
- * directory: every returned user is reachable, and bots inherit the
- * server's privacy rule that they don't double as workspace people search.
- * `listPeersLive` hits the autocompletable variant (`?query=` matching,
- * limit 20) for autocomplete-style UX where freshness > completeness.
- *
- * Multi-account scoping: when `accountId` is null we resolve through the
- * channel's default account, NOT a union across all enabled accounts.
- * Sabha can be cross-tenant — different `accounts` entries can have
- * different `apiBaseUrl`s and therefore separate workspaces with
- * non-overlapping room id namespaces. Unioning rooms across them would
- * (a) collide bare numeric ids and (b) hand the agent room ids it cannot
- * subsequently message because the message-action handler runs against
- * one specific account. Scoping fixes both: ids are unique within the
- * resolved workspace and round-trip cleanly to send/edit/react.
- */
+type ListParams = { cfg: OpenClawConfig; accountId?: string | null; query?: string | null; limit?: number | null };
 
-type DirectoryParams = {
+const PAGE_SIZE = 100;
+const MAX_PAGES = 50;
+
+const capOf = (limit?: number | null) => (limit && limit > 0 ? limit : Number.POSITIVE_INFINITY);
+const roomEntry = (room: SabhaRoom): ChannelDirectoryEntry => ({ kind: "group", id: String(room.id), ...(room.name ? { name: room.name, handle: room.name } : {}) });
+const userEntry = (user: SabhaUser): ChannelDirectoryEntry => ({ kind: "user", id: String(user.id), name: user.name, handle: user.name });
+
+async function collectPages<T>(fetchPage: (page: number) => Promise<T[]>, keep: (item: T) => boolean, cap: number): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const items = await fetchPage(page);
+    for (const item of items) {
+      if (!keep(item)) continue;
+      out.push(item);
+      if (out.length >= cap) return out;
+    }
+    if (items.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
+/** Rooms the app belongs to. */
+export async function listSabhaGroups(params: ListParams): Promise<ChannelDirectoryEntry[]> {
+  const { client } = accountClient(params.cfg, params.accountId);
+  const query = params.query?.trim() || undefined;
+  const rooms = await collectPages((page) => client.listRooms({ ...(query ? { query } : {}), page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
+  return rooms.map(roomEntry);
+}
+
+/** People who share a room with the app (other apps excluded). */
+export async function listSabhaPeers(params: ListParams): Promise<ChannelDirectoryEntry[]> {
+  const { client } = accountClient(params.cfg, params.accountId);
+  const query = params.query?.trim().toLowerCase();
+  const users = await collectPages(
+    (page) => client.listUsers({ page, perPage: PAGE_SIZE }),
+    (user) => !user.bot && (!query || user.name.toLowerCase().includes(query)),
+    capOf(params.limit),
+  );
+  return users.map(userEntry);
+}
+
+/** Server-side autocomplete; the fast path for typed queries. */
+export async function listSabhaPeersLive(params: ListParams): Promise<ChannelDirectoryEntry[]> {
+  const { client } = accountClient(params.cfg, params.accountId);
+  const query = params.query?.trim() || undefined;
+  const users = (await client.searchUsers(query ? { query } : {})).filter((user) => !user.bot);
+  return users.slice(0, capOf(params.limit)).map(userEntry);
+}
+
+export async function listSabhaGroupMembers(params: { cfg: OpenClawConfig; accountId?: string | null; groupId: string; limit?: number | null }) {
+  const { client } = accountClient(params.cfg, params.accountId);
+  const roomId = Number(params.groupId.replace(/^(?:sabha:)?(?:channel:|room:|group:)?/i, ""));
+  if (!Number.isInteger(roomId)) throw new Error(`Not a Sabha room id: ${params.groupId}`);
+  const users = await collectPages((page) => client.listUsers({ roomId, page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
+  return users.map(userEntry);
+}
+
+// --- Resolver ---
+
+type Parsed = { kind: "id"; id: number } | { kind: "query"; query: string } | { kind: "empty" };
+
+function parseInput(input: string, kind: ChannelResolveKind): Parsed {
+  const value = input.trim().replace(/^sabha:/i, "").replace(kind === "user" ? /^user:/i : /^(?:channel|room|group):/i, "");
+  if (!value) return { kind: "empty" };
+  const mention = kind === "user" ? /^@\{(\d+)\}$/.exec(value) : null;
+  if (mention) return { kind: "id", id: Number(mention[1]) };
+  if (/^\d+$/.test(value)) return { kind: "id", id: Number(value) };
+  const query = value.replace(kind === "user" ? /^@/ : /^#/, "").trim();
+  return query ? { kind: "query", query } : { kind: "empty" };
+}
+
+type Named = { id: number; name: string | null };
+
+/** Exact (case-insensitive) name first, then the server's own ranking. */
+function pick<T extends Named>(input: string, query: string, matches: readonly T[]): ChannelResolveResult {
+  if (matches.length === 0) return { input, resolved: false, note: "no match" };
+  const exact = matches.filter((match) => match.name?.toLowerCase() === query.toLowerCase());
+  const best = exact[0] ?? matches[0]!;
+  const ambiguous = exact.length > 1 || (exact.length === 0 && matches.length > 1);
+  return {
+    input,
+    resolved: true,
+    id: String(best.id),
+    ...(best.name ? { name: best.name } : {}),
+    ...(ambiguous ? { note: `${matches.length} matches; chose ${best.name ?? best.id}` } : {}),
+  };
+}
+
+async function lookup(client: SabhaClient, kind: ChannelResolveKind, query: string): Promise<Named[]> {
+  if (kind === "group") return client.listRooms({ query, perPage: 20 });
+  return (await client.searchUsers({ query })).filter((user) => !user.bot);
+}
+
+export async function resolveSabhaTargets(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
-  query?: string | null;
-  limit?: number | null;
-};
-
-function buildClient(
-  cfg: OpenClawConfig,
-  accountId?: string | null,
-): SabhaClient | null {
-  const resolvedId = accountId ?? resolveDefaultSabhaAccountId(cfg);
-  const account = resolveSabhaAccount({ cfg, accountId: resolvedId });
-  if (!account.enabled) return null;
-  if (!account.apiBaseUrl || !account.botKey) return null;
-  return new SabhaClient(account.apiBaseUrl, account.botKey);
-}
-
-function lower(s: string | null | undefined): string {
-  return (s ?? "").toLowerCase();
-}
-
-/**
- * Page size for room listing. Server clamps `per_page` to [1, 100]; we ask
- * for the cap so workspaces under that size resolve in a single round-trip.
- * Larger workspaces are paginated transparently below. Mirrors
- * `PEERS_PAGE_SIZE`.
- */
-const ROOMS_PAGE_SIZE = 100;
-
-/**
- * Hard ceiling on pagination loops as a server-misbehavior guard. With
- * `ROOMS_PAGE_SIZE = 100`, this caps total fetched rooms at 10,000 — well
- * above any realistic Sabha workspace, while preventing a runaway loop
- * if the server stops respecting the "short page = last page" convention.
- * Mirrors `PEERS_MAX_PAGES`.
- */
-const ROOMS_MAX_PAGES = 100;
-
-export async function listSabhaDirectoryGroups(
-  params: DirectoryParams,
-): Promise<ChannelDirectoryEntry[]> {
-  const client = buildClient(params.cfg, params.accountId);
-  if (!client) return [];
-
-  // Server-side query keeps payloads bounded — per-page response only
-  // contains rooms that already match the name. The plugin's older
-  // approach (fetch-all + in-memory filter) didn't scale past a few
-  // hundred rooms.
-  const queryArg = params.query?.trim() || undefined;
-  const cap =
-    params.limit && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
-  const entries: ChannelDirectoryEntry[] = [];
-
-  for (let page = 1; page <= ROOMS_MAX_PAGES; page++) {
-    let rooms;
-    try {
-      rooms = await client.listRooms({
-        query: queryArg,
-        page,
-        perPage: ROOMS_PAGE_SIZE,
-      });
-    } catch {
-      // Mid-stream failure (token expired, transient network, …): return
-      // whatever we've accumulated rather than wiping a partially-good
-      // result. Page 1 failing produces an empty array, same as before.
-      break;
-    }
-    if (rooms.length === 0) break;
-
-    for (const room of rooms) {
-      entries.push({
-        kind: "group" as const,
-        id: String(room.id),
-        name: room.name,
-        handle: room.name,
-      });
-      if (entries.length >= cap) return entries;
-    }
-
-    // Server returns < perPage when on the last page. Avoids one extra
-    // empty-page round-trip per call.
-    if (rooms.length < ROOMS_PAGE_SIZE) break;
-  }
-
-  return entries;
-}
-
-/**
- * Page size for peer listing. The server clamps `per_page` to [1, 100];
- * we ask for the cap so a workspace under that size resolves in a single
- * round-trip. Larger workspaces are paginated transparently below.
- */
-const PEERS_PAGE_SIZE = 100;
-
-/**
- * Hard ceiling on pagination loops as a server-misbehavior guard. With
- * `PEERS_PAGE_SIZE = 100`, this caps total fetched users at 10,000 —
- * well above any realistic Sabha workspace, while preventing a runaway
- * loop if the server ever stops respecting the "short page = last page"
- * convention.
- */
-const PEERS_MAX_PAGES = 100;
-
-export async function listSabhaDirectoryPeers(
-  params: DirectoryParams,
-): Promise<ChannelDirectoryEntry[]> {
-  const client = buildClient(params.cfg, params.accountId);
-  if (!client) return [];
-
-  const q = lower(params.query);
-  const cap =
-    params.limit && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
-  const entries: ChannelDirectoryEntry[] = [];
-
-  for (let page = 1; page <= PEERS_MAX_PAGES; page++) {
-    let users;
-    try {
-      users = await client.listUsers({ page, perPage: PEERS_PAGE_SIZE });
-    } catch {
-      // Mid-stream failure (token expired, transient network, …): return
-      // whatever we've accumulated rather than wiping a partially-good
-      // result. Page 1 failing produces an empty array same as before.
-      break;
-    }
-    if (users.length === 0) break;
-
-    for (const user of users) {
-      if (user.bot) continue;
-      if (q && !lower(user.name).includes(q)) continue;
-      entries.push({
-        kind: "user" as const,
-        id: String(user.id),
-        name: user.name,
-        handle: user.name,
-      });
-      if (entries.length >= cap) return entries;
-    }
-
-    // Server returns < perPage when on the last page. Avoids one extra
-    // empty-page round-trip per call.
-    if (users.length < PEERS_PAGE_SIZE) break;
-  }
-
-  return entries;
-}
-
-/**
- * Live peer search via the autocompletable endpoint. Faster path with the
- * server's prefix matcher; default cap is the server's limit (20).
- */
-export async function listSabhaDirectoryPeersLive(
-  params: DirectoryParams,
-): Promise<ChannelDirectoryEntry[]> {
-  const client = buildClient(params.cfg, params.accountId);
-  if (!client) return [];
-
-  let users;
+  inputs: string[];
+  kind: ChannelResolveKind;
+}): Promise<ChannelResolveResult[]> {
+  let client: SabhaClient;
   try {
-    users = await client.searchUsers({
-      query: params.query?.trim() || undefined,
-    });
-  } catch {
-    return [];
+    client = accountClient(params.cfg, params.accountId).client;
+  } catch (error) {
+    if (!(error instanceof SabhaAccountUnavailableError)) throw error;
+    return params.inputs.map((input) => ({ input, resolved: false, note: error.message }));
   }
-
-  const entries = users
-    .filter((u) => !u.bot)
-    .map((u) => ({
-      kind: "user" as const,
-      id: String(u.id),
-      name: u.name,
-      handle: u.name,
-    }));
-
-  return params.limit && params.limit > 0
-    ? entries.slice(0, params.limit)
-    : entries;
+  const cache = new Map<string, Promise<Named[]>>();
+  const results: ChannelResolveResult[] = [];
+  for (const input of params.inputs) {
+    const parsed = parseInput(input, params.kind);
+    if (parsed.kind === "empty") {
+      results.push({ input, resolved: false, note: "empty input" });
+      continue;
+    }
+    if (parsed.kind === "id") {
+      results.push({ input, resolved: true, id: String(parsed.id) });
+      continue;
+    }
+    const key = parsed.query.toLowerCase();
+    if (!cache.has(key)) cache.set(key, lookup(client, params.kind, parsed.query));
+    try {
+      results.push(pick(input, parsed.query, await cache.get(key)!));
+    } catch (error) {
+      results.push({ input, resolved: false, note: `lookup failed: ${String(error)}` });
+    }
+  }
+  return results;
 }
-

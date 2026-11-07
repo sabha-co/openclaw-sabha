@@ -4,8 +4,8 @@
     "sabha"
   ],
   "name": "Sabha",
-  "description": "Connect OpenClaw to a Sabha chat server",
-  "version": "2026.9.8",
+  "description": "Connect OpenClaw to a Sabha workspace as an app",
+  "version": "2026.11.1",
   "contracts": {
     "tools": [
       "sabha_search_members",
@@ -35,7 +35,7 @@
   "channelConfigs": {
     "sabha": {
       "label": "Sabha",
-      "description": "Connect to a Sabha chat server via WebSocket.",
+      "description": "Connect to a Sabha workspace with an app key over the AppEvents WebSocket.",
       "schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -43,14 +43,8 @@
           "enabled": {
             "type": "boolean"
           },
-          "baseUrl": {
+          "url": {
             "type": "string"
-          },
-          "apiBaseUrl": {
-            "type": "string"
-          },
-          "typingEnabled": {
-            "type": "boolean"
           },
           "dmPolicy": {
             "type": "string",
@@ -65,7 +59,7 @@
               "type": "string"
             }
           },
-          "allowPrivateAttachmentHosts": {
+          "allowPrivateNetwork": {
             "type": "boolean"
           },
           "replyToMode": {
@@ -75,6 +69,9 @@
               "first",
               "all"
             ]
+          },
+          "livePreview": {
+            "type": "boolean"
           },
           "rooms": {
             "type": "object",
@@ -102,23 +99,8 @@
                 "enabled": {
                   "type": "boolean"
                 },
-                "baseUrl": {
+                "url": {
                   "type": "string"
-                },
-                "apiBaseUrl": {
-                  "type": "string"
-                },
-                "botKey": {
-                  "type": "string"
-                },
-                "botName": {
-                  "type": "string"
-                },
-                "websocketUrl": {
-                  "type": "string"
-                },
-                "typingEnabled": {
-                  "type": "boolean"
                 },
                 "dmPolicy": {
                   "type": "string",
@@ -133,7 +115,7 @@
                     "type": "string"
                   }
                 },
-                "allowPrivateAttachmentHosts": {
+                "allowPrivateNetwork": {
                   "type": "boolean"
                 },
                 "replyToMode": {
@@ -143,6 +125,9 @@
                     "first",
                     "all"
                   ]
+                },
+                "livePreview": {
+                  "type": "boolean"
                 },
                 "rooms": {
                   "type": "object",
@@ -158,6 +143,15 @@
                     },
                     "additionalProperties": false
                   }
+                },
+                "name": {
+                  "type": "string"
+                },
+                "appKey": {
+                  "type": "string"
+                },
+                "cableUrl": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false
@@ -173,55 +167,45 @@
         "enabled": {
           "label": "Enabled"
         },
-        "baseUrl": {
-          "label": "Server URL",
+        "url": {
+          "label": "Workspace URL",
           "placeholder": "https://sabha.co/1000006",
-          "help": "Sabha server URL (include workspace ID for multi-tenant)"
+          "help": "The Sabha workspace address, including the workspace number on sabha.co"
         },
-        "apiBaseUrl": {
-          "label": "Bot API base URL",
-          "placeholder": "https://sabha.co/1000006/api/bots",
-          "advanced": true,
-          "help": "Auto-detected from registration; endpoint for bearer-auth HTTP calls"
-        },
-        "accounts.*.botKey": {
-          "label": "Bot key",
-          "placeholder": "42-AbCdEfGhIjKl",
+        "accounts.*.appKey": {
+          "label": "App key",
+          "placeholder": "sabha_app_…",
           "sensitive": true,
-          "help": "Bot key from registration via join code"
+          "help": "Shown once when an admin creates the app in Settings → Apps"
         },
-        "accounts.*.botName": {
-          "label": "Bot display name",
-          "placeholder": "OpenClaw",
-          "advanced": true,
-          "help": "Shown to users in typing indicators"
-        },
-        "typingEnabled": {
-          "label": "Typing indicators",
-          "advanced": true,
-          "help": "Show 'Bot is typing...' while processing"
-        },
-        "accounts.*.websocketUrl": {
+        "accounts.*.cableUrl": {
           "label": "WebSocket URL",
+          "placeholder": "wss://sabha.co/cable",
           "advanced": true,
-          "help": "Auto-detected from registration"
+          "help": "Only for servers whose WebSocket is not at /cable on the workspace host"
         },
         "dmPolicy": {
-          "label": "DM policy"
+          "label": "DM policy",
+          "help": "\"open\" answers anyone; \"allowlist\" answers only allowFrom"
         },
         "allowFrom": {
-          "label": "Allow list",
+          "label": "Allowed users",
           "advanced": true,
-          "help": "User IDs for allowlist mode"
+          "help": "Sabha user ids admitted in allowlist mode"
         },
-        "allowPrivateAttachmentHosts": {
-          "label": "Allow private attachment hosts",
+        "allowPrivateNetwork": {
+          "label": "Allow private-network attachments",
           "advanced": true,
-          "help": "Dangerous — disables SSRF protection on attachment downloads. Only enable in corporate / split-horizon DNS setups."
+          "help": "Dangerous: lets attachment downloads reach private addresses. Only for split-horizon DNS installs."
         },
         "replyToMode": {
-          "label": "Reply threading mode",
-          "help": "\"off\" = inline, \"first\" = thread on first reply, \"all\" = always thread"
+          "label": "Reply threading",
+          "help": "\"off\" replies inline, \"first\" threads the first reply, \"all\" threads every reply"
+        },
+        "livePreview": {
+          "label": "Live drafts",
+          "advanced": true,
+          "help": "Stream replies into a live draft while the agent writes. Needs a Sabha server with live drafts; off by default"
         }
       }
     }

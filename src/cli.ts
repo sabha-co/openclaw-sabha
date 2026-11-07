@@ -1,151 +1,98 @@
-import type { Command } from "commander";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+// `openclaw sabha setup|doctor`. Setup takes what the app's page in Sabha
+// (Settings → Apps) shows: the API base URL, the WebSocket URL and the key.
+// There is no self-registration.
+import { createInterface } from "node:readline/promises";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
+import { APP_KEY_PATTERN, describeProbeFailure, probeSabhaApp } from "./client/probe.js";
 import {
-  parseJoinUrl,
-  selfRegisterBot,
-  setSabhaAccountConfig,
-} from "./setup-wizard.js";
-import {
-  listConfiguredSabhaAccountIds,
+  deriveCableUrl,
   listEnabledSabhaAccounts,
+  normalizeCableUrl,
+  normalizeWorkspaceUrl,
+  patchSabhaAccount,
   resolveSabhaAccount,
-  resolveDefaultSabhaAccountId,
-} from "./accounts.js";
-import { runDoctor, formatDoctorReport } from "./doctor.js";
+} from "./config/accounts.js";
+import { formatDoctorReport, runSabhaDoctor } from "./doctor.js";
 
-export type RegisterSabhaCliOpts = {
-  program: Command;
+type Program = Parameters<Parameters<OpenClawPluginApi["registerCli"]>[0]>[0]["program"];
+
+type SetupOptions = { url?: string; cableUrl?: string; key?: string; account: string; skipVerify?: boolean };
+
+/** Ask on a terminal for whatever the flags left out. */
+async function fillFromTerminal(options: SetupOptions): Promise<SetupOptions> {
+  if (options.url && (options.key || process.env.SABHA_APP_KEY)) return options;
+  if (!process.stdin.isTTY) return options;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log("Copy these from the app's page in Sabha (Settings → Apps). The key is shown once.");
+    const url = options.url ?? (await rl.question("API base URL: ")).trim();
+    const derived = deriveCableUrl(normalizeWorkspaceUrl(url));
+    const cableUrl = options.cableUrl ?? ((await rl.question(`WebSocket URL [${derived}]: `)).trim() || undefined);
+    const key = options.key ?? process.env.SABHA_APP_KEY ?? (await rl.question("App key: ")).trim();
+    return { ...options, url, ...(cableUrl ? { cableUrl } : {}), key };
+  } finally {
+    rl.close();
+  }
+}
+
+export function registerSabhaCli(params: {
+  program: Program;
   getConfig: () => OpenClawConfig;
-  writeConfigFile: (cfg: OpenClawConfig) => Promise<void>;
-};
-
-/**
- * Register `openclaw sabha ...` CLI commands.
- *
- * Supports:
- *   openclaw sabha setup <joinUrl>    — register a bot from a Sabha join URL
- *   openclaw sabha doctor [--account] — run runtime health checks
- */
-export function registerSabhaCli({ program, getConfig, writeConfigFile }: RegisterSabhaCliOpts): void {
-  const sabha = program
-    .command("sabha")
-    .description("Sabha channel commands");
+  writeConfig: (cfg: OpenClawConfig) => Promise<void>;
+}): void {
+  const sabha = params.program.command("sabha").description("Sabha channel commands");
 
   sabha
-    .command("setup <joinUrl>")
-    .description("Register a Sabha bot from a join URL and save credentials")
-    .action(async (joinUrl: string) => {
-      const parsed = parseJoinUrl(joinUrl);
-      if (!parsed) {
-        console.error(`Invalid Sabha join URL: ${joinUrl}`);
-        console.error("Expected format: https://chat.example.com/join/CODE");
-        console.error("              or: https://chat.example.com/1000006/join/CODE");
-        process.exit(1);
+    .command("setup")
+    .description("Connect a Sabha app: check the URLs and key with Sabha, then save them")
+    .option("--url <url>", "API base URL from the app's page, e.g. https://chat.example.com/api/v1")
+    .option("--cable-url <url>", "WebSocket URL from the app's page (default: /cable on the same host)")
+    .option("--key <appKey>", "app key (sabha_app_…); defaults to $SABHA_APP_KEY")
+    .option("-a, --account <id>", "account id", DEFAULT_ACCOUNT_ID)
+    .option("--skip-verify", "save without contacting Sabha")
+    .action(async (flags: SetupOptions) => {
+      const options = await fillFromTerminal(flags);
+      const url = normalizeWorkspaceUrl(options.url);
+      const appKey = (options.key ?? process.env.SABHA_APP_KEY ?? "").trim();
+      if (!url) return fail(options.url ? `Not an http(s) URL: ${options.url}` : "Pass --url with the API base URL from the app's page.");
+      if (!APP_KEY_PATTERN.test(appKey)) return fail("The app key should look like sabha_app_ followed by 32 hex characters.");
+      const cableUrl = options.cableUrl ? normalizeCableUrl(options.cableUrl) : "";
+      if (options.cableUrl && !cableUrl) return fail(`Not a ws(s) URL: ${options.cableUrl}`);
+      if (!options.skipVerify) {
+        const probe = await probeSabhaApp({ apiBaseUrl: `${url}/api/v1`, appKey });
+        if (!probe.ok) return fail(describeProbeFailure(probe));
+        console.log(`✓ Sabha knows this key: app "${probe.identity.name}" (id ${probe.identity.id})`);
       }
-
-      try {
-        console.log(`Registering bot at ${parsed.baseUrl}...`);
-        const result = await selfRegisterBot(parsed.baseUrl, parsed.joinCode, {
-          name: "OpenClaw",
-        });
-
-        const resolvedBaseUrl = result.base_url || parsed.baseUrl;
-        const resolvedApiBaseUrl =
-          result.api_base_url || `${resolvedBaseUrl}/api/bots`;
-
-        // Write into the canonical multi-account shape
-        // (`channels.sabha.accounts.default.*`) via the wizard's setter.
-        // The base block keeps `enabled: true` automatically; the patch
-        // only carries per-account fields. Matches what
-        // `sabhaSetupWizard.finalize` writes during `openclaw configure`,
-        // so the two setup paths stay in lock-step.
-        const cfg = getConfig();
-        const nextCfg = setSabhaAccountConfig(cfg, undefined, {
-          baseUrl: resolvedBaseUrl,
-          apiBaseUrl: resolvedApiBaseUrl,
-          botKey: result.bot_key,
-          websocketUrl: result.websocket_url,
-        });
-        await writeConfigFile(nextCfg);
-
-        console.log(`✓ Bot "${result.name}" registered`);
-        console.log(`✓ Config saved to channels.sabha.accounts.default`);
-        console.log(`  baseUrl:    ${resolvedBaseUrl}`);
-        console.log(`  apiBaseUrl: ${resolvedApiBaseUrl}`);
-        console.log(`  botKey:     ${result.bot_key.replace(/^(\d+-).+$/, "$1***")}`);
-        if (result.websocket_url) {
-          console.log(
-            `  websocketUrl: ${result.websocket_url.replace(/bot_key=[^&]+/, "bot_key=***")}`,
-          );
-        }
-        console.log("\nRestart OpenClaw to activate the Sabha channel.");
-      } catch (err) {
-        console.error(`Registration failed: ${err}`);
-        process.exit(1);
-      }
+      const accountId = normalizeAccountId(options.account);
+      await params.writeConfig(patchSabhaAccount(params.getConfig(), accountId, { url, appKey, ...(cableUrl ? { cableUrl } : {}) }));
+      console.log(`✓ Saved channels.sabha.accounts.${accountId}`);
+      console.log("Check the live connection with: openclaw sabha doctor");
+      console.log("Then restart the gateway: openclaw gateway restart");
     });
 
   sabha
     .command("doctor")
-    .description("Run runtime health checks against a configured Sabha bot")
-    .option(
-      "-a, --account <id>",
-      "Bot account id to check (default: all enabled bot accounts)",
-    )
+    .description("Check a Sabha account's config, API key and live connection")
+    .option("-a, --account <id>", "account id (default: every enabled account)")
     .action(async (options: { account?: string }) => {
-      const cfg = getConfig();
-
-      // Empty-config short-circuit. `listSabhaAccountIds` (used by
-      // `listEnabledSabhaAccounts` below) returns the SDK's implicit
-      // ["default"] fallback even on a wholly-unconfigured install,
-      // and `enabled` defaults to true, so without this guard the
-      // doctor runs against an empty default and surfaces a misleading
-      // config-check failure instead of the actionable "nothing is
-      // configured" message. We use `listConfiguredSabhaAccountIds`,
-      // which only counts explicit `accounts.<id>` entries.
-      //
-      // A legacy single-account install (`channels.sabha.botKey` at base
-      // level, no `accounts` map) would hit this guard with
-      // `listConfiguredSabhaAccountIds` returning [] even though the
-      // resolver's base→default layering yields a working bot. The
-      // `&& !resolveSabhaAccount({cfg}).botKey` clause covers that
-      // case — same pattern as the startup warning in `index.ts`.
-      if (
-        !options.account &&
-        listConfiguredSabhaAccountIds(cfg).length === 0 &&
-        !resolveSabhaAccount({ cfg }).botKey
-      ) {
-        console.log("No Sabha bot accounts configured.");
+      const cfg = params.getConfig();
+      const accounts = options.account ? [resolveSabhaAccount(cfg, options.account)] : listEnabledSabhaAccounts(cfg);
+      if (accounts.length === 0) {
+        console.log("No enabled Sabha accounts. Run: openclaw sabha setup");
         return;
       }
-
-      // Explicit `--account <id>` stays permissive: operators can probe
-      // a disabled account on demand. The default fan-out only iterates
-      // *enabled* accounts so a config with `enabled: false` entries
-      // doesn't surface expected failures as health-check noise.
-      const targetIds = options.account
-        ? [options.account]
-        : listEnabledSabhaAccounts(cfg).map((a) => a.accountId);
-
-      if (!options.account) {
-        if (targetIds.length === 0) {
-          console.log("No enabled Sabha bot accounts configured.");
-          return;
-        }
-        // Report the default id once so operators can see which config
-        // the CLI resolved in the absence of `--account`.
-        const defaultId = resolveDefaultSabhaAccountId(cfg);
-        console.log(`(default bot account: ${defaultId})\n`);
-      }
-
-      let anyFailed = false;
-      for (const id of targetIds) {
-        const account = resolveSabhaAccount({ cfg, accountId: id });
-        const report = await runDoctor({ account });
+      let ok = true;
+      for (const account of accounts) {
+        const report = await runSabhaDoctor(account);
         console.log(formatDoctorReport(report));
-        console.log("");
-        if (!report.allPassed) anyFailed = true;
+        ok &&= report.ok;
       }
-      if (anyFailed) process.exit(1);
+      if (!ok) process.exitCode = 1;
     });
+}
+
+function fail(message: string): void {
+  console.error(message);
+  process.exitCode = 1;
 }

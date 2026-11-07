@@ -1,142 +1,102 @@
 # AGENTS.md
 
-`@sabha-co/openclaw-sabha` is an external OpenClaw channel plugin connecting
-agents to Sabha through Bot REST API calls and an outbound ActionCable/AnyCable
-WebSocket. No public IP, reverse proxy, polling, or standalone app server.
+`@sabha-co/openclaw-sabha` is an external OpenClaw channel plugin (id `sabha`)
+that connects agents to a Sabha workspace as an **app**: REST at `/api/v1` with
+an app key, events over the `AppEventsChannel` WebSocket (AnyCable extended
+protocol, so missed events replay after a reconnect).
 
-## Supported host and commands
+The server is `~/dev/sabha-ai`. Its `GET /skill` text and
+`docs/features/APPS.md` describe the app API; where they disagree with its
+code, the code wins. [docs/SABHA-API.md](docs/SABHA-API.md) lists what this
+plugin relies on.
 
-Target OpenClaw **2026.9.2** and Node **>=24.15 <25 or >=25.9**. We own this
-installation and can configure it afresh. Do not add backward compatibility,
-root-credential fallback, session-history migration, or old-loader shims.
+## Host and commands
+
+Target OpenClaw **2026.11.1**, Node **>=24.16 <25 or >=26.1**. There are no
+outside users of earlier releases: no backward compatibility, config
+migration, or old-host shims.
 
 ```bash
-npm run build                 # tsc, including declaration emit
+npm run build              # clean dist/, then tsc with declarations
 npm run lint
-npm test
-npx vitest run src/inbound.test.ts
-npm run manifest:generate     # build and regenerate manifest/package setup fields
-npm run manifest:check        # detect metadata drift after a build
-npm run test:pack              # fresh host install and loopback transport integration
+npm test                   # vitest
+npx vitest run src/monitor/events.test.ts
+npm run manifest:generate  # build, then regenerate openclaw.plugin.json + package.json#openclaw.channel
+npm run manifest:check     # build, then fail if either is stale
+npm run test:pack          # pack, install into a throwaway host, run scripts/host-integration.mjs
 ```
 
-Build before loading the plugin. Package entry paths point to `dist/index.js`
-and `dist/setup-entry.js`. `npm pack` rebuilds and regenerates metadata. A real
-gateway reinstall/restart and publication require explicit user authorization.
-The packed smoke test owns disposable state and never touches the live gateway.
+`test:pack` uses a disposable `OPENCLAW_STATE_DIR` and fake Sabha servers. It
+never touches a real gateway. Publishing, and installing or restarting a real
+gateway, need explicit user authorization. The production gateway runs on a
+VPS: ask the user to run commands there.
 
-## Module and loading boundaries
+## Rules
 
-`type: module` with TypeScript Node16 resolution. All relative imports use `.js`
-extensions. Import only public, typed `openclaw/plugin-sdk/*` subpaths. Zod and
-TypeBox are direct dependencies. Tests are colocated and excluded from emit.
+- ESM, TypeScript Node16 resolution, `.js` on every relative import. Tests sit
+  next to the code and are excluded from the build.
+- Import only public `openclaw/plugin-sdk/*` subpaths. `src/sdk-imports.test.ts`
+  fails on anything in `scripts/sdk-private-subpaths.json`
+  (`plugin-runtime`, `channel-entry-contract`, `outbound-media`, …). Only
+  `scripts/host-integration.mjs` may reach into private host modules, and it is
+  pinned to the dev host version.
+- Authority comes from host context, never from model params. The account is
+  `ctx.accountId` (actions) or `agentAccountId` when the agent is on Sabha
+  (tools). Writes call `onPlatformSendDispatch` / `assertDirectAdapterHandoff`;
+  side-effecting tools call `assertInvocationCurrent()` before acting.
+- A failed lookup is an error or a "lookup failed" note, never an empty result.
+- Keep discovery cheap: `setup-entry.ts`, the action adapter, the directory
+  adapter and tool factories load the client and monitor lazily.
+- Credentials (`appKey`, `cableUrl`, `name`) live only under
+  `channels.sabha.accounts.<id>`. Other settings may sit at the channel root.
 
-- `index.ts`: `defineChannelPluginEntry`; synchronous named tool factories,
-  lazy CLI implementation. Tool discovery has no runtime: read config/construct
-  clients only inside execution. Prefer `ctx.getRuntimeConfig()` when supplied.
-- `setup-entry.ts` -> `src/channel-setup.ts`: `defineSetupPluginEntry`, lightweight
-  schema/config/security/setup metadata. No static monitor, WebSocket, draft,
-  tool, or HTTP client imports through this graph.
-- `src/config-schema.ts`, `src/setup-contract.ts`, `src/metadata.ts` are the
-  sources for generated `openclaw.plugin.json` and package setup fields.
-- `src/channel.ts`: full channel, message/directory/resolver adapters, prompt
-  hints, status, and gateway startup.
+## Layout
 
-## Accounts and sessions
+| Path | Role |
+|---|---|
+| `index.ts` | `defineChannelPluginEntry`: channel, CLI (`registerCliMetadata`), tools (`registerFull`) |
+| `setup-entry.ts` | `defineSetupPluginEntry` → `src/plugin/channel.setup.ts` (config, setup, status; no transport) |
+| `src/plugin/` | `channel.ts` (full plugin), `channel.runtime.ts` (lazy runtime half), `messaging.ts` (targets, session routes, thread context), `agent-prompt.ts`, `meta.ts` (ids, tool and CLI metadata) |
+| `src/config/` | Zod schema + UI hints, account resolution, setup contract, setup wizard |
+| `src/client/` | REST client, probe, Markdown → Lexxy HTML (`rich-text.ts`), `@{id}` mention rewrite, account → client |
+| `src/monitor/` | `cable-socket.ts` (one connection), `monitor.ts` (account lifecycle, reconnect, resume), `events.ts` (parse, addressing, ingress ids), `ingress.ts` (durable queue) |
+| `src/inbound/` | `access.ts` (DM policy, mention gating), `turn.ts` (one event → one host turn, or a system event) |
+| `src/outbound/` | `send.ts` (chunked text, media), `target.ts` (target grammar → room), `draft-transport.ts`, `reply-delivery.ts` |
+| `src/actions/` | `message` tool adapter (static discovery) and handlers (lazy) |
+| `src/directory.ts`, `src/tools.ts`, `src/cli.ts`, `src/doctor.ts` | Directory + resolver, agent tools, CLI, doctor checks |
+| `scripts/generate-manifest.mjs` | Projects schema, setup contract and metadata into the manifests |
 
-All credentials and bot identity live under `channels.sabha.accounts.<id>`.
-Shared non-credential settings may live at channel root; overrides replace
-arrays and room maps. Honor `defaultAccount`, never union tenant directories.
-Only explicit accounts run. Startup does not write or migrate configuration.
-Join URL wizard and `openclaw sabha setup` write the same named-account shape.
+## Behaviour to preserve
 
-`src/session.ts` uses the public SDK route builder. Group peers include account
-id because numeric room ids overlap across servers. DMs use
-`per-account-channel-peer`. Keep inbound and outbound route construction aligned.
-Wire delivery targets remain numeric. Thread events already name their thread
-room; do not fabricate a parent room/session from that same id.
+- Top-level room messages need a mention. DMs and threads do not. The app
+  never sees its own messages (server-side), and self echoes are dropped anyway.
+- Ingress ids: `message:<id>`, `edit:<id>:<updated_at>`, `react:` / `unreact:`
+  + reaction id. One lane per room. Deletes and `user_*` events never enter.
+- Edits and reactions become system events on the conversation's session. They
+  never start a turn.
+- A thread is its own room. Inbound thread turns and outbound sends with a
+  `threadId` both use the thread room's session.
+- Group session peers include the account id (room ids overlap across
+  servers). DMs are per account and peer.
+- The final reply replaces the live draft when there is one
+  (`client_message_id`). If that fails it is posted normally. A draft is always
+  ended when the turn finishes without replacing it.
+- `livePreview` is off by default: the current sabha-ai has no
+  `AppEventsChannel#draft` action or `client_message_id`. Turn the default on
+  when the server ships them.
+- `401`/`403` at startup or a `disconnect` with `reconnect: false` parks the
+  account as `blocked` until restart. Other failures reconnect with backoff
+  and resume from the last stream position.
 
-## Inbound and lifecycle
+## Verifying against a local sabha-ai
 
-`monitor-websocket.ts` owns ActionCable protocol and heartbeat; `reconnect.ts`
-owns backoff. `ready` means BotEventsChannel subscription confirmed; disconnect
-means `recovering`, terminal failure `blocked`, abort `stopped`.
+sabha-ai runs at `http://localhost:3000` with AnyCable at `ws://localhost:8080/cable`.
+Create an app in Settings → Apps (or reuse one), then in a throwaway state dir:
 
-Dedup is FIFO (2,000 entries, five-minute TTL), with an in-flight guard across
-reconnects. Filter self echoes before dedup. Failed turns release reservations.
-Only `message_created` enters an agent turn. Other message events log metadata;
-global `user_created`/`user_deleted` never enter an agent context or name cache.
-
-`inbound.ts` resolves the agent and final account-scoped session before calling
-the ingress resolver. Supply the exact ingress result once to the injected
-`runtime.channel.inbound.buildContext`; then the injected kernel owns recording,
-dispatch, hooks, and terminal observation. Do not forge owner authority or use
-privileged state APIs unavailable to ordinary external plugins.
-
-Top-level groups require a mention; DMs and existing threads do not. Enforce DM
-allowlists before typing/media. Open DM policy maps to SDK wildcard admission;
-command owners still use the explicit allowlist. Display names grant no access.
-
-Download signed attachments immediately after admission using the guarded media
-runtime. Use the saved absolute `path`, MIME type, and filename as media facts.
-Keep attachment-only agent text empty. Default SSRF protection stays enabled;
-private hosts require the existing explicit account opt-in. Keep numeric native
-room/message fields, the sender's `@{id}` token, and room prompts in context.
-
-## Delivery and typing
-
-Typing uses AnyCable whispers on the event socket, never REST. Start only after
-admission and stop on partial output, completion, failure, and abort.
-
-`draft-stream.ts` uses `channel-outbound.createFinalizableDraftLifecycle`.
-`delivery.ts` finalizes based on `isAlive()`, not `messageId()`: the first send
-may still be pending. Await it and the final edit before reporting a receipt.
-Track the resolved room returned by Sabha. Do not claim success for a null or
-malformed send response, or label an attempted send as not dispatched.
-
-Failed preview edits may be repaired directly. Delete must succeed before a
-replacement send; failed deletion preserves partial-delivery evidence. Never
-blindly resend an ambiguous first preview. Modifying reply/message hooks disable
-eager previews; observer-only hooks do not. Clear silent/cancelled previews.
-Do not post errors through a path that bypasses modifying hooks. Use
-`formatStreamError` for operator-facing errors and redact WebSocket bot keys.
-
-`replyToMode: off` and DMs send inline. New threaded replies send to the parent
-room with `parentMessageId`; Sabha creates/finds the thread idempotently.
-Existing threads send to their own room. Edits/deletes/reactions are id-only.
-
-## Agent and wire contracts
-
-All wire behavior belongs in `SabhaClient`: bearer auth, API routes, retry
-classification, response parsing, and Markdown -> Trix rich text. Preserve code
-fence/list chunking and Sabha's table/heading formatting rules.
-
-Keep capabilities in their SDK slots:
-
-- Shared message actions: send, edit, unsend, react, thread-reply, search,
-  member-info, read, reactions. Extend discovery and dispatch together.
-- Directory/resolver: room/user listing and workspace name lookup. Resolve one
-  account; distinguish server lookup failure from a confirmed empty match.
-- Two custom tools only: `sabha_search_members` (room-scoped query) and
-  `sabha_create_dm` (explicit DM materialization). New tools need an SDK-gap
-  argument. Humans own room/member administration.
-
-`read` returns `{messages, hasMore, nextCursor}` with string ids, timestamp,
-authorTag, author.username, and text for the CLI formatter. Reactions project
-boosts to `{name, count, users, truncated}`. Search retains its `results`
-envelope. Composite cursors go onto the wire's `before` parameter. New formatted
-actions must match the host formatter. Preserve numeric native room context so
-react/reactions target autofill works; never prompt an agent to invent `to`.
-
-Keep both inboundFormattingHints and messageToolHints: they cover different
-inbound/proactive prompt paths. Mention syntax is `@{USER_ID}`. Do not inject
-whole API docs into prompts; correctness belongs in schemas/results.
-
-## References
-
-- `docs/ARCHITECTURE.md`: current implementation and evidence boundaries.
-- `docs/TYPING.md`, `docs/OUTBOUND-RICH-TEXT.md`: Sabha wire details.
-- `docs/sdk-*.md`: snapshots from stable 2026.9.2. Installed SDK types win if stale.
-- `/Users/ashwin/dev/openclaw/extensions`: stable peer channel examples.
-- `/Users/ashwin/dev/openclaw-basecamp`, `/Users/ashwin/dev/inline/openclaw`:
-  external-plugin examples; verify their host version before copying contracts.
+```bash
+export OPENCLAW_STATE_DIR=$(mktemp -d)/state OPENCLAW_CONFIG_PATH=$OPENCLAW_STATE_DIR/openclaw.json
+npm pack && node node_modules/openclaw/openclaw.mjs plugins install --force --accept-capabilities ./sabha-co-openclaw-sabha-*.tgz
+node node_modules/openclaw/openclaw.mjs sabha setup --url http://localhost:3000 --key sabha_app_…
+node node_modules/openclaw/openclaw.mjs config set channels.sabha.accounts.default.cableUrl ws://localhost:8080/cable
+node node_modules/openclaw/openclaw.mjs sabha doctor
+```

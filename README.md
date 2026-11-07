@@ -1,27 +1,36 @@
 # Sabha Channel for OpenClaw
 
-[![npm version](https://img.shields.io/npm/v/@sabha-co/openclaw-sabha)](https://www.npmjs.com/package/@sabha-co/openclaw-sabha)
-[![License](https://img.shields.io/github/license/sabha-co/openclaw-sabha)](LICENSE)
-
-OpenClaw channel plugin for [Sabha](https://sabha.co) chat servers. Uses WebSocket for real-time event delivery — no public IP or webhook URL needed.
+Connect an OpenClaw agent to a [Sabha](https://sabha.co) workspace as an **app**.
+The plugin opens an outbound WebSocket to Sabha's `AppEventsChannel` and talks to
+the Sabha REST API with the app's key. No public IP, reverse proxy, webhook
+endpoint or polling.
 
 ## Features
 
-- WebSocket mode — connects outbound to Sabha, no tunnels needed
-- Supports DMs, group chat, threads, reactions, attachments, search
-- Two Sabha-specific agent tools (room-scoped member search, DM creation); everything else (send / edit / react / read / search / list / resolve) flows through OpenClaw's shared `message` tool, directory adapter, and resolver
-- Sabha self-host support (single-tenant and multi-tenant SaaS)
-- Message dedup across WebSocket reconnects
-- Auto-registration via join URL
-- Auto-joins all open rooms on setup
-- Typing indicator while the bot is generating a reply (via AnyCable whisper)
+- Answers when @mentioned in a room, in DMs, and in any thread it is part of
+  (no mention needed there). Top-level room replies go in a thread by default.
+- Agent Markdown is rendered to the rich text Sabha stores (Lexxy): headings,
+  lists, quotes, code blocks, tables, links. `@{USER_ID}` becomes a real mention.
+- Attachments in and out (images, documents), downloaded through OpenClaw's
+  SSRF-guarded media fetcher.
+- Edits and reactions on messages reach the agent as context on the conversation.
+- Missed events are replayed after a reconnect, and each event is handled once
+  (durable ingress queue).
+- `message` tool actions: `send`, `thread-reply`, `edit`, `unsend`, `react`,
+  `reactions`, `read`, `search`, `member-info`.
+- Directory and name lookup for rooms and people (`#general`, `@Ann`).
+- Agent tools: `sabha_search_members`, `sabha_create_dm`.
+- `openclaw sabha setup` and `openclaw sabha doctor`.
 
-## Requirements and fresh installation
+## Requirements
 
-Requires **OpenClaw 2026.9.2+** and **Node 24.15+** (Node 25 requires 25.9+).
-This release targets the OpenClaw 2 plugin architecture. Configure a fresh
-installation; old root credentials and session history are not migrated.
-Credentials belong only under `channels.sabha.accounts.<id>`.
+- OpenClaw **2026.11.1** or newer
+- Node **24.16+** (or 26.1+)
+- A Sabha server with the app API (`/api/v1`) and `AppEventsChannel`
+
+This release is a rebuild for the current Sabha app API. It does not read
+configuration from earlier `@sabha-co/openclaw-sabha` releases (bot keys, join
+codes, `baseUrl`/`botKey`). Configure it fresh.
 
 ## Install
 
@@ -29,118 +38,100 @@ Credentials belong only under `channels.sabha.accounts.<id>`.
 openclaw plugins install @sabha-co/openclaw-sabha --accept-capabilities
 ```
 
-## Post-install: allowlist the plugin
-
-Add `sabha` to the allowlist in `~/.openclaw/openclaw.json`:
+Allow the plugin in `~/.openclaw/openclaw.json`:
 
 ```json5
-{
-  plugins: {
-    enabled: true,
-    allow: ["sabha"]
-  }
-}
+{ plugins: { enabled: true, allow: ["sabha"] } }
 ```
 
-Verify and restart:
+## Create the app in Sabha
 
-```bash
-openclaw plugins list
-openclaw gateway restart
-```
+An admin creates the app in **Settings → Apps** and copies its key
+(`sabha_app_…`). The key is shown once. Add the app to the rooms it should
+work in. Sabha has no self-registration for apps.
 
 ## Configure
 
-### Option 1: interactive
-
 ```bash
-openclaw configure --section channels
+openclaw sabha setup --url https://sabha.co/1000006 --key sabha_app_…
+openclaw sabha doctor
+openclaw gateway restart
 ```
 
-When prompted, select **Sabha**. The wizard offers two paths:
+`setup` checks the key with Sabha before saving it. `--key` can be left out if
+`SABHA_APP_KEY` is set. `doctor` checks the config, the key, and a live
+`AppEventsChannel` subscription, and exits non-zero on any problem.
 
-- **Paste a join URL** (recommended) — e.g. `https://sabha.co/1000101/join/Ccnp-m7vD-L3aj`. The plugin self-registers a bot and saves the bot key automatically. Requires your Sabha admin to have bot self-registration enabled at `/account/bots`.
-- **I already have a bot key** — if your admin created a bot manually and shared its key with you, pick this path and paste the bot key plus the server URL.
+`openclaw channels add --channel sabha --url … --app-key …` writes the same config.
 
-Either way, the plugin connects via WebSocket on the next gateway restart.
-
-### Option 2: manual
-
-Edit `~/.openclaw/openclaw.json`:
+### Manual config
 
 ```json5
 {
   channels: {
     sabha: {
-      enabled: true,
-      baseUrl: "https://sabha.co/1000006",              // site root (setup wizard verifies via /skill)
-      apiBaseUrl: "https://sabha.co/1000006/api/bots",  // bearer-auth bot API base
+      // Settings shared by every account (no credentials here)
+      replyToMode: "first",
       accounts: {
         default: {
-          botKey: "42-AbCdEfGhIjKl",
-        }
-      }
-    }
-  }
+          url: "https://sabha.co/1000006", // workspace URL
+          appKey: "sabha_app_…",
+          // cableUrl: "wss://chat.example.com/cable", // only if not at /cable
+        },
+      },
+    },
+  },
 }
 ```
 
-The join-URL flow auto-populates `apiBaseUrl` and `websocketUrl` from the server's registration response — manual config only needs these when pasting credentials by hand.
+| Setting | Default | Meaning |
+|---|---|---|
+| `url` | (required) | Workspace URL. On sabha.co, include the workspace number. Self-hosted: the server's origin. |
+| `appKey` | (required) | App key from Settings → Apps. Per account only. |
+| `cableUrl` | derived | WebSocket URL. Derived as `wss://host/cable`, plus `?wid=<workspace>` on sabha.co. |
+| `dmPolicy` | `open` | `open` answers anyone who DMs the app. `allowlist` answers only `allowFrom`. |
+| `allowFrom` | `[]` | Sabha user ids admitted in allowlist mode. |
+| `replyToMode` | `first` | `off` replies inline, `first` threads the first reply, `all` threads every reply. |
+| `livePreview` | `false` | Stream replies into a live draft. Needs a Sabha server with live drafts. |
+| `allowPrivateNetwork` | `false` | Let attachment downloads reach private addresses. Only for split-horizon DNS installs. |
+| `rooms.<id>.systemPrompt` | — | Extra system prompt for one room's conversations. |
+| `defaultAccount` | `default` | Account used when none is named. |
 
-> **Bearer-auth refactor (2026.4.25 release).** Bot API auth moved from path-embedded `bot_key` to `Authorization: Bearer`, and endpoints now live under `/api/bots/*`. Plugin releases ≥ 2026.4.25 require a Sabha server that includes the bearer-auth refactor; the legacy 0.9.x line will not work against newer servers.
+Root-level settings apply to every account; an account's own value wins.
 
-Then restart the gateway:
+### Several workspaces
 
-```bash
-openclaw gateway restart
+Add one account per workspace or app. Room ids are per workspace, so sessions
+are kept apart by account.
+
+```json5
+accounts: {
+  work: { url: "https://sabha.co/1000006", appKey: "sabha_app_…" },
+  home: { url: "https://chat.example.com", appKey: "sabha_app_…" },
+}
 ```
 
-## How it works
+### Live drafts and redacting hooks
 
-1. A user @mentions the bot in Sabha (or DMs it)
-2. Sabha delivers the event via WebSocket
-3. The plugin dispatches to OpenClaw's agent
-4. The agent processes the message with an LLM
-5. The plugin replies via Sabha's REST API
+With `livePreview: true` the reply appears as a draft while the agent writes,
+and the final message replaces it. Draft text is sent before
+`message_sending` / `reply_payload_sending` hooks run on the final, and
+external plugins cannot detect those hooks. **If your hooks redact or rewrite
+replies, keep `livePreview` off.**
 
-Open DMs admit every sender; `dmPolicy: "allowlist"` restricts them to `allowFrom`. Top-level rooms require a mention; existing threads continue without another mention.
+## Mentions
 
-## Agent Tools
+Agents mention people as `@{USER_ID}` (numeric id). The sender's id is in each
+inbound message as `Name (@{id})`, and `sabha_search_members` finds others by
+name. `<@id>` does not notify anyone, and a plain `@Name` becomes a mention
+only for people the plugin has already seen in an event.
 
-The plugin registers **two** Sabha-specific agent tools. Everything else (sending, editing, reacting, reading, searching, listing rooms, listing or resolving users) flows through OpenClaw's shared `message` tool, the channel directory adapter, and the resolver — peer-parity with Slack/Discord/Mattermost.
+## Prompt guidance
 
-| Tool | Description |
-|------|-------------|
-| `sabha_search_members` | Find a user by partial name within a specific room |
-| `sabha_create_dm` | Open a direct message with a user |
-
-These two are kept because the SDK has no slot for room-scoped name → user lookup, and Sabha doesn't auto-create DMs on first send. Channel/member admin (create / archive / join / leave / add / remove) is intentionally **not** exposed to agents — humans run those operations through the Sabha UI. See `docs/CHANNEL-ADMIN-DROP-PLAN.md` for the rationale.
-
-## Tool profile guidance
-
-Sabha identity and `@{USER_ID}` mention syntax reach the agent through two parallel paths so coverage is robust across deployment shapes:
-
-- **Inbound auto-reply** (a user @mentions the bot or DMs it): identity + mention syntax arrive via OpenClaw's `inboundFormattingHints` hook on every reply, regardless of tool profile.
-- **Proactive runs** (an agent is invoked outside the inbound pipeline and uses the `message` tool to send to Sabha): a minimal identity + mention reminder arrives via `messageToolHints`, gated on whether your tool profile includes the `message` tool.
-
-This is the **baseline** — no operator action needed for either path on a `messaging` profile, and the inbound path works on any profile.
-
-Two stronger options if you want richer Sabha context in the system prompt:
-
-- **`tools.alsoAllow: ["message"]`** in `~/.openclaw/openclaw.json`. Layers the `message` tool onto your selected profile so OpenClaw renders the `### message tool` subsection with Sabha's hints (advisory search/read planning notes plus the minimal identity reminder). Useful when running a non-`messaging` profile but you still want guidance about Sabha's message actions on proactive paths.
-- **Per-room `systemPrompt`** in your `accounts.<id>.rooms.<roomId>` config. Most powerful override — anything you put here is injected verbatim for that room's conversations. Use for room-specific behavior or when you need stricter Sabha context than the baseline provides.
-
-**Known limitation.** Fast-reply mode skips `inboundFormattingHints` entirely. The inbound + fast-reply combination on a `coding`-style profile loses both hooks — use one of the two options above to compensate.
-
-## Multi-tenant
-
-For multi-tenant Sabha instances, include the workspace ID in the URL:
-
-```
-https://sabha.co/1000006
-```
-
-The plugin passes the workspace ID as `wid` in the WebSocket connection.
+Sabha identity and mention syntax reach the agent on every inbound turn
+(`inboundFormattingHints`), and on proactive runs when the tool profile
+includes the `message` tool (`messageToolHints`). For more, add
+`tools.alsoAllow: ["message"]` or a per-room `systemPrompt`.
 
 ## Update
 
@@ -151,51 +142,10 @@ openclaw gateway restart
 
 ## Development
 
-Install from source for local development or debugging:
-
-```bash
-git clone https://github.com/sabha-co/openclaw-sabha.git
-cd openclaw-sabha
-npm install
-npm run build
-openclaw plugins install .
-```
-
-`npm run build` is required: the plugin manifest points the OpenClaw loader at `./dist/index.js`, which doesn't exist until `tsc` has run. `npm install` (not `--omit=dev`) is needed so TypeScript is on the path.
-
-This copies the plugin into OpenClaw's managed plugin directory, where it surfaces in `openclaw configure --section channels` and the rest of the channel CLI.
-
-For active development with edit-in-place, swap the install line for `openclaw plugins install -l .`. Linked installs still read `./dist/index.js`, so re-run `npm run build` after edits before restarting the gateway. Linked installs go into `plugins.load.paths`, which currently aren't surfaced by the configure menu (upstream OpenClaw catalog-discovery gap); configure sabha by hand-editing `channels.sabha` in `~/.openclaw/openclaw.json` while linked.
-
-Run tests:
-
-```bash
-npm test
-```
+See [AGENTS.md](AGENTS.md) for commands and conventions,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and
+[docs/SABHA-API.md](docs/SABHA-API.md) for the Sabha API this plugin uses.
 
 ## License
 
 MIT
-
-## Development verification
-
-```bash
-npm ci --ignore-scripts
-npm run lint
-npm run build
-npm run manifest:check
-npm test
-npm run test:pack
-```
-
-The package test installs the actual archive into disposable OpenClaw state,
-validates metadata and CLI loading, then checks streaming, hook rewrites,
-cancellation, shared-message reaction routing, replay dedup, and fatal-disconnect
-shutdown against fake loopback Sabha servers. It does not
-reinstall your real gateway or send messages to real rooms. Local archive/link
-installation needs the host's `--force --accept-capabilities` flags.
-
-Replies stream as one edited preview unless a modifying hook is installed, in
-which case they wait for the hook-approved final content. Missing send receipts
-are errors rather than reported success. Fresh sessions isolate bot accounts
-even when their servers have overlapping room ids. See [architecture](docs/ARCHITECTURE.md).

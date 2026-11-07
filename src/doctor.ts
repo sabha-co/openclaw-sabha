@@ -1,355 +1,58 @@
-import type { ResolvedSabhaAccount } from "./accounts.js";
-import { SabhaClient, SabhaApiError } from "./client.js";
-import { createSabhaRetryRunner } from "./retry.js";
-import { buildWebSocketUrl } from "./monitor.js";
-import {
-  defaultWebSocketFactory,
-  loadWsConstructor,
-  type SabhaWebSocketFactory,
-  type WebSocketLike,
-} from "./monitor-websocket.js";
+// `openclaw sabha doctor`: config, REST (/me) and cable subscription checks
+// for one account, without touching the running gateway.
+import { describeProbeFailure, probeSabhaApp } from "./client/probe.js";
+import type { ResolvedSabhaAccount } from "./config/accounts.js";
+import { connectCable, type CreateCableSocket } from "./monitor/cable-socket.js";
 
-// Plugin-level runtime health check. Answers the operator question
-// "is this bot actually working?" without tailing logs.
-//
-// This is NOT the SDK's `ChannelDoctorAdapter`, which is a config-health
-// surface (legacy-key migration, allowlist warnings). The canonical
-// reference plugins use that adapter only for config validation, and
-// there is no SDK hook for runtime connectivity probing. We ship this as
-// a dedicated CLI subcommand instead so operators can run it on demand.
-//
-// Check inventory:
-//   1. Config — baseUrl + apiBaseUrl non-empty, botKey matches `\d+-.+`.
-//   2. API   — `listRooms()` round-trips successfully against the bearer
-//      auth endpoint. Covers bot_key validity, HTTP reachability, and the
-//      retry runner in one call. (Sabha does not expose a cheaper probe
-//      like `GET /api/bots/profile`, so this is the lightest available.)
-//   3. WS    — open a connection, wait for `welcome`, subscribe to
-//      BotEventsChannel, wait for `confirm_subscription`, close cleanly.
+export type DoctorCheck = { name: string; ok: boolean; detail: string };
+export type DoctorReport = { accountId: string; checks: DoctorCheck[]; ok: boolean };
 
-export type DoctorCheckStatus = "ok" | "fail" | "skip" | "warn";
+async function checkCable(account: ResolvedSabhaAccount, timeoutMs: number, createSocket?: CreateCableSocket): Promise<DoctorCheck> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const outcome = await connectCable({
+      url: account.cableUrl,
+      appKey: account.appKey,
+      abortSignal: controller.signal,
+      positions: new Map(),
+      onReady: () => controller.abort(),
+      onEvent: () => {},
+      timeouts: { handshakeMs: timeoutMs, subscribeMs: timeoutMs },
+      ...(createSocket ? { createSocket } : {}),
+    });
+    if (outcome.ready) return { name: "cable", ok: true, detail: `AppEventsChannel subscribed at ${account.cableUrl}` };
+    if (outcome.terminal) return { name: "cable", ok: false, detail: outcome.terminal.message };
+    return { name: "cable", ok: false, detail: `no subscription from ${account.cableUrl} (${outcome.reason ?? `code ${outcome.code ?? "?"}`})` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-export type DoctorCheck = {
-  name: string;
-  status: DoctorCheckStatus;
-  message?: string;
-};
-
-export type DoctorReport = {
-  accountId: string;
-  checks: DoctorCheck[];
-  allPassed: boolean;
-};
-
-export type RunDoctorOpts = {
-  account: ResolvedSabhaAccount;
-  /** Timeout per WebSocket handshake step, in milliseconds. Default 5s. */
-  wsTimeoutMs?: number;
-  /** Overall timeout for the API probe, in milliseconds. Default 10s. */
-  apiTimeoutMs?: number;
-  /** Injected for tests; defaults to real `ws` factory in production. */
-  webSocketFactory?: SabhaWebSocketFactory;
-};
-
-const DEFAULT_WS_TIMEOUT_MS = 5_000;
-const DEFAULT_API_TIMEOUT_MS = 10_000;
-
-export async function runDoctor(opts: RunDoctorOpts): Promise<DoctorReport> {
-  const { account } = opts;
+export async function runSabhaDoctor(
+  account: ResolvedSabhaAccount,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch; createSocket?: CreateCableSocket } = {},
+): Promise<DoctorReport> {
+  const timeoutMs = options.timeoutMs ?? 10_000;
   const checks: DoctorCheck[] = [];
+  if (!account.enabled) checks.push({ name: "config", ok: false, detail: "account is disabled" });
+  else if (!account.configured) checks.push({ name: "config", ok: false, detail: "url and appKey are required" });
+  else checks.push({ name: "config", ok: true, detail: `${account.url} (cable ${account.cableUrl})` });
 
-  // --- Check 1: Config ---
-  const configCheck = validateConfig(account);
-  checks.push(configCheck);
-
-  // If config is broken the downstream checks can't meaningfully run.
-  // Skip them with an explanatory message rather than letting them fail
-  // with noise like "fetch ''" or "invalid WebSocket URL".
-  if (configCheck.status === "fail") {
-    checks.push({
-      name: "API reachable",
-      status: "skip",
-      message: "Skipped: config check failed.",
-    });
-    checks.push({
-      name: "WebSocket subscribe",
-      status: "skip",
-      message: "Skipped: config check failed.",
-    });
-    return finalize(account.accountId, checks);
+  if (checks[0]!.ok) {
+    const probe = await probeSabhaApp({ apiBaseUrl: account.apiBaseUrl, appKey: account.appKey, timeoutMs, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
+    checks.push(
+      probe.ok
+        ? { name: "api", ok: true, detail: `app "${probe.identity.name}" (id ${probe.identity.id})${probe.identity.workspace?.name ? ` in ${probe.identity.workspace.name}` : ""}` }
+        : { name: "api", ok: false, detail: describeProbeFailure(probe) },
+    );
+    if (probe.ok) checks.push(await checkCable(account, timeoutMs, options.createSocket));
   }
-
-  // --- Check 2: API reachable ---
-  checks.push(
-    await probeApi(account, opts.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS),
-  );
-
-  // --- Check 3: WebSocket subscribe ---
-  if (!opts.webSocketFactory) {
-    await loadWsConstructor();
-  }
-  checks.push(
-    await probeWebSocket(
-      account,
-      opts.wsTimeoutMs ?? DEFAULT_WS_TIMEOUT_MS,
-      opts.webSocketFactory ?? defaultWebSocketFactory,
-    ),
-  );
-
-  return finalize(account.accountId, checks);
+  return { accountId: account.accountId, checks, ok: checks.every((check) => check.ok) };
 }
-
-function finalize(
-  accountId: string,
-  checks: DoctorCheck[],
-): DoctorReport {
-  const allPassed = checks.every(
-    (c) => c.status === "ok" || c.status === "skip" || c.status === "warn",
-  );
-  return { accountId, checks, allPassed };
-}
-
-// ---------------------------------------------------------------------------
-// Check 1: Config
-// ---------------------------------------------------------------------------
-
-function validateConfig(account: ResolvedSabhaAccount): DoctorCheck {
-  const problems: string[] = [];
-  if (!account.baseUrl) problems.push("baseUrl is empty");
-  if (!account.apiBaseUrl) problems.push("apiBaseUrl is empty");
-  if (!account.botKey) {
-    problems.push("botKey is empty");
-  } else if (!/^\d+-.+$/.test(account.botKey)) {
-    problems.push(`botKey does not match "<id>-<token>" shape`);
-  }
-  if (problems.length > 0) {
-    return {
-      name: "Config",
-      status: "fail",
-      message: problems.join("; "),
-    };
-  }
-  return {
-    name: "Config",
-    status: "ok",
-    message: `apiBaseUrl=${account.apiBaseUrl}`,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Check 2: API reachable
-// ---------------------------------------------------------------------------
-
-async function probeApi(
-  account: ResolvedSabhaAccount,
-  timeoutMs: number,
-): Promise<DoctorCheck> {
-  // Operator running `sabha doctor` expects immediate feedback. Override
-  // the default retry runner with a single-attempt one so a transient 503
-  // doesn't cause the probe to silently retry for ~6s before failing.
-  // `requestTimeoutMs` is the only deadline — no redundant AbortController.
-  const client = new SabhaClient(account.apiBaseUrl, account.botKey, {
-    requestTimeoutMs: timeoutMs,
-    retryRunner: createSabhaRetryRunner({
-      retry: { attempts: 1, minDelayMs: 0, maxDelayMs: 0, jitter: 0 },
-    }),
-  });
-  try {
-    // First-page probe: enough to confirm bearer auth + JSON pipe-through.
-    // The probe explicitly does NOT count workspace-wide rooms — listRooms
-    // is paginated and a one-page response only reflects the first slice.
-    const rooms = await client.listRooms({ perPage: 1 });
-    return {
-      name: "API reachable",
-      status: "ok",
-      message:
-        rooms.length > 0
-          ? "listRooms() reachable (first-page probe returned a room)"
-          : "listRooms() reachable (no rooms visible to bot yet)",
-    };
-  } catch (err) {
-    if (err instanceof SabhaApiError) {
-      const hint =
-        err.status === 401 || err.status === 403
-          ? " (bot key likely invalid)"
-          : err.status === 404
-            ? " (check apiBaseUrl / workspace prefix)"
-            : "";
-      return {
-        name: "API reachable",
-        status: "fail",
-        message: `HTTP ${err.status}${hint}`,
-      };
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      name: "API reachable",
-      status: "fail",
-      message: `Network error: ${message}`,
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Check 3: WebSocket subscribe
-// ---------------------------------------------------------------------------
-
-const BOT_EVENTS_IDENTIFIER = JSON.stringify({ channel: "BotEventsChannel" });
-
-async function probeWebSocket(
-  account: ResolvedSabhaAccount,
-  timeoutMs: number,
-  factory: SabhaWebSocketFactory,
-): Promise<DoctorCheck> {
-  const wsUrl = buildWebSocketUrl(
-    account.baseUrl,
-    account.botKey,
-    account.websocketUrl,
-  );
-
-  let ws: WebSocketLike;
-  try {
-    ws = factory(wsUrl);
-  } catch (err) {
-    return {
-      name: "WebSocket subscribe",
-      status: "fail",
-      message: `Failed to open socket: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-
-  // Track the farthest milestone we reached so failures report *where*
-  // in the handshake we got stuck (welcome, subscribe, confirm).
-  let phase: "connect" | "welcome" | "subscribe" | "confirmed" = "connect";
-
-  return await new Promise<DoctorCheck>((resolve) => {
-    // `finish` MUST be idempotent. The close handler below fires synchronously
-    // when we call `ws.close()` from inside a finish path (e.g. after a
-    // reject_subscription or timeout), which would otherwise reenter finish
-    // and overwrite the real outcome with a generic "socket closed" message.
-    let settled = false;
-    const finish = (check: DoctorCheck) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
-      resolve(check);
-    };
-
-    const timer = setTimeout(() => {
-      finish({
-        name: "WebSocket subscribe",
-        status: "fail",
-        message: `Timed out in phase "${phase}" after ${timeoutMs}ms`,
-      });
-    }, timeoutMs);
-
-    ws.on("open", () => {
-      phase = "welcome";
-    });
-
-    ws.on("message", (data) => {
-      let parsed: unknown;
-      try {
-        const raw = data.toString("utf8");
-        parsed = JSON.parse(raw);
-      } catch {
-        // Ignore unparseable frames — ActionCable pings can be pure text
-        return;
-      }
-      if (!parsed || typeof parsed !== "object") return;
-      const frame = parsed as Record<string, unknown>;
-
-      if (frame.type === "welcome") {
-        phase = "subscribe";
-        try {
-          ws.send(
-            JSON.stringify({
-              command: "subscribe",
-              identifier: BOT_EVENTS_IDENTIFIER,
-            }),
-          );
-        } catch (err) {
-          finish({
-            name: "WebSocket subscribe",
-            status: "fail",
-            message: `Failed to send subscribe frame: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
-        return;
-      }
-
-      if (
-        frame.type === "confirm_subscription" &&
-        frame.identifier === BOT_EVENTS_IDENTIFIER
-      ) {
-        phase = "confirmed";
-        finish({
-          name: "WebSocket subscribe",
-          status: "ok",
-          message: "BotEventsChannel subscription confirmed",
-        });
-        return;
-      }
-
-      if (
-        frame.type === "reject_subscription" &&
-        frame.identifier === BOT_EVENTS_IDENTIFIER
-      ) {
-        finish({
-          name: "WebSocket subscribe",
-          status: "fail",
-          message: "Sabha rejected the BotEventsChannel subscription (bot_key likely invalid)",
-        });
-      }
-    });
-
-    ws.on("error", (err) => {
-      finish({
-        name: "WebSocket subscribe",
-        status: "fail",
-        message: `WebSocket error in phase "${phase}": ${err instanceof Error ? err.message : String(err)}`,
-      });
-    });
-
-    ws.on("close", () => {
-      // A close before "confirmed" is a failure; after is just the
-      // natural cleanup triggered by finish(). The early-close branch
-      // is guarded by phase so it doesn't race finish().
-      if (phase !== "confirmed") {
-        finish({
-          name: "WebSocket subscribe",
-          status: "fail",
-          message: `Socket closed in phase "${phase}" before subscription was confirmed`,
-        });
-      }
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Pretty-printing helpers for the CLI
-// ---------------------------------------------------------------------------
-
-const STATUS_SYMBOL: Record<DoctorCheckStatus, string> = {
-  ok: "✓",
-  fail: "✗",
-  skip: "○",
-  warn: "!",
-};
 
 export function formatDoctorReport(report: DoctorReport): string {
-  const lines = [`Sabha doctor — bot account "${report.accountId}"`];
-  for (const check of report.checks) {
-    const symbol = STATUS_SYMBOL[check.status];
-    const tail = check.message ? `  ${check.message}` : "";
-    lines.push(`  ${symbol} ${check.name}${tail ? ` —${tail}` : ""}`);
-  }
-  lines.push("");
-  lines.push(report.allPassed ? "All checks passed." : "One or more checks failed.");
+  const lines = [`Sabha account "${report.accountId}": ${report.ok ? "ok" : "problems found"}`];
+  for (const check of report.checks) lines.push(`  ${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
   return lines.join("\n");
 }

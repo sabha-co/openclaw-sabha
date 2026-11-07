@@ -1,40 +1,33 @@
-import { defineChannelPluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { SABHA_TOOL_NAMES, SABHA_CLI_DESCRIPTORS } from "./src/metadata.js";
-import { sabhaPlugin } from "./src/channel.js";
+import { defineChannelPluginEntry, type OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { sabhaPlugin } from "./src/plugin/channel.js";
+import { SABHA_CHANNEL_ID, SABHA_CLI_DESCRIPTORS, SABHA_TOOL_NAMES } from "./src/plugin/meta.js";
+import { setSabhaRuntime } from "./src/runtime.js";
 import { createSabhaTools } from "./src/tools.js";
 
 const entry: ReturnType<typeof defineChannelPluginEntry<typeof sabhaPlugin>> = defineChannelPluginEntry({
-  id: "sabha",
+  id: SABHA_CHANNEL_ID,
   name: "Sabha",
-  description: "Connect OpenClaw to a Sabha chat server",
+  description: "Connect OpenClaw to a Sabha workspace as an app",
   plugin: sabhaPlugin,
-  registerCliMetadata(api: OpenClawPluginApi) {
-    const getConfig = () => api.runtime.config.current() as OpenClawConfig;
-
+  setRuntime: setSabhaRuntime,
+  registerCliMetadata: (api) => {
     api.registerCli(
       async ({ program }) => {
         const { registerSabhaCli } = await import("./src/cli.js");
         registerSabhaCli({
           program,
-          getConfig,
-          writeConfigFile: async (cfg) => {
-            await api.runtime.config.replaceConfigFile({
-              nextConfig: cfg,
-              afterWrite: { mode: "auto" },
-            });
+          getConfig: () => api.runtime.config.current({ clone: true }),
+          writeConfig: async (nextConfig: OpenClawConfig) => {
+            await api.runtime.config.replaceConfigFile({ nextConfig, afterWrite: { mode: "auto" } });
           },
         });
       },
-      {
-        descriptors: SABHA_CLI_DESCRIPTORS,
-      },
+      { descriptors: SABHA_CLI_DESCRIPTORS },
     );
   },
-
-  registerFull(api) {
-    const factories = createSabhaTools(() => api.runtime.config.current() as OpenClawConfig);
-    factories.forEach((factory, index) => api.registerTool(factory, { name: SABHA_TOOL_NAMES[index] }));
+  registerFull: (api) => {
+    const tools = createSabhaTools(() => api.runtime.config.current({ clone: true }));
+    tools.forEach((tool, index) => api.registerTool(tool, { name: SABHA_TOOL_NAMES[index]! }));
   },
 });
 

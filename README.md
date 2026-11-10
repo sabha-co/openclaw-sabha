@@ -92,7 +92,7 @@ openclaw gateway restart
 | `dmPolicy` | `open` | `open` answers anyone who DMs the app. `allowlist` answers only `allowFrom`. |
 | `allowFrom` | `[]` | Sabha user ids admitted in allowlist mode. |
 | `replyToMode` | `first` | `off` replies inline, `first` threads the first reply, `all` threads every reply. |
-| `livePreview` | `false` | Stream replies into a live draft. Needs a Sabha server with live drafts. |
+| `livePreview` | `true` | Stream replies into a live draft. A Sabha server without live drafts posts the reply as usual. |
 | `allowPrivateNetwork` | `false` | Let attachment downloads reach private addresses. Only for split-horizon DNS installs. |
 | `rooms.<id>.systemPrompt` | — | Extra system prompt for one room's conversations. |
 | `defaultAccount` | `default` | Account used when none is named. |
@@ -113,11 +113,11 @@ accounts: {
 
 ### Live drafts and redacting hooks
 
-With `livePreview: true` the reply appears as a draft while the agent writes,
+With `livePreview` on (the default) the reply appears as a draft while the agent writes,
 and the final message replaces it. Draft text is sent before
 `message_sending` / `reply_payload_sending` hooks run on the final, and
 external plugins cannot detect those hooks. **If your hooks redact or rewrite
-replies, keep `livePreview` off.**
+replies, set `livePreview: false`.**
 
 ## Mentions
 

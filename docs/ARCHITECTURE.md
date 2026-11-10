@@ -116,9 +116,10 @@ them.
 through `resolveOutboundAttachmentFromUrl` with the turn's `mediaAccess`.
 Files are capped at 50 MB and sent as a multipart `attachment`.
 
-**Live drafts** (`draft-transport.ts`, `reply-delivery.ts`). Opt-in
-(`livePreview`). They need a server that accepts the `AppEventsChannel#draft`
-action and `client_message_id`; sabha-ai does not yet. When on:
+**Live drafts** (`draft-transport.ts`, `reply-delivery.ts`). On by default
+(`livePreview`). They use the `AppEventsChannel#draft` action and
+`client_message_id`; a server without the action ignores the frames, and the
+final posts as usual. When on:
 
 - `onPartialReply` sends `draft start/text` frames, throttled to 250 ms.
 - The final is posted with `client_message_id = draft_id` so it replaces the
@@ -129,7 +130,7 @@ action and `client_message_id`; sabha-ai does not yet. When on:
 - Turns deferred to an active run (`followup`) skip cleanup.
 - Draft text goes out before the final's modifying hooks run, and an external
   plugin cannot see whether such hooks exist. Operators with redacting hooks
-  keep `livePreview` off.
+  set `livePreview: false`.
 
 **The `message` tool** (`src/actions/`). Discovery is static. Handlers run
 lazily on the turn's account. Targets (`src/outbound/target.ts`,

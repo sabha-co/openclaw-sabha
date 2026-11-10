@@ -57,7 +57,7 @@ describe("resolveSabhaAccount", () => {
       cableUrl: "wss://sabha.co/cable?wid=1000006",
       replyToMode: "off",
       dmPolicy: "open",
-      livePreview: false, // opt-in until the server ships live drafts
+      livePreview: true,
     });
   });
 

@@ -23,8 +23,9 @@ const event = {
 
 type Lifecycle = { onSettled?: () => void };
 
-function setup(outcome: "followup" | "done") {
+function setup(outcome: "followup" | "done", client: Partial<SabhaClient> = {}) {
   const frames: SabhaDraftFrame[] = [];
+  const contexts: Array<{ supplemental?: { thread?: { starterBody?: string } } }> = [];
   let captured: Lifecycle | undefined;
   const runtime = {
     channel: {
@@ -32,7 +33,7 @@ function setup(outcome: "followup" | "done") {
       commands: { isControlCommandMessage: () => false },
       reply: { formatAgentEnvelope: () => "env", resolveEnvelopeFormatOptions: () => ({}) },
       inbound: {
-        buildContext: () => ({}),
+        buildContext: (params: (typeof contexts)[number]) => (contexts.push(params), {}),
         run: vi.fn(async (params: { turnAdoptionLifecycle: Lifecycle; adapter: { resolveTurn: () => Promise<unknown> } }) => {
           captured = params.turnAdoptionLifecycle;
           await params.adapter.resolveTurn(); // starts the draft
@@ -46,12 +47,12 @@ function setup(outcome: "followup" | "done") {
     cfg: {} as OpenClawConfig,
     account,
     selfId: 1,
-    client: {} as SabhaClient,
+    client: client as SabhaClient,
     performDraft: (frame: SabhaDraftFrame) => (frames.push(frame), true),
     log: {},
   };
   const lifecycle = { onSettled: vi.fn() };
-  return { frames, deps, lifecycle, settle: () => captured?.onSettled?.() };
+  return { frames, contexts, deps, lifecycle, settle: () => captured?.onSettled?.() };
 }
 
 describe("message turns", () => {
@@ -68,5 +69,27 @@ describe("message turns", () => {
     settle();
     settle();
     await vi.waitFor(() => expect(frames.map((frame) => frame.kind)).toEqual(["start", "end"]));
+  });
+
+  describe("in a thread", () => {
+    const threaded = {
+      ...event,
+      room: { id: 221, type: "Thread", name: null },
+      message: { ...event.message, thread: { id: 221, parent_message_id: 4100, parent_room_id: 21 } },
+    } as unknown as SabhaMessageEvent;
+
+    it("tells the agent what message the thread hangs off", async () => {
+      const getMessage = vi.fn(async () => ({ creator: { id: 7, name: "Raj" }, body: { markdown: "Launch is on Friday.", plain: "" } }));
+      const { contexts, deps, lifecycle } = setup("done", { getMessage } as never);
+      await handleSabhaEvent(threaded, lifecycle as never, deps);
+      expect(getMessage).toHaveBeenCalledWith(4100);
+      expect(contexts[0]?.supplemental?.thread?.starterBody).toBe("Raj (@{7}): Launch is on Friday.");
+    });
+
+    it("says so when the parent can't be loaded", async () => {
+      const { contexts, deps, lifecycle } = setup("done", { getMessage: vi.fn(async () => { throw new Error("404"); }) } as never);
+      await handleSabhaEvent(threaded, lifecycle as never, deps);
+      expect(contexts[0]?.supplemental?.thread?.starterBody).toMatch(/couldn't be loaded/);
+    });
   });
 });

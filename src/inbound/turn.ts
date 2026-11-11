@@ -66,7 +66,25 @@ export function replyTargetFor(event: SabhaMessageEvent, account: Pick<ResolvedS
 
 const textOf = (event: SabhaMessageEvent) => (event.message.body.markdown || event.message.body.plain || "").trim();
 
-const senderLabel = (event: { user: { id: number; name: string } }) => `${event.user.name} (@{${event.user.id}})`;
+const userLabel = (user: { id: number; name: string }) => `${user.name} (@{${user.id}})`;
+const senderLabel = (event: { user: { id: number; name: string } }) => userLabel(event.user);
+
+/**
+ * The message a thread hangs off, which the event names but doesn't carry.
+ * Without it an app mentioned in a thread it hasn't been in can't tell what
+ * the thread is about. The host shows it only on a session's first turn.
+ */
+async function threadStarterOf(event: SabhaMessageEvent, deps: SabhaTurnDeps): Promise<string | undefined> {
+  const parentId = event.message.thread?.parent_message_id;
+  if (parentId == null) return undefined;
+  try {
+    const parent = await deps.client.getMessage(parentId);
+    return `${userLabel(parent.creator)}: ${(parent.body.markdown || parent.body.plain || "").trim()}`;
+  } catch (error) {
+    deps.log.error?.(`[sabha:${deps.account.accountId}] thread starter ${parentId} lookup failed: ${String(error)}`);
+    return "(The message this thread started from couldn't be loaded.)";
+  }
+}
 
 export async function handleSabhaEvent(event: SabhaAppEvent, lifecycle: SabhaIngressLifecycle, deps: SabhaTurnDeps): Promise<void> {
   if (isMessageEvent(event)) {
@@ -143,7 +161,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
         resolveTurn: async () => {
           // The working shell shows as soon as the turn is admitted.
           draft?.start();
-          const media = await downloadAttachment(event, deps);
+          const [media, threadStarter] = await Promise.all([downloadAttachment(event, deps), threadStarterOf(event, deps)]);
           const envelope = channel.reply.formatAgentEnvelope({
             channel: CHANNEL, from: senderLabel(event), timestamp,
             envelope: channel.reply.resolveEnvelopeFormatOptions(cfg), body: rawBody,
@@ -171,6 +189,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
               ...(!isDm ? { mentions: { canDetectMention: true, wasMentioned: mentioned } } : {}),
             },
             media,
+            ...(threadStarter ? { supplemental: { thread: { starterBody: threadStarter, senderAllowed: true } } } : {}),
             extra: { GroupSystemPrompt: !isDm ? account.rooms[conversation.roomId]?.systemPrompt?.trim() || undefined : undefined },
           });
           return {

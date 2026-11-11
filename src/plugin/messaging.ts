@@ -116,7 +116,11 @@ export function buildSabhaThreadingToolContext(params: {
   const account = resolveSabhaAccount(params.cfg, params.accountId);
   const inThread = context.MessageThreadId != null;
   const isDm = context.ChatType === "direct";
-  const to = context.To?.trim();
+  // The turn reports its room bare ("21"), but a read's target reaches the
+  // host's exact-current check as "channel:21", and a typed target never
+  // matches an untyped current room. Report the room the way targets read.
+  const rawTo = context.To?.trim();
+  const to = rawTo ? (normalizeSabhaTarget(rawTo) ?? rawTo) : undefined;
   // Group DMs report ChatType "group" but can't hold threads; the inbound turn recorded the room's kind.
   const roomId = (context.NativeChannelId ?? to ?? "").replace(/^(?:sabha:)?(?:channel:|room:|group:)?/i, "");
   const cannotThread = /^\d+$/.test(roomId) && roomCanThread(account.accountId, roomId) === false;

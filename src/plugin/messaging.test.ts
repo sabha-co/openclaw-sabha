@@ -84,7 +84,8 @@ describe("resolveSabhaOutboundSessionRoute", () => {
 
 describe("buildSabhaThreadingToolContext", () => {
   it("threads top-level group replies per the account mode", () => {
-    const context = buildSabhaThreadingToolContext({ cfg, context: { To: "channel:21", ChatType: "group", CurrentMessageId: 4214 } });
+    // The inbound turn reports its room bare; reads need it as the host normalizes targets.
+    const context = buildSabhaThreadingToolContext({ cfg, context: { To: "21", ChatType: "group", CurrentMessageId: 4214 } });
     expect(context).toMatchObject({ currentChannelId: "channel:21", currentMessageId: 4214 });
     expect(context.replyToMode).not.toBe("off");
   });

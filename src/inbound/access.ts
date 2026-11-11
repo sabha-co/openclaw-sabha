@@ -66,7 +66,10 @@ export async function resolveSabhaAccess(params: {
       ? {
           allowTextCommands: true,
           hasControlCommand: params.hasControlCommand === true,
-          commandOwnerAllowFrom: account.allowFrom,
+          // Whoever the app answers may run its commands. The raw allowFrom
+          // is empty in open mode, which would refuse every command. Owner-only
+          // ones (/restart, /update) stay behind the host's commands.ownerAllowFrom.
+          commandOwnerAllowFrom: allowFrom,
           groupOwnerAllowFrom: "none",
         }
       : false,

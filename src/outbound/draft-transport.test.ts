@@ -38,6 +38,27 @@ describe("createSabhaDraft", () => {
     expect(handle.id()).toBe("draft-1");
   });
 
+  it("sends a status line once per change, opening the shell for the first", () => {
+    const { handle, frames } = draft();
+    expect(handle.activity("  Web Search:\n for rails  ")).toBe(true);
+    expect(handle.activity("Web Search: for rails")).toBe(true);
+    expect(handle.activity("Read: from notes.md")).toBe(true);
+    expect(frames.map((frame) => (frame.kind === "activity" ? frame.title : frame.kind))).toEqual([
+      "start", "Web Search: for rails", "Read: from notes.md",
+    ]);
+  });
+
+  it("sends no status line once the draft is done, or while disconnected", async () => {
+    const done = draft();
+    done.handle.start();
+    done.handle.markFinalized();
+    expect(done.handle.activity("Read")).toBe(false);
+    expect(done.frames.map((frame) => frame.kind)).toEqual(["start"]);
+
+    const offline = draft({ connected: false });
+    expect(offline.handle.activity("Read")).toBe(false);
+  });
+
   it("ends a draft that produced no message, once", async () => {
     const { handle, frames } = draft();
     handle.start();

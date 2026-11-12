@@ -81,9 +81,11 @@ VPS: ask the user to run commands there.
 - The final reply replaces the live draft when there is one
   (`client_message_id`). If that fails it is posted normally. A draft is always
   ended when the turn finishes without replacing it.
-- `livePreview` is off by default: the current sabha-ai has no
-  `AppEventsChannel#draft` action or `client_message_id`. Turn the default on
-  when the server ships them.
+- `livePreview` is on by default. Sabha ends an app's draft wherever the app
+  posts, so any post in the turn's place finalizes the draft; `end` is only for
+  a turn that posted nothing.
+- A tool starting is the draft's status line (`activity`), formatted by the
+  SDK's `buildChannelProgressDraftLine`, which hides command text.
 - `401`/`403` at startup or a `disconnect` with `reconnect: false` parks the
   account as `blocked` until restart. Other failures reconnect with backoff
   and resume from the last stream position.

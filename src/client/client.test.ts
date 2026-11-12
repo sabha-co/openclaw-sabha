@@ -127,3 +127,13 @@ describe("parseRetryAfter", () => {
     expect(parseRetryAfter(new Date(Date.now() + 5_000).toUTCString())).toBeGreaterThan(0);
   });
 });
+
+describe("SabhaApiError", () => {
+  it("says where an admin turns on a permission the key lacks", () => {
+    const body = JSON.stringify({ error: "This app's key doesn't have the dm permission", code: "missing_permission", needed: "dm" });
+    const error = new SabhaApiError(403, body, "POST", "/direct_messages");
+    expect(error.code).toBe("missing_permission");
+    expect(error.message).toContain(`turn on "dm" under "What its key can do"`);
+    expect(new SabhaApiError(403, JSON.stringify({ error: "x", code: "forbidden" }), "POST", "/rooms").message).not.toContain("turn on");
+  });
+});

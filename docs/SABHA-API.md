@@ -14,8 +14,11 @@ the server code, the code wins, and so does this file.
 - Cable: `wss://{host}/cable`, same Bearer header. On sabha.co add
   `?wid=<workspace>`; the cable is **not** under the workspace path. The
   `/skill` text says otherwise; it is wrong for SaaS.
-- A bad key gets `401 {"error","code":"unauthorized"}`. Some `403`s have empty
-  bodies. A room or message the app can't reach is `404`.
+- A bad key gets `401 {"error","code":"unauthorized"}`. A key without a
+  permission gets `403 {"error","code":"missing_permission","needed"}`
+  (`post`, `read`, `dm`, `manage_rooms`; new keys have `post` and `read`).
+  Other `403`s are `{"error","code":"forbidden"}`. A room or message the app
+  can't reach is `404`.
 - Errors are `{error, code}`: `validation_failed` (422), `not_found`,
   `rate_limited` (429, `Retry-After`), `service_unavailable` (503),
   `internal_error`.
@@ -31,8 +34,12 @@ the server code, the code wins, and so does this file.
   `reject_history` (history expired or epoch changed).
 - Pings every 3 s. `disconnect` with `reconnect: false` means stop.
 - App → server actions: `answer` (for `command` events) and `draft` (live
-  draft frames: `start`, `text`, `activity`, `end`). A refused frame comes back
-  as `{event: "draft_refused", draft_id, error}`.
+  draft frames: `start`, `text`, `activity`, `end`, and `status`, which takes a
+  place instead of a draft id). A refused frame comes back as
+  `{event: "draft_refused", draft_id, error}`, plus `code` and `needed` when the
+  key lacks `post`.
+- Any post by the app in a room or thread ends its open draft there, whether
+  or not the post carries the draft's id. Don't send `end` after posting.
 
 ### Who hears what
 

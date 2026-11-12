@@ -26,7 +26,7 @@ export class SabhaApiError extends Error {
     readonly path: string,
     readonly retryAfterMs?: number,
   ) {
-    super(`Sabha API ${method} ${path} failed with ${status}${body ? `: ${body.slice(0, 300)}` : ""}`);
+    super(`Sabha API ${method} ${path} failed with ${status}${body ? `: ${body.slice(0, 300)}` : ""}${missingPermissionHint(body)}`);
     this.name = "SabhaApiError";
   }
 
@@ -38,6 +38,17 @@ export class SabhaApiError extends Error {
     } catch {
       return undefined;
     }
+  }
+}
+
+/** A key without a permission is refused by name; say where an admin turns it on. */
+function missingPermissionHint(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; needed?: unknown };
+    if (parsed.code !== "missing_permission" || typeof parsed.needed !== "string") return "";
+    return ` (an admin can turn on "${parsed.needed}" under "What its key can do" on the app's page in Sabha, Settings → Apps)`;
+  } catch {
+    return "";
   }
 }
 

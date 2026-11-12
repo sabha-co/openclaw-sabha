@@ -16,6 +16,8 @@ import type { SabhaTarget } from "./send.js";
 export const DRAFT_THROTTLE_MS = 250;
 /** Matches the server's per-draft text cap; longer snapshots stop updating the draft. */
 export const DRAFT_MAX_CHARS = 16_000;
+/** A status line is one short line under the shell. */
+export const DRAFT_ACTIVITY_MAX_CHARS = 120;
 
 export type PerformDraft = (frame: SabhaDraftFrame) => boolean;
 
@@ -24,6 +26,12 @@ export type SabhaDraft = {
   start: () => void;
   /** Full accumulated text snapshot; frames are coalesced to the throttle. */
   update: (text: string) => void;
+  /**
+   * What the agent is doing (a tool run), as the line under the shell. Opens
+   * the shell if it isn't showing yet, so the first one replaces "Thinking…".
+   * Returns whether the line went out.
+   */
+  activity: (title: string) => boolean;
   flush: () => Promise<void>;
   /** The draft id once the shell was sent, which is also the final's client_message_id. */
   id: () => string | undefined;
@@ -60,6 +68,7 @@ export function createSabhaDraft(params: {
   let pending: string | undefined;
   let lastSent = "";
   let seq = 0;
+  let lastActivity = "";
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const cancelTimer = () => {
@@ -99,6 +108,16 @@ export function createSabhaDraft(params: {
         timer = setTimeout(sendPending, throttleMs);
         timer.unref?.();
       }
+    },
+    activity: (title) => {
+      const line = title.replace(/\s+/g, " ").trim().slice(0, DRAFT_ACTIVITY_MAX_CHARS);
+      if (!line || finished) return false;
+      start();
+      if (!started) return false;
+      if (line === lastActivity) return true;
+      if (!params.perform({ kind: "activity", ...where, title: line, seq: ++seq })) return false;
+      lastActivity = line;
+      return true;
     },
     flush: async () => sendPending(),
     id: () => (started ? draftId : undefined),

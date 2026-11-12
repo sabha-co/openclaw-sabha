@@ -50,6 +50,13 @@ An admin creates the app in **Settings → Apps** and copies its key
 (`sabha_app_…`). The key is shown once. Add the app to the rooms it should
 work in. Sabha has no self-registration for apps.
 
+Under **What its key can do** on the app's page, a new key can post and read.
+Turn on **Start direct messages** if the agent should open DMs with people
+(the `sabha_create_dm` tool); answering in a DM someone opened needs nothing
+more. Turn on **Create and join rooms** only if the agent manages rooms. A call
+the key isn't allowed fails with the permission it needs, and the agent sees
+that error.
+
 ## Configure
 
 ```bash
@@ -114,7 +121,9 @@ accounts: {
 ### Live drafts and redacting hooks
 
 With `livePreview` on (the default) the reply appears as a draft while the agent writes,
-and the final message replaces it. Draft text is sent before
+and the final message replaces it. While a tool runs, the line under the draft
+says which ("Web Search: for …", "Read: from notes.md"); a shell command shows
+only as "Exec", never its text. Draft text is sent before
 `message_sending` / `reply_payload_sending` hooks run on the final, and
 external plugins cannot detect those hooks. **If your hooks redact or rewrite
 replies, set `livePreview: false`.**

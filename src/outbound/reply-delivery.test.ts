@@ -43,14 +43,37 @@ describe("createSabhaReplyDelivery", () => {
     expect(frames.map((frame) => frame.kind)).not.toContain("end");
   });
 
-  it("posts normally and ends the draft when the final carries media", async () => {
+  it("posts normally when the final carries media, and leaves the draft to the post that ends it", async () => {
     const { delivery, frames, posts, client } = setup();
     delivery.onPartialReply({ text: "Here" });
     await delivery.deliver({ text: "Here you go", mediaUrls: ["https://cdn.test/a.png"] }, { kind: "final" });
     await delivery.finish();
     expect(posts[0]!.options).toEqual({ parentMessageId: 4214 });
     expect(client.sendAttachment).toHaveBeenCalledOnce();
-    expect(frames.at(-1)?.kind).toBe("end");
+    expect(frames.map((frame) => frame.kind)).not.toContain("end");
+  });
+
+  it("sends no end after an error reply, which Sabha already ended the draft for", async () => {
+    const { delivery, frames, posts } = setup();
+    delivery.onPartialReply({ text: "Look" });
+    await delivery.deliver({ text: "The AI service reported a billing problem.", isError: true }, { kind: "final" });
+    await delivery.finish({ failed: true });
+    expect(posts[0]!.options).toEqual({ parentMessageId: 4214 });
+    expect(frames.map((frame) => frame.kind)).not.toContain("end");
+  });
+
+  it("shows a starting tool as the draft's status line, opening the shell for it", async () => {
+    const { delivery, frames } = setup();
+    expect(delivery.onToolStart({ name: "web_search", args: { query: "rails 8.2" } })).toBe(true);
+    expect(frames).toEqual([
+      { kind: "start", draft_id: "draft-1", room_id: 3, parent_message_id: 4214 },
+      { kind: "activity", draft_id: "draft-1", room_id: 3, parent_message_id: 4214, title: 'Web Search: for "rails 8.2"', seq: 1 },
+    ]);
+  });
+
+  it("shows no status line without a draft", () => {
+    const { delivery } = setup({ withDraft: false });
+    expect(delivery.onToolStart({ name: "web_search" })).toBe(false);
   });
 
   it("ends the draft when the turn produced nothing or failed", async () => {

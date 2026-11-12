@@ -3,6 +3,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { createChannelPartialDeliveryError, isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import {
+  buildChannelProgressDraftLine,
   createLivePreviewLifecycle,
   createMessageReceiptFromOutboundResults,
   type LivePreviewDeliveryResult,
@@ -62,6 +63,10 @@ export function createSabhaReplyDelivery(params: {
     onCleanupFailure: (error) => params.log?.(`sabha draft cleanup failed: ${String(error)}`),
   });
 
+  // Sabha ends an app's draft wherever the app posts, so once anything lands
+  // in this place the draft is gone and isn't ours to end.
+  const landed = () => draft?.markFinalized();
+
   const postText = async (text: string, clientMessageId?: string): Promise<SabhaSent[]> => {
     const sent: SabhaSent[] = [];
     const chunks: string[] = [];
@@ -70,6 +75,7 @@ export function createSabhaReplyDelivery(params: {
         client, cfg: params.cfg, accountId: account.accountId, target, text,
         ...(clientMessageId ? { clientMessageId } : {}),
         onSent: (message, chunk) => {
+          landed();
           sent.push(message);
           chunks.push(chunk);
         },
@@ -92,12 +98,11 @@ export function createSabhaReplyDelivery(params: {
     const sent: SabhaSent[] = [];
     if (parts.hasText) {
       sent.push(...(await postText(parts.text, clientMessageId)));
-      // It took the draft's place; ending the draft now would remove it.
-      if (clientMessageId) draft?.markFinalized();
     }
     try {
       for (const url of parts.mediaUrls) {
         sent.push(await sendSabhaMedia({ client, runtime: params.runtime, account, target, url, ...(params.mediaAccess ? { mediaAccess: params.mediaAccess } : {}) }));
+        landed();
       }
     } catch (error) {
       // All text landed (postText throws otherwise); the media failed.
@@ -120,6 +125,12 @@ export function createSabhaReplyDelivery(params: {
       } finally {
         await draft?.clear();
       }
+    },
+    /** A tool starting shows as the draft's status line ("Web Search: for …"). */
+    onToolStart: (payload: { itemId?: string; toolCallId?: string; name?: string; phase?: string; args?: Record<string, unknown> }): boolean => {
+      if (!draft) return false;
+      const line = buildChannelProgressDraftLine({ event: "tool", ...payload });
+      return line ? draft.activity(line.text) : false;
     },
     /** Full accumulated assistant text, never a delta. */
     onPartialReply: (partialReply: { text?: string }) => {

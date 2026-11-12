@@ -202,7 +202,7 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
               onError: (error, info) => log.error?.(`[sabha:${account.accountId}] ${info.kind} reply failed: ${String(error)}`),
             },
             record: { onRecordError: (error) => log.error?.(`[sabha:${account.accountId}] session record failed: ${String(error)}`) },
-            replyOptions: { onPartialReply: reply.onPartialReply, disableBlockStreaming: true },
+            replyOptions: { onPartialReply: reply.onPartialReply, onToolStart: reply.onToolStart, disableBlockStreaming: true },
           };
         },
       },

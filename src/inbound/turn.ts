@@ -202,7 +202,14 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
               onError: (error, info) => log.error?.(`[sabha:${account.accountId}] ${info.kind} reply failed: ${String(error)}`),
             },
             record: { onRecordError: (error) => log.error?.(`[sabha:${account.accountId}] session record failed: ${String(error)}`) },
-            replyOptions: { onPartialReply: reply.onPartialReply, onToolStart: reply.onToolStart, disableBlockStreaming: true },
+            // Tool starts drive the draft's status line, not chat messages, so they're wanted even
+            // while the session's tool progress is hidden.
+            replyOptions: {
+              onPartialReply: reply.onPartialReply,
+              onToolStart: reply.onToolStart,
+              allowToolLifecycleWhenProgressHidden: true,
+              disableBlockStreaming: true,
+            },
           };
         },
       },

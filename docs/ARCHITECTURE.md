@@ -52,9 +52,14 @@ flowchart LR
 **Connection** (`src/monitor/cable-socket.ts`). One `actioncable-v1-ext-json`
 connection with `Authorization: Bearer <appKey>`: welcome, subscribe, confirm.
 Each event frame carries `stream_id/epoch/offset`. The monitor keeps the last
-position per stream and sends a `history` request after every subscribe. The
-first connection asks for nothing; a reconnect asks from the known positions,
-or from 5 s before the last ready time. Server pings arrive every 3 s, so 10 s
+position per stream and sends a `history` request after every subscribe. It
+saves the positions, and the last moment it was connected, in the plugin state
+store (`replay-positions`, keyed by account), so a restarted gateway asks for
+what arrived while it was down. A first-ever connection asks for nothing. Any
+other asks from the known positions, or for streams with none, from 5 s before
+the last ready time (after a restart, the last moment the old gateway was
+connected).
+AnyCable keeps 100 events or 5 minutes, so a longer outage still loses events. Server pings arrive every 3 s, so 10 s
 of silence drops the connection. A handshake `401/403`, a rejected subscription,
 or `disconnect` with `reconnect: false` is terminal.
 

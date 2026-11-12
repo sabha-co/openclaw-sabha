@@ -12,7 +12,7 @@ import type { SabhaAppEvent, SabhaDraftFrame } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
 import { handleSabhaEvent } from "../inbound/turn.js";
 import { connectCable, type CableEventMeta, type CableSession, type CreateCableSocket } from "./cable-socket.js";
-import { createReplayPositions } from "./replay-positions.js";
+import { createReplayPositions, type ReplayStore, type SavedReplay } from "./replay-positions.js";
 import { isMessageEvent, isReactionEvent, parseSabhaEvent } from "./events.js";
 import { createSabhaIngress } from "./ingress.js";
 
@@ -56,6 +56,15 @@ function delay(scheduler: Scheduler, abortSignal: AbortSignal, ms: number): Prom
 
 const untilAborted = (signal: AbortSignal) =>
   new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true })));
+
+function openReplayStore(runtime: PluginRuntime, onError: (error: unknown) => void): ReplayStore | undefined {
+  try {
+    return runtime.state.openKeyedStore<SavedReplay>({ namespace: "replay-positions", maxEntries: 64 });
+  } catch (error) {
+    onError(error);
+    return undefined;
+  }
+}
 
 const isAuthFailure = (error: unknown) => error instanceof SabhaApiError && (error.status === 401 || error.status === 403);
 
@@ -117,7 +126,10 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
   });
   ingress.start();
 
-  const replay = createReplayPositions();
+  const replayStore = openReplayStore(runtime, (error) => log.warn?.(`${prefix} replay positions won't survive a restart: ${String(error)}`));
+  const replay = createReplayPositions(
+    replayStore && { store: replayStore, key: account.accountId, onError: (error) => log.warn?.(`${prefix} replay store: ${String(error)}`) },
+  );
   let connection = 0;
 
   // Admit in arrival order; each admission is a durable write.
@@ -156,7 +168,9 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
     });
   };
 
-  let resumeSince: number | undefined;
+  // A restarted gateway asks for what arrived since the last one was connected.
+  const lastConnectedAt = await replay.restore();
+  let resumeSince = lastConnectedAt === undefined ? undefined : lastConnectedAt - RESUME_OVERLAP_SECONDS;
   let failures = 0;
   try {
     while (!abortSignal.aborted) {
@@ -171,6 +185,7 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
           session = live;
           failures = 0;
           resumeSince = Math.floor(Date.now() / 1000) - RESUME_OVERLAP_SECONDS;
+          replay.connected();
           status(channelReadyPatch());
         },
         onEvent: (message, meta) => onEvent(message, meta, current),
@@ -178,6 +193,7 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
         ...(params.createSocket ? { createSocket: params.createSocket } : {}),
       });
       session = undefined;
+      if (outcome.ready) replay.connected();
       if (abortSignal.aborted) break;
       if (outcome.terminal) {
         log.error?.(`${prefix} ${outcome.terminal.message}`);
@@ -196,6 +212,7 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
   } finally {
     session = undefined;
     await admissions;
+    await replay.flush();
     await ingress.stop();
     status(channelStoppedPatch());
   }

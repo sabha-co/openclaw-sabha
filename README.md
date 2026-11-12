@@ -14,7 +14,7 @@ endpoint or polling.
 - Attachments in and out (images, documents), downloaded through OpenClaw's
   SSRF-guarded media fetcher.
 - Edits and reactions on messages reach the agent as context on the conversation.
-- Missed events are replayed after a reconnect, and each event is handled once
+- Missed events are replayed after a reconnect or a gateway restart (up to AnyCable's 5 minutes or 100 events), and each event is handled once
   (durable ingress queue).
 - `message` tool actions: `send`, `thread-reply`, `edit`, `unsend`, `react`,
   `reactions`, `read`, `search`, `member-info`.

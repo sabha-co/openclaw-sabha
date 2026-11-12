@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createReplayPositions } from "./replay-positions.js";
+import { describe, expect, it, vi } from "vitest";
+import { createReplayPositions, type ReplayStore, type SavedReplay } from "./replay-positions.js";
 
 const at = (offset: number, epoch = "e1") => ({ streamId: "app_events:508", epoch, offset });
 
@@ -37,5 +37,32 @@ describe("createReplayPositions", () => {
     replay.commit({}, 1);
     replay.freeze({}, 1);
     expect(replay.positions.size).toBe(0);
+  });
+
+  it("lets a restarted gateway resume where the last one stopped", async () => {
+    const rows = new Map<string, SavedReplay>();
+    const store: ReplayStore = { lookup: async (key) => rows.get(key), register: async (key, value) => void rows.set(key, value) };
+    const first = createReplayPositions({ store, key: "default", onError: () => {} });
+    expect(await first.restore()).toBeUndefined();
+    first.connected();
+    first.commit(at(4), 1);
+    first.commit(at(5), 1);
+    await first.flush();
+
+    const second = createReplayPositions({ store, key: "default", onError: () => {} });
+    const connectedAt = await second.restore();
+    expect(second.positions.get("app_events:508")).toEqual({ epoch: "e1", offset: 5 });
+    expect(connectedAt).toBeGreaterThan(Date.now() / 1000 - 5);
+  });
+
+  it("keeps working in memory when the store fails", async () => {
+    const onError = vi.fn();
+    const failing: ReplayStore = { lookup: async () => { throw new Error("locked"); }, register: async () => { throw new Error("locked"); } };
+    const replay = createReplayPositions({ store: failing, key: "default", onError });
+    expect(await replay.restore()).toBeUndefined();
+    replay.commit(at(4), 1);
+    await replay.flush();
+    expect(replay.positions.get("app_events:508")).toEqual({ epoch: "e1", offset: 4 });
+    expect(onError).toHaveBeenCalledTimes(2);
   });
 });

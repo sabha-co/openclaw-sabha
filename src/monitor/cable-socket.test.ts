@@ -109,6 +109,24 @@ describe("connectCable", () => {
     await run1.outcome;
   });
 
+  it("asks again by time alone, once, when Sabha refuses the saved positions", async () => {
+    const server = await fakeAnyCable((frame, ws) => {
+      confirming(frame, ws);
+      if (frame.command === "history") ws.send(JSON.stringify({ identifier: frame.identifier, type: "reject_history" }));
+    });
+    const positions: StreamPositions = new Map([["app_events:508", { epoch: "e1", offset: 9 }]]);
+    const results: string[] = [];
+    const run1 = run(server, { positions, resumeSince: 1_700_000_000, onHistory: (result) => results.push(result) });
+    await until(() => results.length === 2);
+    expect(server.received.slice(1)).toEqual([
+      expect.objectContaining({ command: "history" }),
+      { command: "history", identifier: APP_EVENTS_IDENTIFIER, history: { since: 1_700_000_000 } },
+    ]);
+    expect(results).toEqual(["stale", "rejected"]);
+    run1.controller.abort();
+    await run1.outcome;
+  });
+
   it("does not replay anything on a first connection", async () => {
     const server = await fakeAnyCable(confirming);
     const run1 = run(server);

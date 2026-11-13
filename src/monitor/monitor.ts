@@ -189,6 +189,9 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
           status(channelReadyPatch());
         },
         onEvent: (message, meta) => onEvent(message, meta, current),
+        onHistory: (result) => {
+          if (result === "stale") replay.forget();
+        },
         log,
         ...(params.createSocket ? { createSocket: params.createSocket } : {}),
       });

@@ -72,6 +72,12 @@ export function createReplayPositions(saved: { store: ReplayStore; key: string; 
         save();
       }
     },
+    /** Sabha refused the positions: their streams' history expired and started over at offset 1. */
+    forget(): void {
+      positions.clear();
+      frozenThrough.clear();
+      save();
+    },
     /** The event at `meta`, received on connection `from`, could not be stored. */
     freeze(meta: CableEventMeta, from: number): void {
       if (!meta.streamId) return;

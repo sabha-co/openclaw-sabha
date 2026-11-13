@@ -90,7 +90,8 @@ export function connectCable(params: {
   resumeSince?: number;
   onReady: (session: CableSession) => void;
   onEvent: (message: unknown, meta: CableEventMeta) => void;
-  onHistory?: (result: "confirmed" | "rejected") => void;
+  /** `stale`: the saved positions were refused, and missed events are asked for again by time. */
+  onHistory?: (result: "confirmed" | "rejected" | "stale") => void;
   log?: { info?: (message: string) => void; warn?: (message: string) => void };
   createSocket?: CreateCableSocket;
   timeouts?: Partial<CableTimeouts>;
@@ -135,9 +136,11 @@ export function connectCable(params: {
       close: () => ws.terminate(),
     };
 
+    let askedByPosition = false;
     const requestHistory = () => {
       const streams = Object.fromEntries(params.positions);
       if (Object.keys(streams).length === 0 && params.resumeSince === undefined) return;
+      askedByPosition = Object.keys(streams).length > 0;
       const history: Record<string, unknown> = { streams };
       if (params.resumeSince !== undefined) history.since = params.resumeSince;
       send({ command: "history", identifier: APP_EVENTS_IDENTIFIER, history });
@@ -182,6 +185,16 @@ export function connectCable(params: {
           params.onHistory?.("confirmed");
           return;
         case "reject_history":
+          // A stream whose history expired starts over at offset 1 in the same
+          // epoch, so a saved offset is past its newest entry. `since` applies
+          // only to streams with no position, so ask again by time alone, once.
+          if (askedByPosition && params.resumeSince !== undefined) {
+            askedByPosition = false;
+            params.onHistory?.("stale");
+            params.log?.info?.("[sabha] saved stream positions are stale; asking for missed events by time");
+            send({ command: "history", identifier: APP_EVENTS_IDENTIFIER, history: { since: params.resumeSince } });
+            return;
+          }
           params.log?.warn?.("[sabha] Sabha could not replay missed events (history expired or the server restarted)");
           params.onHistory?.("rejected");
           return;

@@ -93,3 +93,38 @@ describe("message turns", () => {
     });
   });
 });
+
+describe("command turns", () => {
+  const command = {
+    event: "command", id: "c-1", command: "/model", text: "fast", user_id: 5, user_name: "Ann",
+    room_id: 221, room_name: null, thread: { id: 221, parent_message_id: 4100, parent_room_id: 21 }, response_url: "https://r",
+  } as const;
+
+  it("runs as the host's native command in the thread's session and answers only the member who ran it", async () => {
+    const contexts: Array<Record<string, unknown>> = [];
+    let answer: ((payload: { text?: string }) => Promise<unknown>) | undefined;
+    const runtime = {
+      channel: {
+        routing: { resolveAgentRoute: () => ({ agentId: "main" }) },
+        commands: { isControlCommandMessage: () => true },
+        reply: { formatAgentEnvelope: () => "env", resolveEnvelopeFormatOptions: () => ({}) },
+        inbound: {
+          buildContext: (params: Record<string, unknown>) => (contexts.push(params), {}),
+          run: vi.fn(async (params: { adapter: { ingest: () => { textForCommands: string }; resolveTurn: () => Promise<{ delivery: { deliver: typeof answer } }> } }) => {
+            expect(params.adapter.ingest().textForCommands).toBe("/model fast");
+            answer = (await params.adapter.resolveTurn()).delivery.deliver;
+            return { dispatched: true, dispatchResult: {} };
+          }),
+        },
+      },
+    };
+    const client = { getRoom: vi.fn(async () => ({ id: 221, name: null, type: "Thread" })), respond: vi.fn(async () => {}), sendMessage: vi.fn() };
+    await handleSabhaEvent(command as never, {} as never, {
+      runtime: runtime as never, cfg: {} as OpenClawConfig, account, selfId: 1, client: client as never, performDraft: () => true, log: {},
+    });
+    expect(contexts[0]).toMatchObject({ conversation: { kind: "group", id: "221", threadId: "221" }, extra: { CommandSource: "native" } });
+    await answer?.({ text: "Model set" });
+    expect(client.respond).toHaveBeenCalledWith("https://r", "Model set");
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+});

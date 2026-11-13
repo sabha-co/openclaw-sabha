@@ -113,6 +113,17 @@ describe("SabhaClient", () => {
     expect((error as SabhaApiError).code).toBe("validation_failed");
   });
 
+  it("names the commands another app holds when Sabha refuses the list, and answers a command with no bearer key", async () => {
+    const refusals = { error: "Commands refused", code: "validation_failed", refusals: [{ name: "new", error: "is already another app's command" }] };
+    const { client: c, calls } = client([json(422, refusals), json(200, { commands: [] }), json(200, { ok: true })]);
+    await expect(c.declareCommands([{ name: "new", description: "Start over" }, { name: "model", description: "Model" }])).resolves.toEqual(["new"]);
+    await expect(c.declareCommands([{ name: "model", description: "Model" }])).resolves.toEqual([]);
+    await c.respond("https://sabha.test/1000006/api/v1/interaction_responses?token=t", "**done**");
+    expect(calls[0]?.method).toBe("PUT");
+    expect(calls[2]?.headers.get("authorization")).toBeNull();
+    expect(JSON.parse(String(calls[2]?.body))).toEqual({ body: expect.stringContaining("<strong>done</strong>") });
+  });
+
   it("reads the DM room id", async () => {
     const { client: c, calls } = client([json(200, { room: { id: 7 } })]);
     await expect(c.createDm([42])).resolves.toEqual({ roomId: 7 });

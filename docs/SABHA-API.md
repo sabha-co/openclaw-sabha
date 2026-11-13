@@ -75,7 +75,11 @@ the server code, the code wins, and so does this file.
 
 - `reaction_created` / `reaction_deleted`: `{event, user, room, message, reaction: {id, body}}`.
 - `user_created` / `user_deleted`: `{event, user}`. Ignored by the plugin.
-- `block_actions` and `command`: not handled yet.
+- `command`: `{id, event, command, text, user_id, user_name, room_id, room_name, thread?, response_url}`.
+  `room_id` is the thread room when run in a thread. Runs as the host's native
+  command; the answer goes to `response_url` (`POST`, JSON `{body: html}`, no
+  bearer key, five uses, 30 minutes), privately to the member who ran it.
+- `block_actions`: not handled yet.
 
 ## REST endpoints used
 
@@ -98,6 +102,7 @@ the server code, the code wins, and so does this file.
 | Person | `GET /users/:id` | |
 | Find people | `GET /autocompletable/users?query=&room_id=` | Up to 20 |
 | DM | `POST /direct_messages` JSON `{user_ids: [...]}` | `{room: {id}}`; 200 existing, 201 new |
+| Commands | `PUT /profile/commands` JSON `{commands: [{name, description, usage_hint?}]}` | Replaces the list. All or nothing: `422` with `refusals: [{name, error}]` for a name Sabha keeps or another app holds. At most 25; description required, ≤ 100 |
 
 ## Message bodies
 
@@ -110,5 +115,4 @@ the plugin renders Markdown to Lexxy's own export markup
 
 - **Typing indicators.** There is no app endpoint (`/api/typing` is dev-only).
   The plugin sends none.
-- **Ephemerals, Block Kit interactions, slash commands.** Not handled by the
-  plugin yet.
+- **Ephemerals, Block Kit interactions.** Not handled by the plugin yet.

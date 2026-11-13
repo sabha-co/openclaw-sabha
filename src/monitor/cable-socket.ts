@@ -198,6 +198,8 @@ export function connectCable(params: {
           params.log?.warn?.("[sabha] Sabha could not replay missed events (history expired or the server restarted)");
           params.onHistory?.("rejected");
           return;
+        case "presence": // Sabha marking the app online; not an event
+          return;
         case "disconnect":
           if (frame.reconnect === false) terminal = new CableRejectedError(frame.reason ?? "disconnect");
           ws.close();

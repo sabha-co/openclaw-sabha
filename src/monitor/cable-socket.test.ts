@@ -68,15 +68,17 @@ const until = async (check: () => boolean) => {
 };
 
 describe("connectCable", () => {
-  it("authenticates by header, subscribes, and delivers events with their stream position", async () => {
+  it("authenticates by header, subscribes, and delivers events with their stream position, skipping presence", async () => {
     const server = await fakeAnyCable((frame, ws) => {
       confirming(frame, ws);
       if (frame.command === "subscribe") {
+        ws.send(JSON.stringify({ type: "presence", identifier: APP_EVENTS_IDENTIFIER, message: { id: "508", type: "join" } }));
         ws.send(JSON.stringify({ identifier: APP_EVENTS_IDENTIFIER, message: { event: "message_created" }, stream_id: "app_events:508", epoch: "e1", offset: 4 }));
       }
     });
     const run1 = run(server);
     await until(() => run1.events.length === 1);
+    expect(run1.events).toEqual([{ event: "message_created" }]);
     expect(server.headers.authorization).toBe("Bearer sabha_app_k");
     expect(server.headers["sec-websocket-protocol"]).toBe(CABLE_PROTOCOL);
     expect(run1.metas[0]).toEqual({ streamId: "app_events:508", epoch: "e1", offset: 4 });

@@ -7,12 +7,14 @@
 // per-account opt-in documented in docs/ARCHITECTURE.md.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { BuildChannelInboundEventContextParams } from "openclaw/plugin-sdk/channel-inbound";
+import type { ReplyPayload } from "openclaw/plugin-sdk/reply-chunking";
+import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { ssrfPolicyFromAllowPrivateNetwork } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { SabhaClient } from "../client/client.js";
-import type { SabhaAppEvent, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
+import type { SabhaAppEvent, SabhaCommandEvent, SabhaEventRoom, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
 import type { ResolvedSabhaAccount } from "../config/accounts.js";
-import { chatTypeOf, isMentionGatedRoom, isMessageEvent, isReactionEvent, mentionsApp, type SabhaChatType } from "../monitor/events.js";
+import { chatTypeOf, isCommandEvent, isMentionGatedRoom, isMessageEvent, isReactionEvent, mentionsApp, type SabhaChatType } from "../monitor/events.js";
 import type { SabhaIngressLifecycle } from "../monitor/ingress.js";
 import { noteRoomThreading } from "./room-threading.js";
 import { createSabhaDraft, type PerformDraft } from "../outbound/draft-transport.js";
@@ -46,9 +48,12 @@ type Conversation = {
 };
 
 function resolveConversation(deps: SabhaTurnDeps, event: SabhaMessageEvent | SabhaReactionEvent): Conversation {
-  const chatType = chatTypeOf(event.room);
-  const roomId = String(event.room.id);
-  const threadId = event.message.thread ? String(event.message.thread.id) : undefined;
+  return conversationIn(deps, event.room, event.message.thread ? String(event.message.thread.id) : undefined);
+}
+
+function conversationIn(deps: SabhaTurnDeps, room: SabhaEventRoom, threadId: string | undefined): Conversation {
+  const chatType = chatTypeOf(room);
+  const roomId = String(room.id);
   const agentRoute = deps.runtime.channel.routing.resolveAgentRoute({
     cfg: deps.cfg, channel: CHANNEL, accountId: deps.account.accountId, peer: { kind: chatType, id: roomId },
   });
@@ -93,6 +98,7 @@ export async function handleSabhaEvent(event: SabhaAppEvent, lifecycle: SabhaIng
     return;
   }
   if (isReactionEvent(event)) return await noteReaction(event, deps);
+  if (isCommandEvent(event)) return await runCommandTurn(event, lifecycle, deps);
 }
 
 async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressLifecycle, deps: SabhaTurnDeps): Promise<void> {
@@ -223,6 +229,114 @@ async function runMessageTurn(event: SabhaMessageEvent, lifecycle: SabhaIngressL
     // A follow-up replies later through this same delivery; onSettled ends its draft.
     if (!deferredFollowup) await finish(failed);
   }
+}
+
+/**
+ * A member ran one of the app's slash commands. It runs as the host's native
+ * command in the conversation it was run in, and the answer goes privately to
+ * that member through the event's response_url, as a Slack slash command's does.
+ */
+async function runCommandTurn(event: SabhaCommandEvent, lifecycle: SabhaIngressLifecycle, deps: SabhaTurnDeps): Promise<void> {
+  const { runtime, cfg, account, log } = deps;
+  const channel = runtime.channel;
+  // The event names its room but not the room's kind, which decides DM or group.
+  // Reading it needs the key's `read` permission; without it the room counts as a group.
+  const room = await deps.client.getRoom(event.room_id).catch((error: unknown) => {
+    log.error?.(`[sabha:${account.accountId}] room ${event.room_id} lookup failed; treating it as a group: ${String(error)}`);
+    return { id: event.room_id, name: event.room_name, type: event.thread ? "Thread" : "Open" };
+  });
+  const conversation = conversationIn(deps, room, event.thread ? String(event.thread.id) : undefined);
+  const isDm = conversation.chatType === "direct";
+  const commandId = `command:${event.id}`;
+  const text = `${event.command} ${event.text ?? ""}`.trim();
+  const timestamp = Date.now();
+
+  const access = await resolveSabhaAccess({
+    runtime, cfg, account,
+    senderId: event.user_id,
+    roomId: conversation.roomId,
+    ...(conversation.threadId ? { threadId: conversation.threadId } : {}),
+    chatType: conversation.chatType,
+    mentioned: true,
+    requireMention: false,
+    eventKind: "message",
+    hasControlCommand: channel.commands.isControlCommandMessage(text, cfg),
+    contextBinding: {
+      agentId: conversation.agentId, sessionKey: conversation.sessionKey, messageId: commandId,
+      nativeChannelId: conversation.roomId, inboundEventKind: "user_request",
+    },
+  });
+  if (access.ingress.admission !== "dispatch") {
+    log.info?.(`[sabha:${account.accountId}] dropped ${commandId} in ${conversation.roomId} (${access.ingress.reasonCode})`);
+    return;
+  }
+  deps.onInbound?.();
+
+  // Sabha takes five answers per response_url.
+  let answers = 0;
+  const deliver = async (payload: ReplyPayload) => {
+    const reply = payload.text?.trim();
+    if (isReasoningReplyPayload(payload) || !reply || answers >= 5) return { visibleReplySent: false } as const;
+    answers++;
+    await deps.client.respond(event.response_url, reply);
+    deps.onOutbound?.();
+    return { visibleReplySent: true, content: reply } as const;
+  };
+
+  await channel.inbound.run({
+    channel: CHANNEL,
+    accountId: account.accountId,
+    raw: event,
+    turnAdoptionLifecycle: lifecycle,
+    adapter: {
+      ingest: () => ({ id: commandId, timestamp, rawText: text, textForAgent: text, textForCommands: text, raw: event }),
+      resolveTurn: async () => {
+        const envelope = channel.reply.formatAgentEnvelope({
+          channel: CHANNEL, from: userLabel({ id: event.user_id, name: event.user_name }), timestamp,
+          envelope: channel.reply.resolveEnvelopeFormatOptions(cfg), body: text,
+        });
+        const ctxPayload = channel.inbound.buildContext({
+          channelIngress: access,
+          channel: CHANNEL,
+          accountId: account.accountId,
+          messageId: commandId,
+          timestamp,
+          from: `sabha:${event.user_id}`,
+          sender: { id: String(event.user_id), name: event.user_name },
+          conversation: {
+            kind: conversation.chatType, id: conversation.roomId, label: event.room_name ?? undefined,
+            nativeChannelId: conversation.roomId, ...(conversation.threadId ? { threadId: conversation.threadId } : {}),
+          },
+          route: { agentId: conversation.agentId, dmScope: conversation.dmScope, accountId: account.accountId, routeSessionKey: conversation.sessionKey },
+          reply: {
+            to: conversation.roomId, originatingTo: conversation.roomId, nativeChannelId: conversation.roomId,
+            ...(conversation.threadId ? { messageThreadId: conversation.threadId } : {}),
+          },
+          message: { body: envelope, bodyForAgent: envelope, rawBody: text, commandBody: text, inboundEventKind: "user_request" },
+          access: {
+            commands: { authorized: access.commandAccess.authorized },
+            ...(!isDm ? { mentions: { canDetectMention: true, wasMentioned: true } } : {}),
+          },
+          extra: {
+            CommandSource: "native",
+            GroupSystemPrompt: !isDm ? account.rooms[conversation.roomId]?.systemPrompt?.trim() || undefined : undefined,
+          },
+        });
+        return {
+          cfg, channel: CHANNEL, accountId: account.accountId,
+          route: { agentId: conversation.agentId, sessionKey: conversation.sessionKey, ...(conversation.dmScope ? { dmScope: conversation.dmScope } : {}) },
+          ctxPayload,
+          delivery: {
+            observeMessageSent: true,
+            deliver,
+            onError: (error, info) => log.error?.(`[sabha:${account.accountId}] ${info.kind} command answer failed: ${String(error)}`),
+          },
+          record: { onRecordError: (error) => log.error?.(`[sabha:${account.accountId}] session record failed: ${String(error)}`) },
+          replyOptions: { disableBlockStreaming: true },
+        };
+      },
+    },
+  });
 }
 
 async function downloadAttachment(event: SabhaMessageEvent, deps: SabhaTurnDeps): Promise<NonNullable<BuildChannelInboundEventContextParams["media"]>> {

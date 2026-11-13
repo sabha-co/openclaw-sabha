@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { retryAsync } from "openclaw/plugin-sdk/runtime-env";
 import { markdownToSabhaHtml } from "./rich-text.js";
 import type {
+  SabhaCommandDeclaration,
   SabhaMessage,
   SabhaPage,
   SabhaReactions,
@@ -81,7 +82,7 @@ export type SabhaClientOptions = {
 };
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   query?: URLSearchParams;
   json?: unknown;
   text?: string;
@@ -252,6 +253,37 @@ export class SabhaClient {
   }
 
   /** Finds or opens the DM; idempotent on Sabha's side (200 existing, 201 new). */
+  // --- Slash commands ---
+
+  /**
+   * Replace the app's slash commands. Sabha takes the list whole or not at
+   * all: a list with a name another app holds changes nothing, and the refused
+   * names come back so the caller can declare the rest.
+   */
+  async declareCommands(commands: SabhaCommandDeclaration[]): Promise<string[]> {
+    try {
+      await this.request("/profile/commands", { method: "PUT", json: { commands }, idempotent: true });
+      return [];
+    } catch (error) {
+      const refused = error instanceof SabhaApiError && error.status === 422 ? refusedNames(error.body) : [];
+      if (!refused.length) throw error;
+      return refused;
+    }
+  }
+
+  /** Answer a command through its response_url, whose token is its own credential: no bearer key. */
+  async respond(responseUrl: string, markdown: string): Promise<void> {
+    const response = await this.fetchImpl(responseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ body: this.renderBody(markdown) }),
+      signal: AbortSignal.timeout(this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new SabhaApiError(response.status, await response.text().catch(() => ""), "POST", "response_url");
+    }
+  }
+
   async createDm(userIds: number[]): Promise<{ roomId: number }> {
     const json = await this.json<{ room?: { id?: unknown } }>("/direct_messages", {
       method: "POST",
@@ -331,6 +363,16 @@ function isTransportError(error: unknown): boolean {
 
 function refusesClientMessageId(error: unknown): boolean {
   return error instanceof SabhaApiError && error.status === 422 && error.body.includes("client_message_id is not permitted");
+}
+
+function refusedNames(body: string): string[] {
+  try {
+    const parsed = JSON.parse(body) as { refusals?: unknown };
+    if (!Array.isArray(parsed.refusals)) return [];
+    return parsed.refusals.flatMap((refusal: { name?: unknown }) => (typeof refusal?.name === "string" ? [refusal.name] : []));
+  } catch {
+    return [];
+  }
 }
 
 function threadQuery(parentMessageId: number | undefined): URLSearchParams | undefined {

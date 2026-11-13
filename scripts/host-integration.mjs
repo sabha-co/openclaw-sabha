@@ -38,8 +38,12 @@ const server = createServer(async (req, res) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(json));
   };
-  if (req.headers.authorization !== `Bearer ${APP_KEY}`) return reply(401, { error: "unauthorized" });
   const path = req.url.split("?")[0];
+  // A response_url's token is its own credential.
+  if (req.method === "POST" && path === "/api/v1/interaction_responses") return reply(200, { ok: true });
+  if (req.headers.authorization !== `Bearer ${APP_KEY}`) return reply(401, { error: "unauthorized" });
+  if (req.method === "PUT" && path === "/api/v1/profile/commands") return reply(200, { commands: [] });
+  if (req.method === "GET" && /^\/api\/v1\/rooms\/\d+$/.test(path)) return reply(200, { id: 77, name: null, type: "Thread" });
   if (req.method === "GET" && path === "/api/v1/me") return reply(200, { id: APP_ID, name: "Claw" });
   if (req.method === "POST" && /^\/api\/v1\/rooms\/\d+\/messages$/.test(path)) return reply(201, { id: nextMessageId++, room_id: 99 });
   if (req.method === "POST" && /^\/api\/v1\/messages\/\d+\/reactions$/.test(path)) return reply(201, { id: 31 });
@@ -261,6 +265,24 @@ try {
       requests.some((request) => request.method === "POST" && request.url === "/api/v1/messages/10/reactions" && request.body === "👍"),
       "the real message runner reached Sabha react with the current message",
     );
+
+    const [declared] = requests.filter((request) => request.method === "PUT" && request.url === "/api/v1/profile/commands");
+    const names = JSON.parse(declared.body).commands.map((command) => command.name);
+    assert.ok(names.includes("new") && !names.includes("help") && names.length <= 25, "the host's native commands are declared, less Sabha's own");
+
+    const roomPosts = messagePosts().length;
+    pushEvent({
+      event: "command", id: "cmd-1", command: "/new", text: "", user_id: 1, user_name: "Alice", room_id: 77, room_name: null,
+      thread: { id: 77, parent_message_id: INBOUND_ID, parent_room_id: 5 }, response_url: `http://127.0.0.1:${port}/api/v1/interaction_responses?token=t`,
+    }, 3);
+    await until(() => dispatched === 2, "command dispatch");
+    await until(() => requests.some((request) => request.url.startsWith("/api/v1/interaction_responses")), "command answer");
+    assert.equal(context.CommandSource, "native");
+    assert.equal(context.CommandBody, "/new");
+    const answer = requests.find((request) => request.url.startsWith("/api/v1/interaction_responses"));
+    assert.equal(answer.auth, undefined, "a command answer carries no bearer key");
+    assert.match(JSON.parse(answer.body).body, /Host final reply/);
+    assert.equal(messagePosts().length, roomPosts, "a command's answer is never posted to the room");
 
     socket.send(JSON.stringify({ type: "disconnect", reconnect: false, reason: "unauthorized" }));
     await until(() => status.lifecycle === "blocked", "fatal account parking");

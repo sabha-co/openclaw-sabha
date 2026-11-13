@@ -1,5 +1,5 @@
 // Classifies AppEventsChannel payloads. Pure: no I/O, no host runtime.
-import type { SabhaAppEvent, SabhaEventRoom, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
+import type { SabhaAppEvent, SabhaCommandEvent, SabhaEventRoom, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
 
 export type SabhaChatType = "direct" | "group";
 
@@ -31,11 +31,18 @@ export function parseSabhaEvent(raw: unknown): SabhaAppEvent {
   if (REACTION_EVENTS.has(raw.event) && !hasId(raw.reaction)) {
     throw new SabhaEventShapeError(`${raw.event} without reaction.id`);
   }
+  if (raw.event === "command") {
+    for (const field of ["id", "command", "response_url"]) {
+      if (typeof raw[field] !== "string") throw new SabhaEventShapeError(`command without ${field}`);
+    }
+    if (typeof raw.room_id !== "number" || typeof raw.user_id !== "number") throw new SabhaEventShapeError("command without room_id or user_id");
+  }
   return raw as SabhaAppEvent;
 }
 
 export const isMessageEvent = (event: SabhaAppEvent): event is SabhaMessageEvent => MESSAGE_EVENTS.has(event.event);
 export const isReactionEvent = (event: SabhaAppEvent): event is SabhaReactionEvent => REACTION_EVENTS.has(event.event);
+export const isCommandEvent = (event: SabhaAppEvent): event is SabhaCommandEvent => event.event === "command";
 
 /**
  * Open and Closed rooms are the only ones where Sabha sends an app just its
@@ -89,5 +96,6 @@ export function eventFacts(event: SabhaAppEvent, selfId: number): { eventId: str
     const kind = event.event === "reaction_created" ? "react" : "unreact";
     return { eventId: `${kind}:${event.reaction.id}`, laneKey: `room:${event.room.id}` };
   }
+  if (isCommandEvent(event)) return { eventId: `command:${event.id}`, laneKey: `room:${event.room_id}` };
   return null;
 }

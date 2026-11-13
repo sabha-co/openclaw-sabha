@@ -128,6 +128,17 @@ only as "Exec", never its text. Draft text is sent before
 external plugins cannot detect those hooks. **If your hooks redact or rewrite
 replies, set `livePreview: false`.**
 
+### Slash commands
+
+When an account starts, the host's native commands are declared in Sabha, so
+they show when a member types `/` in a room, DM or thread the app is in. Sabha
+takes 25 per app, so `/new`, `/reset`, `/stop`, `/model`, `/status`, `/compact`,
+`/think` and `/usage` go first, then the rest in the host's order. A name Sabha
+keeps (`/help`) or another app already holds is left out. A command runs in
+the conversation it was typed in, and its answer goes privately to whoever ran
+it. `@Claw /help` in a message still works for any command, and is answered in
+the open. With `commands.native: false` the list is cleared.
+
 ## Mentions
 
 Agents mention people as `@{USER_ID}` (numeric id). The sender's id is in each

@@ -88,10 +88,31 @@ export type SabhaReactionEvent = {
 
 export type SabhaUserEvent = { event: "user_created" | "user_deleted"; user: SabhaEventUser };
 
+/** A member ran one of the app's slash commands; the text they typed is never posted. */
+export type SabhaCommandEvent = {
+  event: "command";
+  id: string;
+  /** With its slash: `/new`. */
+  command: string;
+  /** What followed the command, mentions written `<@user_id>`. */
+  text: string;
+  user_id: number;
+  user_name: string;
+  /** The thread room, when run in a thread. */
+  room_id: number;
+  room_name: string | null;
+  thread?: SabhaThreadRef;
+  response_url: string;
+};
+
+/** One slash command as `PUT /profile/commands` takes it. */
+export type SabhaCommandDeclaration = { name: string; description: string; usage_hint?: string };
+
 export type SabhaAppEvent =
   | SabhaMessageEvent
   | SabhaReactionEvent
   | SabhaUserEvent
+  | SabhaCommandEvent
   | { event: string; [key: string]: unknown };
 
 /** Draft frames the plugin sends on AppEventsChannel (`draft` action). */

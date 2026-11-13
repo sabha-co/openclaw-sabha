@@ -49,6 +49,12 @@ describe("eventFacts", () => {
     expect(eventFacts(message({ mentions_app: true }), SELF)).toEqual({ eventId: "message:4214", laneKey: "room:3" });
   });
 
+  it("keys a slash command by its event id and lanes it by the room it ran in", () => {
+    const command = parseSabhaEvent({ event: "command", id: "c-1", command: "/new", text: "", user_id: 7, user_name: "Ann", room_id: 221, room_name: null, response_url: "https://r" });
+    expect(eventFacts(command, SELF)).toEqual({ eventId: "command:c-1", laneKey: "room:221" });
+    expect(() => parseSabhaEvent({ event: "command", id: "c-2", command: "/new", user_id: 7, room_id: 221 })).toThrow(SabhaEventShapeError);
+  });
+
   it("keeps successive edits of one message distinct", () => {
     const edit = message({ event: "message_updated", mentions_app: true });
     expect(eventFacts(edit, SELF)?.eventId).toBe("edit:4214:2026-11-07T10:00:00Z");

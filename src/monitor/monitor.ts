@@ -13,6 +13,7 @@ import type { ResolvedSabhaAccount } from "../config/accounts.js";
 import { handleSabhaEvent } from "../inbound/turn.js";
 import { connectCable, type CableEventMeta, type CableSession, type CreateCableSocket } from "./cable-socket.js";
 import { createReplayPositions, type ReplayStore, type SavedReplay } from "./replay-positions.js";
+import { declareSabhaCommands } from "./commands.js";
 import { isMessageEvent, isReactionEvent, parseSabhaEvent } from "./events.js";
 import { createSabhaIngress } from "./ingress.js";
 
@@ -109,6 +110,7 @@ export async function monitorSabhaAccount(params: MonitorSabhaParams): Promise<v
     return;
   }
   log.info?.(`${prefix} connected as app ${selfId}`);
+  void declareSabhaCommands({ client, cfg: params.cfg, log, prefix });
 
   let session: CableSession | undefined;
   const performDraft = (frame: SabhaDraftFrame) => session?.perform("draft", frame) ?? false;

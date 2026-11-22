@@ -65,9 +65,12 @@ openclaw sabha doctor
 openclaw gateway restart
 ```
 
-`setup` checks the key with Sabha before saving it. `--key` can be left out if
-`SABHA_APP_KEY` is set. `doctor` checks the config, the key, and a live
-`AppEventsChannel` subscription, and exits non-zero on any problem.
+`setup` checks the key with Sabha before saving it. It ends by saying how to
+restart the gateway here: `sudo systemctl restart openclaw-gateway` when it
+runs as a system unit you set up, which `openclaw gateway restart` doesn't
+control. `--key` can be left out if `SABHA_APP_KEY` is set. `doctor` checks
+the config, the key, and a live `AppEventsChannel` subscription, and exits
+non-zero on any problem.
 
 `openclaw channels add --channel sabha --url … --app-key …` writes the same config.
 

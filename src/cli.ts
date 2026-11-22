@@ -1,6 +1,9 @@
 // `openclaw sabha setup|doctor`. Setup takes what the app's page in Sabha
 // (Settings → Apps) shows: the API base URL, the WebSocket URL and the key.
 // There is no self-registration.
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
@@ -68,7 +71,7 @@ export function registerSabhaCli(params: {
       await params.writeConfig(patchSabhaAccount(params.getConfig(), accountId, { url, appKey, ...(cableUrl ? { cableUrl } : {}) }));
       console.log(`✓ Saved channels.sabha.accounts.${accountId}`);
       console.log("Check the live connection with: openclaw sabha doctor");
-      console.log("Then restart the gateway: openclaw gateway restart");
+      console.log(`Then restart the gateway: ${restartCommand(installedUnits())}`);
     });
 
   sabha
@@ -90,6 +93,22 @@ export function registerSabhaCli(params: {
       }
       if (!ok) process.exitCode = 1;
     });
+}
+
+/**
+ * How to restart the gateway once the account is saved. OpenClaw restarts only
+ * the service it installed, a user unit; a gateway set up as a system unit is
+ * restarted through systemd, as root.
+ */
+export function restartCommand(units: { systemUnit: boolean; userUnit: boolean }): string {
+  return units.systemUnit && !units.userUnit ? "sudo systemctl restart openclaw-gateway" : "openclaw gateway restart";
+}
+
+function installedUnits(): { systemUnit: boolean; userUnit: boolean } {
+  if (process.platform !== "linux") return { systemUnit: false, userUnit: false };
+  const unit = "openclaw-gateway.service";
+  const userUnits = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user");
+  return { systemUnit: existsSync(join("/etc/systemd/system", unit)), userUnit: existsSync(join(userUnits, unit)) };
 }
 
 function fail(message: string): void {

@@ -6,7 +6,7 @@
  * Discord's `<@id>` or Slack's `@username`. This module rewrites
  * outbound `@DisplayName` tokens to `@{user_id}` before the text hits
  * Sabha's API, so `Message::Envelope.format_mentions` can rewrite them to
- * real mention attachments (only for members of the target room).
+ * real mention attachments (only for members of the target channel).
  *
  * The rewriter is populated from inbound events: every `message_created`
  * payload carries `user.id` + `user.name`, and the `mentionees` array

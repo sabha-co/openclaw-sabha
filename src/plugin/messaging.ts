@@ -1,14 +1,14 @@
 // Target grammar and thread context for the shared `message` tool.
 //
-//   room   21 | channel:21 | room:21 | group:21 | #general (resolved by name)
+//   channel   21 | channel:21 | group:21 | #general (resolved by name)
 //   user   user:5 | @{5} | @Ann (resolved by name)
 //
-// Room and user ids share one numeric space, so a bare number is a room.
+// Channel and user ids share one numeric space, so a bare number is a channel.
 // The client graph loads only inside the async lookups.
 import type { ChannelThreadingToolContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { resolveSabhaAccount } from "../config/accounts.js";
-import { roomCanThread } from "../inbound/room-threading.js";
+import { channelCanThread } from "../inbound/channel-threading.js";
 import { parseSabhaTarget } from "../outbound/target.js";
 import { buildSabhaSessionRoute } from "../session.js";
 
@@ -17,7 +17,7 @@ export function normalizeSabhaTarget(raw: string): string | undefined {
   if (!value) return undefined;
   const mention = /^@\{(\d+)\}$/.exec(value);
   if (mention) return `user:${mention[1]}`;
-  const kinded = /^(user|channel|room|group):(.*)$/i.exec(value);
+  const kinded = /^(user|channel|group):(.*)$/i.exec(value);
   if (kinded) {
     const id = kinded[2]!.trim().replace(/^@\{(\d+)\}$/, "$1");
     if (!id) return undefined;
@@ -29,7 +29,7 @@ export function normalizeSabhaTarget(raw: string): string | undefined {
   return value;
 }
 
-/** Ids skip directory lookup; Sabha room ids are short, so the host's length heuristic would not. */
+/** Ids skip directory lookup; Sabha channel ids are short, so the host's length heuristic would not. */
 export function looksLikeSabhaTargetId(raw: string, normalized?: string): boolean {
   return [raw, normalized ?? ""].some((value) => /^(?:(?:user|channel):)?\d+$/i.test(value.trim()) || /^@\{\d+\}$/.test(value.trim()));
 }
@@ -61,10 +61,10 @@ export async function resolveSabhaMessagingTarget(params: {
   };
 }
 
-/** A thread is its own room, so a thread session delivers straight into it. */
+/** A thread is its own channel, so a thread session delivers straight into it. */
 export function resolveSabhaDeliveryTarget(params: { conversationId: string }): { to: string } | null {
-  const roomId = params.conversationId.trim().replace(/^[^:]+:(\d+)$/, "$1");
-  return /^\d+$/.test(roomId) ? { to: `channel:${roomId}` } : null;
+  const channelId = params.conversationId.trim().replace(/^[^:]+:(\d+)$/, "$1");
+  return /^\d+$/.test(channelId) ? { to: `channel:${channelId}` } : null;
 }
 
 export async function resolveSabhaOutboundSessionRoute(params: {
@@ -80,29 +80,29 @@ export async function resolveSabhaOutboundSessionRoute(params: {
   if (!parsed) return null;
   const account = resolveSabhaAccount(params.cfg, params.accountId);
   if (parsed.kind === "user") {
-    // DM sessions are keyed by the DM room, the same key inbound DMs use.
+    // DM sessions are keyed by the DM channel, the same key inbound DMs use.
     const { accountClient } = await import("../client/account-client.js");
-    let roomId: number;
+    let channelId: number;
     try {
-      roomId = (await accountClient(params.cfg, account.accountId).client.createDm([parsed.id])).roomId;
+      channelId = (await accountClient(params.cfg, account.accountId).client.createDm([parsed.id])).channelId;
     } catch {
       return null;
     }
-    return buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, roomId: String(roomId), chatType: "direct" });
+    return buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, channelId: String(channelId), chatType: "direct" });
   }
-  // A thread is its own room and sends with a threadId land there (see
-  // resolveSendTarget), so the session is the thread room's, as for inbound.
+  // A thread is its own channel and sends with a threadId land there (see
+  // resolveSendTarget), so the session is the thread channel's, as for inbound.
   const threadId = params.threadId != null && /^\d+$/.test(String(params.threadId)) ? String(params.threadId) : undefined;
-  const roomId = threadId ?? String(parsed.id);
-  const direct = buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, roomId, chatType: "direct" });
+  const channelId = threadId ?? String(parsed.id);
+  const direct = buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, channelId, chatType: "direct" });
   if (params.currentSessionKey === direct.sessionKey) return direct;
-  return buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, roomId, chatType: "group", ...(threadId ? { threadId } : {}) });
+  return buildSabhaSessionRoute({ cfg: params.cfg, agentId: params.agentId, accountId: account.accountId, channelId, chatType: "group", ...(threadId ? { threadId } : {}) });
 }
 
 /**
  * Thread context for message-tool sends. Top-level group turns carry the
  * account's replyToMode so the host threads the first reply under the
- * inbound message. In a thread or DM (group DMs included) the current room is
+ * inbound message. In a thread or DM (group DMs included) the current channel is
  * already the right place, so replyToMode is off: threading again would nest
  * a thread, and Sabha refuses threads in DMs.
  */
@@ -116,14 +116,14 @@ export function buildSabhaThreadingToolContext(params: {
   const account = resolveSabhaAccount(params.cfg, params.accountId);
   const inThread = context.MessageThreadId != null;
   const isDm = context.ChatType === "direct";
-  // The turn reports its room bare ("21"), but a read's target reaches the
+  // The turn reports its channel bare ("21"), but a read's target reaches the
   // host's exact-current check as "channel:21", and a typed target never
-  // matches an untyped current room. Report the room the way targets read.
+  // matches an untyped current channel. Report the channel the way targets read.
   const rawTo = context.To?.trim();
   const to = rawTo ? (normalizeSabhaTarget(rawTo) ?? rawTo) : undefined;
-  // Group DMs report ChatType "group" but can't hold threads; the inbound turn recorded the room's kind.
-  const roomId = (context.NativeChannelId ?? to ?? "").replace(/^(?:sabha:)?(?:channel:|room:|group:)?/i, "");
-  const cannotThread = /^\d+$/.test(roomId) && roomCanThread(account.accountId, roomId) === false;
+  // Group DMs report ChatType "group" but can't hold threads; the inbound turn recorded the channel's kind.
+  const channelId = (context.NativeChannelId ?? to ?? "").replace(/^(?:sabha:)?(?:channel:|group:)?/i, "");
+  const cannotThread = /^\d+$/.test(channelId) && channelCanThread(account.accountId, channelId) === false;
   return {
     ...(to ? { currentChannelId: to } : {}),
     ...(context.CurrentMessageId != null ? { currentMessageId: context.CurrentMessageId } : {}),

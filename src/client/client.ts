@@ -8,7 +8,7 @@ import type {
   SabhaMessage,
   SabhaPage,
   SabhaReactions,
-  SabhaRoom,
+  SabhaChannel,
   SabhaSearchResult,
   SabhaSent,
   SabhaUser,
@@ -117,24 +117,24 @@ export class SabhaClient {
   // --- Messages ---
 
   /**
-   * Post Markdown to a room. `parentMessageId` opens (or finds) the parent's
-   * thread; the returned `roomId` is then the thread room. `clientMessageId`
+   * Post Markdown to a channel. `parentMessageId` opens (or finds) the parent's
+   * thread; the returned `channelId` is then the thread channel. `clientMessageId`
    * is the live draft's id, so the message replaces that draft in place;
    * without one the post gets its own.
    */
   async sendMessage(
-    roomId: number,
+    channelId: number,
     markdown: string,
     options: { parentMessageId?: number; clientMessageId?: string } = {},
   ): Promise<SabhaSent> {
     const html = this.renderBody(markdown);
-    return this.createMessage(roomId, options.parentMessageId, options.clientMessageId ?? randomUUID(), (id) => ({
+    return this.createMessage(channelId, options.parentMessageId, options.clientMessageId ?? randomUUID(), (id) => ({
       json: id ? { body: html, client_message_id: id } : { body: html },
     }));
   }
 
-  async sendAttachment(roomId: number, file: Blob, filename: string, options: { parentMessageId?: number } = {}): Promise<SabhaSent> {
-    return this.createMessage(roomId, options.parentMessageId, randomUUID(), (id) => {
+  async sendAttachment(channelId: number, file: Blob, filename: string, options: { parentMessageId?: number } = {}): Promise<SabhaSent> {
+    return this.createMessage(channelId, options.parentMessageId, randomUUID(), (id) => {
       const form = new FormData();
       form.append("attachment", file, filename);
       if (id) form.append("client_message_id", id);
@@ -149,12 +149,12 @@ export class SabhaClient {
    * it, and unretried, since a repeat there could post twice.
    */
   private async createMessage(
-    roomId: number,
+    channelId: number,
     parentMessageId: number | undefined,
     clientMessageId: string,
     body: (clientMessageId?: string) => Pick<RequestOptions, "json" | "form">,
   ): Promise<SabhaSent> {
-    const path = `/rooms/${roomId}/messages`;
+    const path = `/channels/${channelId}/messages`;
     const query = threadQuery(parentMessageId);
     try {
       return parseSent(path, await this.json(path, { method: "POST", query, ...body(clientMessageId), idempotent: true }));
@@ -177,14 +177,14 @@ export class SabhaClient {
   }
 
   /** Newest first. `before` is an ISO time or the opaque `next_cursor`. */
-  async readMessages(roomId: number, page: { before?: string; after?: string; limit?: number } = {}): Promise<SabhaPage<SabhaMessage>> {
-    const path = `/rooms/${roomId}/messages`;
+  async readMessages(channelId: number, page: { before?: string; after?: string; limit?: number } = {}): Promise<SabhaPage<SabhaMessage>> {
+    const path = `/channels/${channelId}/messages`;
     return parsePage<SabhaMessage>(path, await this.json(path, { query: pageQuery(page) }));
   }
 
   async search(params: {
     query: string;
-    roomIds?: number[];
+    channelIds?: number[];
     authorIds?: number[];
     before?: string;
     after?: string;
@@ -192,7 +192,7 @@ export class SabhaClient {
   }): Promise<SabhaPage<SabhaSearchResult>> {
     const query = pageQuery(params);
     query.set("q", params.query);
-    for (const id of params.roomIds ?? []) query.append("room_ids[]", String(id));
+    for (const id of params.channelIds ?? []) query.append("channel_ids[]", String(id));
     for (const id of params.authorIds ?? []) query.append("author_ids[]", String(id));
     return parsePage<SabhaSearchResult>("/search", await this.json("/search", { query }));
   }
@@ -218,23 +218,23 @@ export class SabhaClient {
     await this.request(`/messages/${messageId}/reactions/${reactionId}`, { method: "DELETE", idempotent: true });
   }
 
-  // --- Rooms, people, DMs ---
+  // --- Channels, people, DMs ---
 
-  async listRooms(params: { query?: string; page?: number; perPage?: number } = {}): Promise<SabhaRoom[]> {
+  async listChannels(params: { query?: string; page?: number; perPage?: number } = {}): Promise<SabhaChannel[]> {
     const query = new URLSearchParams();
     if (params.query) query.set("query", params.query);
     if (params.page != null) query.set("page", String(params.page));
     if (params.perPage != null) query.set("per_page", String(params.perPage));
-    return this.array<SabhaRoom>("/rooms", query);
+    return this.array<SabhaChannel>("/channels", query);
   }
 
-  async getRoom(roomId: number): Promise<SabhaRoom> {
-    return this.json<SabhaRoom>(`/rooms/${roomId}`);
+  async getChannel(channelId: number): Promise<SabhaChannel> {
+    return this.json<SabhaChannel>(`/channels/${channelId}`);
   }
 
-  async listUsers(params: { roomId?: number; page?: number; perPage?: number } = {}): Promise<SabhaUser[]> {
+  async listUsers(params: { channelId?: number; page?: number; perPage?: number } = {}): Promise<SabhaUser[]> {
     const query = new URLSearchParams();
-    if (params.roomId != null) query.set("room_id", String(params.roomId));
+    if (params.channelId != null) query.set("channel_id", String(params.channelId));
     if (params.page != null) query.set("page", String(params.page));
     if (params.perPage != null) query.set("per_page", String(params.perPage));
     return this.array<SabhaUser>("/users", query);
@@ -244,11 +244,11 @@ export class SabhaClient {
     return this.json<SabhaUserDetail>(`/users/${userId}`);
   }
 
-  /** Up to 20 matches; a blank query with a room lists its recent posters. */
-  async searchUsers(params: { query?: string; roomId?: number }): Promise<SabhaUser[]> {
+  /** Up to 20 matches; a blank query with a channel lists its recent posters. */
+  async searchUsers(params: { query?: string; channelId?: number }): Promise<SabhaUser[]> {
     const query = new URLSearchParams();
     if (params.query) query.set("query", params.query);
-    if (params.roomId != null) query.set("room_id", String(params.roomId));
+    if (params.channelId != null) query.set("channel_id", String(params.channelId));
     return this.array<SabhaUser>("/autocompletable/users", query);
   }
 
@@ -284,14 +284,14 @@ export class SabhaClient {
     }
   }
 
-  async createDm(userIds: number[]): Promise<{ roomId: number }> {
-    const json = await this.json<{ room?: { id?: unknown } }>("/direct_messages", {
+  async createDm(userIds: number[]): Promise<{ channelId: number }> {
+    const json = await this.json<{ channel?: { id?: unknown } }>("/direct_messages", {
       method: "POST",
       json: { user_ids: userIds },
       idempotent: true,
     });
-    if (typeof json.room?.id !== "number") throw new SabhaResponseError("/direct_messages", "missing room id");
-    return { roomId: json.room.id };
+    if (typeof json.channel?.id !== "number") throw new SabhaResponseError("/direct_messages", "missing channel id");
+    return { channelId: json.channel.id };
   }
 
   // --- Transport ---
@@ -388,9 +388,9 @@ function pageQuery(page: { before?: string; after?: string; limit?: number }): U
 }
 
 function parseSent(path: string, json: unknown): SabhaSent {
-  const { id, room_id: roomId } = (json ?? {}) as { id?: unknown; room_id?: unknown };
-  if (typeof id !== "number" || typeof roomId !== "number") throw new SabhaResponseError(path, "expected { id, room_id }");
-  return { id, roomId };
+  const { id, channel_id: channelId } = (json ?? {}) as { id?: unknown; channel_id?: unknown };
+  if (typeof id !== "number" || typeof channelId !== "number") throw new SabhaResponseError(path, "expected { id, channel_id }");
+  return { id, channelId };
 }
 
 function parsePage<T>(path: string, json: unknown): SabhaPage<T> {

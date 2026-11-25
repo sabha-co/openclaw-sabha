@@ -131,7 +131,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     lines: [
       "An admin creates the app in Sabha under Settings → Apps and copies its key.",
       "You'll need the workspace URL and that app key (sabha_app_…).",
-      "Then add the app to the rooms it should answer in.",
+      "Then add the app to the channels it should answer in.",
     ],
   },
 
@@ -153,7 +153,7 @@ export const sabhaSetupWizard: ChannelSetupWizard = {
     title: "Sabha connected",
     lines: [
       "The gateway connects out to Sabha over a WebSocket; no public address is needed.",
-      "Mention the app in a room it belongs to, or send it a DM.",
+      "Mention the app in a channel it belongs to, or send it a DM.",
     ],
   },
 

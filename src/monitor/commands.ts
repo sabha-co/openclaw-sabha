@@ -1,5 +1,5 @@
 // The host's native commands as Sabha slash commands, declared when an account
-// starts. Sabha shows them when a member types `/` in a room the app is in and
+// starts. Sabha shows them when a member types `/` in a channel the app is in and
 // sends a `command` event instead of posting the text.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { resolveNativeCommandsEnabled } from "openclaw/plugin-sdk/native-command-config-runtime";

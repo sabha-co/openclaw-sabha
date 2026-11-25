@@ -48,7 +48,7 @@ export const sabhaPlugin = createChatChannelPlugin<ResolvedSabhaAccount, unknown
       resolveOutboundSessionRoute: resolveSabhaOutboundSessionRoute,
       targetResolver: {
         looksLikeId: looksLikeSabhaTargetId,
-        hint: "<room id | channel:<id> | user:<id> | @{user id} | #room name | @person name>",
+        hint: "<channel id | channel:<id> | user:<id> | @{user id} | #channel name | @person name>",
         resolveTarget: resolveSabhaMessagingTarget,
       },
     },

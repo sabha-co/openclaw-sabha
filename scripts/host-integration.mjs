@@ -43,9 +43,9 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && path === "/api/v1/interaction_responses") return reply(200, { ok: true });
   if (req.headers.authorization !== `Bearer ${APP_KEY}`) return reply(401, { error: "unauthorized" });
   if (req.method === "PUT" && path === "/api/v1/profile/commands") return reply(200, { commands: [] });
-  if (req.method === "GET" && /^\/api\/v1\/rooms\/\d+$/.test(path)) return reply(200, { id: 77, name: null, type: "Thread" });
+  if (req.method === "GET" && /^\/api\/v1\/channels\/\d+$/.test(path)) return reply(200, { id: 77, name: null, type: "Thread" });
   if (req.method === "GET" && path === "/api/v1/me") return reply(200, { id: APP_ID, name: "Claw" });
-  if (req.method === "POST" && /^\/api\/v1\/rooms\/\d+\/messages$/.test(path)) return reply(201, { id: nextMessageId++, room_id: 99 });
+  if (req.method === "POST" && /^\/api\/v1\/channels\/\d+\/messages$/.test(path)) return reply(201, { id: nextMessageId++, channel_id: 99 });
   if (req.method === "POST" && /^\/api\/v1\/messages\/\d+\/reactions$/.test(path)) return reply(201, { id: 31 });
   reply(404, { error: "not found" });
 });
@@ -140,9 +140,9 @@ const registry = await load({
 });
 assert.equal(registry.plugins.find((plugin) => plugin.id === "sabha")?.origin, "global");
 assert.deepEqual(registry.tools.flatMap((tool) => tool.names ?? [tool.name]).sort(), ["sabha_create_dm", "sabha_search_members"]);
-const channel = registry.channels.find((entry) => entry.plugin.id === "sabha").plugin;
-assert.equal(channel.gateway.apiVersion, 2);
-const account = channel.config.resolveAccount(cfg, "primary");
+const sabhaPlugin = registry.channels.find((entry) => entry.plugin.id === "sabha").plugin;
+assert.equal(sabhaPlugin.gateway.apiVersion, 2);
+const account = sabhaPlugin.config.resolveAccount(cfg, "primary");
 
 // --- Gateway v2 account lifecycle ---
 const abort = new AbortController();
@@ -156,7 +156,7 @@ const scheduler = {
     return { cancel: () => (clearTimeout(timer), timers.delete(timer)) };
   },
 };
-const monitor = channel.gateway.startAccount({
+const monitor = sabhaPlugin.gateway.startAccount({
   account,
   accountId: "primary",
   cfg,
@@ -182,7 +182,7 @@ const event = {
   event: "message_created",
   mentions_app: true,
   user: { id: 1, name: "Alice" },
-  room: { id: 5, name: "general", type: "Open" },
+  channel: { id: 5, name: "general", type: "Open" },
   message: {
     id: INBOUND_ID,
     body: { html: "<p>Hello @Claw</p>", plain: "Hello @Claw", markdown: "Hello @{508}" },
@@ -193,7 +193,7 @@ const event = {
     updated_at: now,
   },
 };
-const messagePosts = () => requests.filter((request) => request.method === "POST" && /\/rooms\/\d+\/messages/.test(request.url));
+const messagePosts = () => requests.filter((request) => request.method === "POST" && /\/channels\/\d+\/messages/.test(request.url));
 const draftText = () => frames.filter((frame) => frame.action === "draft" && frame.kind === "text");
 
 try {
@@ -218,7 +218,7 @@ try {
   } else {
     const posts = messagePosts();
     assert.equal(posts.length, 1, "one native send per turn");
-    assert.equal(posts[0].url, `/api/v1/rooms/5/messages?parent_message_id=${INBOUND_ID}`, "first reply threads under the inbound message");
+    assert.equal(posts[0].url, `/api/v1/channels/5/messages?parent_message_id=${INBOUND_ID}`, "first reply threads under the inbound message");
     assert.equal(posts[0].auth, `Bearer ${APP_KEY}`);
     const body = JSON.parse(posts[0].body);
     if (mode === "rewrite") {
@@ -230,7 +230,7 @@ try {
       assert.match(body.body, /Host final reply/);
       const [start] = frames.filter((frame) => frame.kind === "start");
       assert.ok(start, "a live draft started");
-      assert.equal(start.room_id, 5);
+      assert.equal(start.channel_id, 5);
       assert.equal(start.parent_message_id, INBOUND_ID);
       assert.ok(draftText().some((frame) => frame.text.includes("Preview before final")), "the partial streamed into the draft");
       assert.equal(body.client_message_id, start.draft_id, "the final replaces the draft in place");
@@ -270,10 +270,10 @@ try {
     const names = JSON.parse(declared.body).commands.map((command) => command.name);
     assert.ok(names.includes("new") && !names.includes("help") && names.length <= 25, "the host's native commands are declared, less Sabha's own");
 
-    const roomPosts = messagePosts().length;
+    const channelPosts = messagePosts().length;
     pushEvent({
-      event: "command", id: "cmd-1", command: "/new", text: "", user_id: 1, user_name: "Alice", room_id: 77, room_name: null,
-      thread: { id: 77, parent_message_id: INBOUND_ID, parent_room_id: 5 }, response_url: `http://127.0.0.1:${port}/api/v1/interaction_responses?token=t`,
+      event: "command", id: "cmd-1", command: "/new", text: "", user_id: 1, user_name: "Alice", channel_id: 77, channel_name: null,
+      thread: { id: 77, parent_message_id: INBOUND_ID, parent_channel_id: 5 }, response_url: `http://127.0.0.1:${port}/api/v1/interaction_responses?token=t`,
     }, 3);
     await until(() => dispatched === 2, "command dispatch");
     await until(() => requests.some((request) => request.url.startsWith("/api/v1/interaction_responses")), "command answer");
@@ -282,7 +282,7 @@ try {
     const answer = requests.find((request) => request.url.startsWith("/api/v1/interaction_responses"));
     assert.equal(answer.auth, undefined, "a command answer carries no bearer key");
     assert.match(JSON.parse(answer.body).body, /Host final reply/);
-    assert.equal(messagePosts().length, roomPosts, "a command's answer is never posted to the room");
+    assert.equal(messagePosts().length, channelPosts, "a command's answer is never posted to the channel");
 
     socket.send(JSON.stringify({ type: "disconnect", reconnect: false, reason: "unauthorized" }));
     await until(() => status.lifecycle === "blocked", "fatal account parking");

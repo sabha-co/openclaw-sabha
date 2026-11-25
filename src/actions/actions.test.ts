@@ -14,17 +14,17 @@ function setup(action: string, params: Record<string, unknown>, toolContext: Rec
   let sends = 0;
   const client = {
     renderBody: (text: string) => text,
-    sendMessage: vi.fn(async (roomId: number) => {
+    sendMessage: vi.fn(async (channelId: number) => {
       if (sends === failSendAt) throw new Error("boom");
       calls.push("send");
-      return { id: 900 + sends++, roomId };
+      return { id: 900 + sends++, channelId };
     }),
     editMessage: vi.fn(async () => void calls.push("edit")),
     deleteMessage: vi.fn(async () => void calls.push("delete")),
     addReaction: vi.fn(async () => (calls.push("react"), 31)),
     readMessages: vi.fn(async () => ({ results: [], hasMore: true, nextCursor: "c2" })),
     search: vi.fn(async () => ({ results: [], hasMore: false, nextCursor: null })),
-    createDm: vi.fn(async () => ({ roomId: 77 })),
+    createDm: vi.fn(async () => ({ channelId: 77 })),
   };
   const ctx = {
     action,
@@ -46,14 +46,14 @@ describe("message actions", () => {
 
   it("sends to the current conversation, revalidating before the write", async () => {
     const { run, calls, client } = setup("send", { message: "hi" }, { currentChannelId: "channel:21" });
-    expect(await run()).toMatchObject({ ok: true, messageId: "900", roomId: "21" });
+    expect(await run()).toMatchObject({ ok: true, messageId: "900", channelId: "21" });
     expect(calls).toEqual(["dispatch", "send"]);
     expect(client.sendMessage).toHaveBeenCalledWith(21, "hi", expect.anything());
   });
 
   it("opens a DM for a user target and threads a replyToId", async () => {
     const dm = setup("send", { target: "user:5", message: "hi" });
-    expect(await dm.run()).toMatchObject({ roomId: "77" });
+    expect(await dm.run()).toMatchObject({ channelId: "77" });
     const reply = setup("send", { target: "21", message: "hi", replyToId: "4214" });
     expect(await reply.run()).toMatchObject({ parentMessageId: "4214" });
   });
@@ -84,10 +84,10 @@ describe("message actions", () => {
     expect(client.readMessages).toHaveBeenCalledWith(21, { before: "c1", limit: 200 });
   });
 
-  it("scopes search by rooms and authors", async () => {
+  it("scopes search by channels and authors", async () => {
     const { run, client } = setup("search", { query: "deploy", channelIds: "21, 22", authorId: "5" });
     await run();
-    expect(client.search).toHaveBeenCalledWith({ query: "deploy", roomIds: [21, 22], authorIds: [5] });
+    expect(client.search).toHaveBeenCalledWith({ query: "deploy", channelIds: [21, 22], authorIds: [5] });
   });
 
   it.each(["send", "thread-reply"])("%s reports a partial delivery when a later chunk fails", async (action) => {

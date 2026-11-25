@@ -58,7 +58,7 @@ export function createSabhaDraft(params: {
   const draftId = (params.newId ?? randomUUID)();
   const where = {
     draft_id: draftId,
-    room_id: params.target.roomId,
+    channel_id: params.target.channelId,
     ...(params.target.parentMessageId !== undefined ? { parent_message_id: params.target.parentMessageId } : {}),
   };
 

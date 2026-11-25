@@ -73,7 +73,7 @@
           "livePreview": {
             "type": "boolean"
           },
-          "rooms": {
+          "channels": {
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -129,7 +129,7 @@
                 "livePreview": {
                   "type": "boolean"
                 },
-                "rooms": {
+                "channels": {
                   "type": "object",
                   "propertyNames": {
                     "type": "string"

@@ -7,8 +7,8 @@ endpoint or polling.
 
 ## Features
 
-- Answers when @mentioned in a room, in DMs, and in any thread it is part of
-  (no mention needed there). Top-level room replies go in a thread by default.
+- Answers when @mentioned in a channel, in DMs, and in any thread it is part of
+  (no mention needed there). Top-level channel replies go in a thread by default.
 - Agent Markdown is rendered to the rich text Sabha stores (Lexxy): headings,
   lists, quotes, code blocks, tables, links. `@{USER_ID}` becomes a real mention.
 - Attachments in and out (images, documents), downloaded through OpenClaw's
@@ -18,7 +18,7 @@ endpoint or polling.
   (durable ingress queue).
 - `message` tool actions: `send`, `thread-reply`, `edit`, `unsend`, `react`,
   `reactions`, `read`, `search`, `member-info`.
-- Directory and name lookup for rooms and people (`#general`, `@Ann`).
+- Directory and name lookup for channels and people (`#general`, `@Ann`).
 - Agent tools: `sabha_search_members`, `sabha_create_dm`.
 - `openclaw sabha setup` and `openclaw sabha doctor`.
 
@@ -47,13 +47,13 @@ Allow the plugin in `~/.openclaw/openclaw.json`:
 ## Create the app in Sabha
 
 An admin creates the app in **Settings → Apps** and copies its key
-(`sabha_app_…`). The key is shown once. Add the app to the rooms it should
+(`sabha_app_…`). The key is shown once. Add the app to the channels it should
 work in. Sabha has no self-registration for apps.
 
 Under **What its key can do** on the app's page, a new key can post and read.
 Turn on **Start direct messages** if the agent should open DMs with people
 (the `sabha_create_dm` tool); answering in a DM someone opened needs nothing
-more. Turn on **Create and join rooms** only if the agent manages rooms. A call
+more. Turn on **Create and join channels** only if the agent manages channels. A call
 the key isn't allowed fails with the permission it needs, and the agent sees
 that error.
 
@@ -104,14 +104,14 @@ non-zero on any problem.
 | `replyToMode` | `first` | `off` replies inline, `first` threads the first reply, `all` threads every reply. |
 | `livePreview` | `true` | Stream replies into a live draft. A Sabha server without live drafts posts the reply as usual. |
 | `allowPrivateNetwork` | `false` | Let attachment downloads reach private addresses. Only for split-horizon DNS installs. |
-| `rooms.<id>.systemPrompt` | — | Extra system prompt for one room's conversations. |
+| `channels.<id>.systemPrompt` | — | Extra system prompt for one channel's conversations. |
 | `defaultAccount` | `default` | Account used when none is named. |
 
 Root-level settings apply to every account; an account's own value wins.
 
 ### Several workspaces
 
-Add one account per workspace or app. Room ids are per workspace, so sessions
+Add one account per workspace or app. Channel ids are per workspace, so sessions
 are kept apart by account.
 
 ```json5
@@ -134,7 +134,7 @@ replies, set `livePreview: false`.**
 ### Slash commands
 
 When an account starts, the host's native commands are declared in Sabha, so
-they show when a member types `/` in a room, DM or thread the app is in. Sabha
+they show when a member types `/` in a channel, DM or thread the app is in. Sabha
 takes 25 per app, so `/new`, `/reset`, `/stop`, `/model`, `/status`, `/compact`,
 `/think` and `/usage` go first, then the rest in the host's order. A name Sabha
 keeps (`/help`) or another app already holds is left out. A command runs in
@@ -154,7 +154,7 @@ only for people the plugin has already seen in an event.
 Sabha identity and mention syntax reach the agent on every inbound turn
 (`inboundFormattingHints`), and on proactive runs when the tool profile
 includes the `message` tool (`messageToolHints`). For more, add
-`tools.alsoAllow: ["message"]` or a per-room `systemPrompt`.
+`tools.alsoAllow: ["message"]` or a per-channel `systemPrompt`.
 
 ## Update
 

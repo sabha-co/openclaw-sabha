@@ -9,7 +9,7 @@ function commandOwnersFor(account: Pick<ResolvedSabhaAccount, "dmPolicy" | "allo
   const runtime = { channel: { inbound: { ingress: { resolveStable } } } } as unknown as PluginRuntime;
   return resolveSabhaAccess({
     runtime, cfg: {} as OpenClawConfig, account: { accountId: "default", ...account } as ResolvedSabhaAccount,
-    senderId: 5, roomId: "21", chatType: "direct", mentioned: false, requireMention: false, eventKind: "message", hasControlCommand: true,
+    senderId: 5, channelId: "21", chatType: "direct", mentioned: false, requireMention: false, eventKind: "message", hasControlCommand: true,
   }).then(() => (resolveStable.mock.calls[0] as unknown as [{ command: { commandOwnerAllowFrom: unknown } }])[0].command.commandOwnerAllowFrom);
 }
 

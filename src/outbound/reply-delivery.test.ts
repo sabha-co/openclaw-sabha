@@ -7,20 +7,20 @@ import { createSabhaDraft } from "./draft-transport.js";
 import { createSabhaReplyDelivery } from "./reply-delivery.js";
 
 const account = { accountId: "default", allowPrivateNetwork: false } as ResolvedSabhaAccount;
-const target = { roomId: 3, parentMessageId: 4214 };
+const target = { channelId: 3, parentMessageId: 4214 };
 
 function setup(options: { withDraft?: boolean; failSendAt?: number } = {}) {
   const frames: SabhaDraftFrame[] = [];
-  const posts: Array<{ roomId: number; text: string; options: unknown }> = [];
+  const posts: Array<{ channelId: number; text: string; options: unknown }> = [];
   let nextId = 900;
   let sends = 0;
   const client = {
-    sendMessage: vi.fn(async (roomId: number, text: string, sendOptions: unknown) => {
+    sendMessage: vi.fn(async (channelId: number, text: string, sendOptions: unknown) => {
       if (options.failSendAt === sends++) throw new Error("boom");
-      posts.push({ roomId, text, options: sendOptions });
-      return { id: nextId++, roomId: 221 };
+      posts.push({ channelId, text, options: sendOptions });
+      return { id: nextId++, channelId: 221 };
     }),
-    sendAttachment: vi.fn(async () => ({ id: nextId++, roomId: 221 })),
+    sendAttachment: vi.fn(async () => ({ id: nextId++, channelId: 221 })),
   } as unknown as SabhaClient;
   const runtime = {
     channel: { media: { readRemoteMediaBuffer: vi.fn(async () => ({ buffer: Buffer.from("png"), contentType: "image/png", fileName: "a.png" })) } },
@@ -37,7 +37,7 @@ describe("createSabhaReplyDelivery", () => {
     const { delivery, frames, posts } = setup();
     delivery.onPartialReply({ text: "Work" });
     const result = await delivery.deliver({ text: "Working on it." }, { kind: "final" });
-    expect(posts).toEqual([{ roomId: 3, text: "Working on it.", options: { parentMessageId: 4214, clientMessageId: "draft-1" } }]);
+    expect(posts).toEqual([{ channelId: 3, text: "Working on it.", options: { parentMessageId: 4214, clientMessageId: "draft-1" } }]);
     expect(result).toMatchObject({ visibleReplySent: true, messageIds: ["900"] });
     await delivery.finish();
     expect(frames.map((frame) => frame.kind)).not.toContain("end");
@@ -66,8 +66,8 @@ describe("createSabhaReplyDelivery", () => {
     const { delivery, frames } = setup();
     expect(delivery.onToolStart({ name: "web_search", args: { query: "rails 8.2" } })).toBe(true);
     expect(frames).toEqual([
-      { kind: "start", draft_id: "draft-1", room_id: 3, parent_message_id: 4214 },
-      { kind: "activity", draft_id: "draft-1", room_id: 3, parent_message_id: 4214, title: 'Web Search: for "rails 8.2"', seq: 1 },
+      { kind: "start", draft_id: "draft-1", channel_id: 3, parent_message_id: 4214 },
+      { kind: "activity", draft_id: "draft-1", channel_id: 3, parent_message_id: 4214, title: 'Web Search: for "rails 8.2"', seq: 1 },
     ]);
   });
 
@@ -96,7 +96,7 @@ describe("createSabhaReplyDelivery", () => {
     delivery.onPartialReply({ text: "Work" });
     await delivery.deliver({ text: "Working on it." }, { kind: "final" });
     await delivery.finish();
-    expect(posts).toEqual([{ roomId: 3, text: "Working on it.", options: { parentMessageId: 4214, clientMessageId: "draft-1" } }]);
+    expect(posts).toEqual([{ channelId: 3, text: "Working on it.", options: { parentMessageId: 4214, clientMessageId: "draft-1" } }]);
     expect(frames.map((frame) => frame.kind)).not.toContain("end");
   });
 

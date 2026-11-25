@@ -16,8 +16,8 @@ the server code, the code wins, and so does this file.
   `/skill` text says otherwise; it is wrong for SaaS.
 - A bad key gets `401 {"error","code":"unauthorized"}`. A key without a
   permission gets `403 {"error","code":"missing_permission","needed"}`
-  (`post`, `read`, `dm`, `manage_rooms`; new keys have `post` and `read`).
-  Other `403`s are `{"error","code":"forbidden"}`. A room or message the app
+  (`post`, `read`, `dm`, `manage_channels`; new keys have `post` and `read`).
+  Other `403`s are `{"error","code":"forbidden"}`. A channel or message the app
   can't reach is `404`.
 - Errors are `{error, code}`: `validation_failed` (422), `not_found`,
   `rate_limited` (429, `Retry-After`), `service_unavailable` (503),
@@ -38,20 +38,20 @@ the server code, the code wins, and so does this file.
   place instead of a draft id). A refused frame comes back as
   `{event: "draft_refused", draft_id, error}`, plus `code` and `needed` when the
   key lacks `post`.
-- Any post by the app in a room or thread ends its open draft there, whether
+- Any post by the app in a channel or thread ends its open draft there, whether
   or not the post carries the draft's id. Don't send `end` after posting.
 
 ### Who hears what
 
 - An app never hears its own messages. An app only hears another app's
   messages when they mention it explicitly.
-- Open or Closed rooms: `message_created` only when the app is mentioned (or
+- Open or Closed channels: `message_created` only when the app is mentioned (or
   `@everyone`). Updates, deletes and reactions reach every member app.
-- DMs and sub-rooms (threads, forum posts): every member app hears everything.
-- Threads: the app must be a member of the thread room. It becomes one by
+- DMs and sub-channels (threads, forum posts): every member app hears everything.
+- Threads: the app must be a member of the thread channel. It becomes one by
   posting there, including a post with `parent_message_id`. Before that, a
   message in the thread reaches it only when it mentions the app by name, and
-  only if the app is in the room above.
+  only if the app is in the channel above.
 
 ### Events
 
@@ -59,7 +59,7 @@ the server code, the code wins, and so does this file.
 {
   "event": "message_created",            // or message_updated, message_deleted
   "user": { "id": 1, "name": "Alice", "role": "member|…|bot", "url": "…" },
-  "room": { "id": 5, "name": "General", "type": "Open|Closed|Direct|Thread|Post", "members": 42, "has_app": true, "messages_url": "…" },
+  "channel": { "id": 5, "name": "General", "type": "Open|Closed|Direct|Thread|Post", "members": 42, "has_app": true, "messages_url": "…" },
   "message": {
     "id": 10,
     "body": { "html": "…", "plain": "…", "markdown": "…" },
@@ -67,16 +67,16 @@ the server code, the code wins, and so does this file.
     "attachment": null,                   // or { url (signed, 1 h), filename, content_type, byte_size }
     "mentionees": [{ "id": 508, "name": "Claw" }],
     "url": "…", "created_at": "…", "updated_at": "…",
-    "thread": null                        // or { id, parent_message_id, parent_room_id } when the message is IN a thread
+    "thread": null                        // or { id, parent_message_id, parent_channel_id } when the message is IN a thread
   },
   "mentions_app": true                    // message_created only
 }
 ```
 
-- `reaction_created` / `reaction_deleted`: `{event, user, room, message, reaction: {id, body}}`.
+- `reaction_created` / `reaction_deleted`: `{event, user, channel, message, reaction: {id, body}}`.
 - `user_created` / `user_deleted`: `{event, user}`. Ignored by the plugin.
-- `command`: `{id, event, command, text, user_id, user_name, room_id, room_name, thread?, response_url}`.
-  `room_id` is the thread room when run in a thread. Runs as the host's native
+- `command`: `{id, event, command, text, user_id, user_name, channel_id, channel_name, thread?, response_url}`.
+  `channel_id` is the thread channel when run in a thread. Runs as the host's native
   command; the answer goes to `response_url` (`POST`, JSON `{body: html}`, no
   bearer key, five uses, 30 minutes), privately to the member who ran it.
 - `block_actions`: not handled yet.
@@ -86,22 +86,22 @@ the server code, the code wins, and so does this file.
 | Use | Request | Response / notes |
 |---|---|---|
 | Identity | `GET /me` | `{id, name, workspace?}` |
-| Send | `POST /rooms/:id/messages[?parent_message_id=]` JSON `{body: html}` | `{id, room_id}`. With a parent, `room_id` is the thread room (created or found). 60 per minute per app. |
-| Send file | same, multipart `attachment` | `{id, room_id}` |
+| Send | `POST /channels/:id/messages[?parent_message_id=]` JSON `{body: html}` | `{id, channel_id}`. With a parent, `channel_id` is the thread channel (created or found). 60 per minute per app. |
+| Send file | same, multipart `attachment` | `{id, channel_id}` |
 | Edit | `PATCH /messages/:id` JSON `{body}` | Not rate limited |
 | Delete | `DELETE /messages/:id` | |
-| Get | `GET /messages/:id` | Message; `thread` describes the room it is in, not replies to it |
-| Read | `GET /rooms/:id/messages?before=&after=&limit=` | `{results (newest first), has_more, next_cursor}`. `limit` 1–200, default 50. `before` takes ISO or a cursor. |
-| Search | `GET /search?q=&room_ids[]=&author_ids[]=&before=&after=&limit=` | Same page shape. 300 per hour per app. Use `[]` keys. |
+| Get | `GET /messages/:id` | Message; `thread` describes the channel it is in, not replies to it |
+| Read | `GET /channels/:id/messages?before=&after=&limit=` | `{results (newest first), has_more, next_cursor}`. `limit` 1–200, default 50. `before` takes ISO or a cursor. |
+| Search | `GET /search?q=&channel_ids[]=&author_ids[]=&before=&after=&limit=` | Same page shape. 300 per hour per app. Use `[]` keys. |
 | Reactions | `GET /messages/:id/reactions` | `{reactions: [{content, count, users, truncated}], total, truncated}` |
 | React | `POST /messages/:id/reactions`, `text/plain` emoji | `{id}` |
 | Unreact | `DELETE /messages/:id/reactions/:reaction_id` | |
-| Rooms | `GET /rooms?query=&page=&per_page=` (≤100) | Bare array |
-| Room | `GET /rooms/:id` | |
-| People | `GET /users?room_id=&page=&per_page=` | Bare array `[{id, name, role, bot, url}]`; no emails |
+| Channels | `GET /channels?query=&page=&per_page=` (≤100) | Bare array |
+| Channel | `GET /channels/:id` | |
+| People | `GET /users?channel_id=&page=&per_page=` | Bare array `[{id, name, role, bot, url}]`; no emails |
 | Person | `GET /users/:id` | |
-| Find people | `GET /autocompletable/users?query=&room_id=` | Up to 20 |
-| DM | `POST /direct_messages` JSON `{user_ids: [...]}` | `{room: {id}}`; 200 existing, 201 new |
+| Find people | `GET /autocompletable/users?query=&channel_id=` | Up to 20 |
+| DM | `POST /direct_messages` JSON `{user_ids: [...]}` | `{channel: {id}}`; 200 existing, 201 new |
 | Commands | `PUT /profile/commands` JSON `{commands: [{name, description, usage_hint?}]}` | Replaces the list. All or nothing: `422` with `refusals: [{name, error}]` for a name Sabha keeps or another app holds. At most 25; description required, ≤ 100 |
 
 ## Message bodies

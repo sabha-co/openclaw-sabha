@@ -1,7 +1,7 @@
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
 import { z } from "zod";
 
-const RoomSchema = z.object({ systemPrompt: z.string().optional() }).strict();
+const ChannelSchema = z.object({ systemPrompt: z.string().optional() }).strict();
 
 /** Settings an account may inherit from the channel root. Never credentials. */
 const sharedShape = {
@@ -12,7 +12,7 @@ const sharedShape = {
   allowPrivateNetwork: z.boolean().optional(),
   replyToMode: z.enum(["off", "first", "all"]).optional(),
   livePreview: z.boolean().optional(),
-  rooms: z.record(z.string(), RoomSchema).optional(),
+  channels: z.record(z.string(), ChannelSchema).optional(),
 };
 
 export const SabhaAccountSchema = z
@@ -24,7 +24,7 @@ export const SabhaAccountSchema = z
   })
   .strict();
 
-export const SabhaChannelSchema = z
+export const SabhaConfigSchema = z
   .object({
     ...sharedShape,
     accounts: z.record(z.string(), SabhaAccountSchema).optional(),
@@ -33,10 +33,10 @@ export const SabhaChannelSchema = z
   .strict();
 
 export type SabhaAccountConfig = z.infer<typeof SabhaAccountSchema>;
-export type SabhaChannelConfig = z.infer<typeof SabhaChannelSchema>;
-export type SabhaRoomConfig = z.infer<typeof RoomSchema>;
+export type SabhaConfig = z.infer<typeof SabhaConfigSchema>;
+export type SabhaChannelConfig = z.infer<typeof ChannelSchema>;
 
-export const sabhaConfigSchema: ReturnType<typeof buildChannelConfigSchema> = buildChannelConfigSchema(SabhaChannelSchema, {
+export const sabhaChannelConfigSchema: ReturnType<typeof buildChannelConfigSchema> = buildChannelConfigSchema(SabhaConfigSchema, {
   uiHints: {
     enabled: { label: "Enabled" },
     url: {

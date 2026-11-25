@@ -11,12 +11,12 @@ vi.mock("./access.js", () => ({
 const { handleSabhaEvent } = await import("./turn.js");
 
 const account = {
-  accountId: "default", livePreview: true, replyToMode: "first", rooms: {}, allowPrivateNetwork: false,
+  accountId: "default", livePreview: true, replyToMode: "first", channels: {}, allowPrivateNetwork: false,
 } as unknown as ResolvedSabhaAccount;
 
 const event = {
   event: "message_created",
-  room: { id: 21, type: "Open", name: "general" },
+  channel: { id: 21, type: "Open", name: "general" },
   user: { id: 5, name: "Ann" },
   message: { id: 4214, created_at: "2026-11-07T00:00:00Z", body: { plain: "@bot hi", markdown: "@bot hi" }, mentions: [{ id: 1 }] },
 } as unknown as SabhaMessageEvent;
@@ -74,8 +74,8 @@ describe("message turns", () => {
   describe("in a thread", () => {
     const threaded = {
       ...event,
-      room: { id: 221, type: "Thread", name: null },
-      message: { ...event.message, thread: { id: 221, parent_message_id: 4100, parent_room_id: 21 } },
+      channel: { id: 221, type: "Thread", name: null },
+      message: { ...event.message, thread: { id: 221, parent_message_id: 4100, parent_channel_id: 21 } },
     } as unknown as SabhaMessageEvent;
 
     it("tells the agent what message the thread hangs off", async () => {
@@ -97,7 +97,7 @@ describe("message turns", () => {
 describe("command turns", () => {
   const command = {
     event: "command", id: "c-1", command: "/model", text: "fast", user_id: 5, user_name: "Ann",
-    room_id: 221, room_name: null, thread: { id: 221, parent_message_id: 4100, parent_room_id: 21 }, response_url: "https://r",
+    channel_id: 221, channel_name: null, thread: { id: 221, parent_message_id: 4100, parent_channel_id: 21 }, response_url: "https://r",
   } as const;
 
   it("runs as the host's native command in the thread's session and answers only the member who ran it", async () => {
@@ -118,7 +118,7 @@ describe("command turns", () => {
         },
       },
     };
-    const client = { getRoom: vi.fn(async () => ({ id: 221, name: null, type: "Thread" })), respond: vi.fn(async () => {}), sendMessage: vi.fn() };
+    const client = { getChannel: vi.fn(async () => ({ id: 221, name: null, type: "Thread" })), respond: vi.fn(async () => {}), sendMessage: vi.fn() };
     await handleSabhaEvent(command as never, {} as never, {
       runtime: runtime as never, cfg: {} as OpenClawConfig, account, selfId: 1, client: client as never, performDraft: () => true, log: {},
     });

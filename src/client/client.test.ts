@@ -33,12 +33,12 @@ function client(responses: Array<Response | (() => Response)>, extra: Partial<Co
 
 describe("SabhaClient", () => {
   it("posts rendered HTML as JSON with bearer auth, thread and draft ids", async () => {
-    const { client: c, calls } = client([json(201, { id: 9, room_id: 221 })], {
+    const { client: c, calls } = client([json(201, { id: 9, channel_id: 221 })], {
       rewriteMentions: (text) => text.replace("@Ann", "@{5}"),
     });
-    await expect(c.sendMessage(3, "hi **@Ann**", { parentMessageId: 4214, clientMessageId: "d-1" })).resolves.toEqual({ id: 9, roomId: 221 });
+    await expect(c.sendMessage(3, "hi **@Ann**", { parentMessageId: 4214, clientMessageId: "d-1" })).resolves.toEqual({ id: 9, channelId: 221 });
     const [call] = calls;
-    expect(call!.url).toBe("https://sabha.test/1000006/api/v1/rooms/3/messages?parent_message_id=4214");
+    expect(call!.url).toBe("https://sabha.test/1000006/api/v1/channels/3/messages?parent_message_id=4214");
     expect(call!.headers.get("authorization")).toBe("Bearer sabha_app_k");
     expect(call!.headers.get("content-type")).toBe("application/json");
     expect(JSON.parse(call!.body as string)).toEqual({ body: "<p>hi <strong>@{5}</strong></p>", client_message_id: "d-1" });
@@ -53,8 +53,8 @@ describe("SabhaClient", () => {
     const timeout = () => {
       throw new DOMException("The operation timed out.", "TimeoutError");
     };
-    const { client: c, calls } = client([json(503, {}), timeout, json(200, { id: 1, room_id: 3 })]);
-    await expect(c.sendMessage(3, "x")).resolves.toEqual({ id: 1, roomId: 3 });
+    const { client: c, calls } = client([json(503, {}), timeout, json(200, { id: 1, channel_id: 3 })]);
+    await expect(c.sendMessage(3, "x")).resolves.toEqual({ id: 1, channelId: 3 });
     const ids = calls.map((call) => JSON.parse(call.body as string).client_message_id);
     expect(ids).toHaveLength(3);
     expect(new Set(ids).size).toBe(1);
@@ -64,9 +64,9 @@ describe("SabhaClient", () => {
   it("posts without client_message_id on a server that refuses it", async () => {
     const { client: c, calls } = client([
       json(422, { error: "client_message_id is not permitted", code: "validation_failed" }),
-      json(201, { id: 1, room_id: 3 }),
+      json(201, { id: 1, channel_id: 3 }),
     ]);
-    await expect(c.sendMessage(3, "x", { clientMessageId: "d-1" })).resolves.toEqual({ id: 1, roomId: 3 });
+    await expect(c.sendMessage(3, "x", { clientMessageId: "d-1" })).resolves.toEqual({ id: 1, channelId: 3 });
     expect(calls.map((call) => JSON.parse(call.body as string))).toEqual([
       { body: "<p>x</p>", client_message_id: "d-1" },
       { body: "<p>x</p>" },
@@ -74,8 +74,8 @@ describe("SabhaClient", () => {
   });
 
   it("retries a create Sabha refused with 429, honouring Retry-After", async () => {
-    const { client: c, calls } = client([json(429, { code: "rate_limited" }, { "retry-after": "0" }), json(201, { id: 1, room_id: 3 })]);
-    await expect(c.sendMessage(3, "x")).resolves.toEqual({ id: 1, roomId: 3 });
+    const { client: c, calls } = client([json(429, { code: "rate_limited" }, { "retry-after": "0" }), json(201, { id: 1, channel_id: 3 })]);
+    await expect(c.sendMessage(3, "x")).resolves.toEqual({ id: 1, channelId: 3 });
     expect(calls).toHaveLength(2);
   });
 
@@ -88,9 +88,9 @@ describe("SabhaClient", () => {
 
   it("sends search filters as Rails arrays", async () => {
     const { client: c, calls } = client([json(200, { results: [], has_more: false })]);
-    await c.search({ query: "deploy", roomIds: [1, 2], authorIds: [7] });
+    await c.search({ query: "deploy", channelIds: [1, 2], authorIds: [7] });
     const url = new URL(calls[0]!.url);
-    expect(url.searchParams.getAll("room_ids[]")).toEqual(["1", "2"]);
+    expect(url.searchParams.getAll("channel_ids[]")).toEqual(["1", "2"]);
     expect(url.searchParams.getAll("author_ids[]")).toEqual(["7"]);
     expect(url.searchParams.get("q")).toBe("deploy");
   });
@@ -124,9 +124,9 @@ describe("SabhaClient", () => {
     expect(JSON.parse(String(calls[2]?.body))).toEqual({ body: expect.stringContaining("<strong>done</strong>") });
   });
 
-  it("reads the DM room id", async () => {
-    const { client: c, calls } = client([json(200, { room: { id: 7 } })]);
-    await expect(c.createDm([42])).resolves.toEqual({ roomId: 7 });
+  it("reads the DM channel id", async () => {
+    const { client: c, calls } = client([json(200, { channel: { id: 7 } })]);
+    await expect(c.createDm([42])).resolves.toEqual({ channelId: 7 });
     expect(JSON.parse(calls[0]!.body as string)).toEqual({ user_ids: [42] });
   });
 });
@@ -145,6 +145,6 @@ describe("SabhaApiError", () => {
     const error = new SabhaApiError(403, body, "POST", "/direct_messages");
     expect(error.code).toBe("missing_permission");
     expect(error.message).toContain(`turn on "dm" under "What its key can do"`);
-    expect(new SabhaApiError(403, JSON.stringify({ error: "x", code: "forbidden" }), "POST", "/rooms").message).not.toContain("turn on");
+    expect(new SabhaApiError(403, JSON.stringify({ error: "x", code: "forbidden" }), "POST", "/channels").message).not.toContain("turn on");
   });
 });

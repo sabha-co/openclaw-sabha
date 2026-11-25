@@ -24,8 +24,8 @@ export async function sendText(ctx: SendContext & { text: string }) {
   const account = resolveSabhaAccount(ctx.cfg, ctx.accountId);
   const client = clientFor(account, ctx.signal);
   const target = await resolveSendTarget({ client, to: ctx.to, threadId: ctx.threadId, replyToId: ctx.replyToId });
-  const sent = await client.sendMessage(target.roomId, ctx.text, target.parentMessageId !== undefined ? { parentMessageId: target.parentMessageId } : {});
-  return { messageId: String(sent.id), conversationId: String(sent.roomId) };
+  const sent = await client.sendMessage(target.channelId, ctx.text, target.parentMessageId !== undefined ? { parentMessageId: target.parentMessageId } : {});
+  return { messageId: String(sent.id), conversationId: String(sent.channelId) };
 }
 
 export async function sendMedia(ctx: SendContext & { mediaUrl: string; mediaAccess?: OutboundMediaAccess }) {
@@ -36,5 +36,5 @@ export async function sendMedia(ctx: SendContext & { mediaUrl: string; mediaAcce
     client, runtime: getSabhaRuntime(), account, target, url: ctx.mediaUrl,
     ...(ctx.mediaAccess ? { mediaAccess: ctx.mediaAccess } : {}),
   });
-  return { messageId: String(sent.id), conversationId: String(sent.roomId) };
+  return { messageId: String(sent.id), conversationId: String(sent.channelId) };
 }

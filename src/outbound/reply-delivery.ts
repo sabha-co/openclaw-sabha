@@ -29,7 +29,7 @@ export function sabhaDeliveryResult(sent: readonly SabhaSent[], content: string,
     visibleReplySent: true,
     messageIds: sent.map((message) => String(message.id)),
     receipt: createMessageReceiptFromOutboundResults({
-      results: sent.map((message) => ({ channel: "sabha", messageId: String(message.id), conversationId: String(message.roomId) })),
+      results: sent.map((message) => ({ channel: "sabha", messageId: String(message.id), conversationId: String(message.channelId) })),
       kind,
     }),
   };

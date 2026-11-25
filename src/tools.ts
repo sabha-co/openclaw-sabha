@@ -49,33 +49,33 @@ function defineTool<P>(spec: ToolSpec<P>, getConfig: () => OpenClawConfig) {
 
 export function createSabhaTools(getConfig: () => OpenClawConfig) {
   return [
-    defineTool<{ room_id?: number; query?: string }>({
+    defineTool<{ channel_id?: number; query?: string }>({
       name: "sabha_search_members",
-      label: "Search Sabha room members",
+      label: "Search Sabha channel members",
       description:
-        "Find people in a Sabha room by partial name, to mention them as @{USER_ID}. Returns up to 20 candidates; refine the query if you get exactly 20. Defaults to the current room.",
+        "Find people in a Sabha channel by partial name, to mention them as @{USER_ID}. Returns up to 20 candidates; refine the query if you get exactly 20. Defaults to the current channel.",
       parameters: Type.Object({
-        room_id: Type.Optional(Type.Number({ description: "Room to search. Defaults to the room of the current conversation." })),
-        query: Type.Optional(Type.String({ description: "Partial name. Omit to list the room's recent posters." })),
+        channel_id: Type.Optional(Type.Number({ description: "Channel to search. Defaults to the channel of the current conversation." })),
+        query: Type.Optional(Type.String({ description: "Partial name. Omit to list the channel's recent posters." })),
       }),
       run: async ({ client, params, ctx }) => {
         const current = onSabha(ctx) && ctx.nativeChannelId && /^\d+$/.test(ctx.nativeChannelId) ? Number(ctx.nativeChannelId) : undefined;
-        const roomId = params.room_id ?? current;
-        if (roomId === undefined) throw new Error("room_id is required outside a Sabha conversation");
-        const users = await client.searchUsers({ roomId, ...(params.query ? { query: params.query } : {}) });
+        const channelId = params.channel_id ?? current;
+        if (channelId === undefined) throw new Error("channel_id is required outside a Sabha conversation");
+        const users = await client.searchUsers({ channelId, ...(params.query ? { query: params.query } : {}) });
         return users.map((user) => ({ id: user.id, name: user.name, mention: `@{${user.id}}`, ...(user.bot ? { app: true } : {}) }));
       },
     }, getConfig),
     defineTool<{ user_id: number }>({
       name: "sabha_create_dm",
       label: "Open a Sabha DM",
-      description: "Open (or find) the direct-message room with a Sabha user. Returns the room id to send to.",
+      description: "Open (or find) the direct-message channel with a Sabha user. Returns the channel id to send to.",
       parameters: Type.Object({ user_id: Type.Number({ description: "User id to DM" }) }),
       run: async ({ client, params, ctx }) => {
         if (!Number.isInteger(params.user_id)) throw new Error("user_id must be a Sabha user id");
         ctx.assertInvocationCurrent();
-        const { roomId } = await client.createDm([params.user_id]);
-        return { roomId, target: `channel:${roomId}` };
+        const { channelId } = await client.createDm([params.user_id]);
+        return { channelId, target: `channel:${channelId}` };
       },
     }, getConfig),
   ];

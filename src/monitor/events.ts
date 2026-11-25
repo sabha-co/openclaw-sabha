@@ -1,5 +1,5 @@
 // Classifies AppEventsChannel payloads. Pure: no I/O, no host runtime.
-import type { SabhaAppEvent, SabhaCommandEvent, SabhaEventRoom, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
+import type { SabhaAppEvent, SabhaCommandEvent, SabhaEventChannel, SabhaMessageEvent, SabhaReactionEvent } from "../client/types.js";
 
 export type SabhaChatType = "direct" | "group";
 
@@ -23,7 +23,7 @@ export function parseSabhaEvent(raw: unknown): SabhaAppEvent {
   if (!isRecord(raw) || typeof raw.event !== "string") throw new SabhaEventShapeError("missing event type");
   if (MESSAGE_EVENTS.has(raw.event) || REACTION_EVENTS.has(raw.event)) {
     if (!hasId(raw.message)) throw new SabhaEventShapeError(`${raw.event} without message.id`);
-    if (!hasId(raw.room)) throw new SabhaEventShapeError(`${raw.event} without room.id`);
+    if (!hasId(raw.channel)) throw new SabhaEventShapeError(`${raw.event} without channel.id`);
     if (!hasId(raw.user)) throw new SabhaEventShapeError(`${raw.event} without user.id`);
     const body = (raw.message as Record<string, unknown>).body;
     if (MESSAGE_EVENTS.has(raw.event) && !isRecord(body)) throw new SabhaEventShapeError(`${raw.event} without message.body`);
@@ -35,7 +35,7 @@ export function parseSabhaEvent(raw: unknown): SabhaAppEvent {
     for (const field of ["id", "command", "response_url"]) {
       if (typeof raw[field] !== "string") throw new SabhaEventShapeError(`command without ${field}`);
     }
-    if (typeof raw.room_id !== "number" || typeof raw.user_id !== "number") throw new SabhaEventShapeError("command without room_id or user_id");
+    if (typeof raw.channel_id !== "number" || typeof raw.user_id !== "number") throw new SabhaEventShapeError("command without channel_id or user_id");
   }
   return raw as SabhaAppEvent;
 }
@@ -45,15 +45,15 @@ export const isReactionEvent = (event: SabhaAppEvent): event is SabhaReactionEve
 export const isCommandEvent = (event: SabhaAppEvent): event is SabhaCommandEvent => event.event === "command";
 
 /**
- * Open and Closed rooms are the only ones where Sabha sends an app just its
+ * Open and Closed channels are the only ones where Sabha sends an app just its
  * mentions, and the only ones whose messages can hold a thread. DMs (group
  * DMs too), threads and forum posts send the app every message.
  */
-export const isMentionGatedRoom = (room: Pick<SabhaEventRoom, "type">): boolean => room.type === "Open" || room.type === "Closed";
+export const isMentionGatedChannel = (channel: Pick<SabhaEventChannel, "type">): boolean => channel.type === "Open" || channel.type === "Closed";
 
-/** A Direct room with more than the app and one person is a group DM: a group chat that needs no mention. */
-export const chatTypeOf = (room: SabhaEventRoom): SabhaChatType =>
-  room.type === "Direct" && (room.members ?? 2) <= 2 ? "direct" : "group";
+/** A Direct channel with more than the app and one person is a group DM: a group chat that needs no mention. */
+export const chatTypeOf = (channel: SabhaEventChannel): SabhaChatType =>
+  channel.type === "Direct" && (channel.members ?? 2) <= 2 ? "direct" : "group";
 
 /** Sabha computes `mentions_app` server-side; mentionees cover events that predate it. */
 export function mentionsApp(event: SabhaMessageEvent, selfId: number): boolean {
@@ -62,11 +62,11 @@ export function mentionsApp(event: SabhaMessageEvent, selfId: number): boolean {
 
 /**
  * Conversations the app is part of: DMs and threads without a mention (a thread
- * the app replied in is an ongoing conversation), top-level rooms only when
+ * the app replied in is an ongoing conversation), top-level channels only when
  * the message mentions the app.
  */
 export function addressesApp(event: SabhaMessageEvent, selfId: number): boolean {
-  if (!isMentionGatedRoom(event.room) || event.message.thread != null) return true;
+  if (!isMentionGatedChannel(event.channel) || event.message.thread != null) return true;
   return mentionsApp(event, selfId);
 }
 
@@ -79,7 +79,7 @@ export function eventFacts(event: SabhaAppEvent, selfId: number): { eventId: str
   if (isMessageEvent(event)) {
     if (event.user.id === selfId) return null;
     if (!addressesApp(event, selfId)) return null;
-    const laneKey = `room:${event.room.id}`;
+    const laneKey = `channel:${event.channel.id}`;
     switch (event.event) {
       case "message_created":
         return { eventId: `message:${event.message.id}`, laneKey };
@@ -94,8 +94,8 @@ export function eventFacts(event: SabhaAppEvent, selfId: number): { eventId: str
   if (isReactionEvent(event)) {
     if (event.user.id === selfId) return null;
     const kind = event.event === "reaction_created" ? "react" : "unreact";
-    return { eventId: `${kind}:${event.reaction.id}`, laneKey: `room:${event.room.id}` };
+    return { eventId: `${kind}:${event.reaction.id}`, laneKey: `channel:${event.channel.id}` };
   }
-  if (isCommandEvent(event)) return { eventId: `command:${event.id}`, laneKey: `room:${event.room_id}` };
+  if (isCommandEvent(event)) return { eventId: `command:${event.id}`, laneKey: `channel:${event.channel_id}` };
   return null;
 }

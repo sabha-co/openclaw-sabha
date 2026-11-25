@@ -2,7 +2,7 @@
 // built sources, so the manifest the host reads before loading code cannot
 // drift from the code. `--check` fails instead of writing (CI / prepack).
 import { readFileSync, writeFileSync } from "node:fs";
-import { sabhaConfigSchema } from "../dist/src/config/schema.js";
+import { sabhaChannelConfigSchema } from "../dist/src/config/schema.js";
 import { sabhaSetupContract } from "../dist/src/config/setup-contract.js";
 import { SABHA_CLI_DESCRIPTORS, SABHA_TOOL_METADATA, SABHA_TOOL_NAMES, sabhaMeta } from "../dist/src/plugin/meta.js";
 
@@ -26,8 +26,8 @@ const manifest = {
     [sabhaMeta.id]: {
       label: sabhaMeta.label,
       description: "Connect to a Sabha workspace with an app key over the AppEvents WebSocket.",
-      schema: sabhaConfigSchema.schema,
-      uiHints: sabhaConfigSchema.uiHints,
+      schema: sabhaChannelConfigSchema.schema,
+      uiHints: sabhaChannelConfigSchema.uiHints,
     },
   },
 };

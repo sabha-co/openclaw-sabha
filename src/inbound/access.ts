@@ -30,7 +30,7 @@ export async function resolveSabhaAccess(params: {
   cfg: OpenClawConfig;
   account: ResolvedSabhaAccount;
   senderId: number;
-  roomId: string;
+  channelId: string;
   threadId?: string;
   chatType: SabhaChatType;
   mentioned: boolean;
@@ -52,7 +52,7 @@ export async function resolveSabhaAccess(params: {
     // Sabha has no pairing flow; access is the configured allowlist.
     useDefaultPairingStore: false,
     subject: { stableId: String(params.senderId) },
-    conversation: { kind: params.chatType, id: params.roomId, ...(params.threadId ? { threadId: params.threadId } : {}) },
+    conversation: { kind: params.chatType, id: params.channelId, ...(params.threadId ? { threadId: params.threadId } : {}) },
     event: { kind: params.eventKind, authMode: "inbound", mayPair: false },
     dmPolicy: account.dmPolicy,
     groupPolicy: "open",

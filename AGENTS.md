@@ -61,22 +61,22 @@ VPS: ask the user to run commands there.
 | `src/client/` | REST client, probe, Markdown → Lexxy HTML (`rich-text.ts`), `@{id}` mention rewrite, account → client |
 | `src/monitor/` | `cable-socket.ts` (one connection), `monitor.ts` (account lifecycle, reconnect, resume), `events.ts` (parse, addressing, ingress ids), `ingress.ts` (durable queue) |
 | `src/inbound/` | `access.ts` (DM policy, mention gating), `turn.ts` (one event → one host turn, or a system event) |
-| `src/outbound/` | `send.ts` (chunked text, media), `target.ts` (target grammar → room), `draft-transport.ts`, `reply-delivery.ts` |
+| `src/outbound/` | `send.ts` (chunked text, media), `target.ts` (target grammar → channel), `draft-transport.ts`, `reply-delivery.ts` |
 | `src/actions/` | `message` tool adapter (static discovery) and handlers (lazy) |
 | `src/directory.ts`, `src/tools.ts`, `src/cli.ts`, `src/doctor.ts` | Directory + resolver, agent tools, CLI, doctor checks |
 | `scripts/generate-manifest.mjs` | Projects schema, setup contract and metadata into the manifests |
 
 ## Behaviour to preserve
 
-- Top-level room messages need a mention. DMs and threads do not. The app
+- Top-level channel messages need a mention. DMs and threads do not. The app
   never sees its own messages (server-side), and self echoes are dropped anyway.
 - Ingress ids: `message:<id>`, `edit:<id>:<updated_at>`, `react:` / `unreact:`
-  + reaction id. One lane per room. Deletes and `user_*` events never enter.
+  + reaction id. One lane per channel. Deletes and `user_*` events never enter.
 - Edits and reactions become system events on the conversation's session. They
   never start a turn.
-- A thread is its own room. Inbound thread turns and outbound sends with a
-  `threadId` both use the thread room's session.
-- Group session peers include the account id (room ids overlap across
+- A thread is its own channel. Inbound thread turns and outbound sends with a
+  `threadId` both use the thread channel's session.
+- Group session peers include the account id (channel ids overlap across
   servers). DMs are per account and peer.
 - The final reply replaces the live draft when there is one
   (`client_message_id`). If that fails it is posted normally. A draft is always

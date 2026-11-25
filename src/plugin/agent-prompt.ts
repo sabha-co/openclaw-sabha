@@ -21,6 +21,6 @@ export const sabhaAgentPrompt: NonNullable<ChannelPlugin["agentPrompt"]> = {
     `SABHA: you're on Sabha (not Discord/Slack/Teams). ${MENTIONS} Use sabha_search_members to find an id by name.`,
     "SABHA SEARCH: `search` returns up to 200 results (default 50) and says `hasMore: true` when there are more. Narrow with channelIds / authorIds or before / after, or pass `cursor` (from `nextCursor`) to continue.",
     "SABHA READ: `read` returns messages newest first; reorder before summarizing chronologically. Pass `cursor` (from `nextCursor`) to go further back.",
-    "SABHA THREADS: a thread is its own room. Replying in the current conversation needs no target; `thread-reply` with a top-level `messageId` starts or continues that message's thread.",
+    "SABHA THREADS: a thread is its own channel. Replying in the current conversation needs no target; `thread-reply` with a top-level `messageId` starts or continues that message's thread.",
   ],
 };

@@ -1,5 +1,5 @@
 // Durable ingress: each event is written to the host's per-account queue
-// before any work starts, then drained one room (lane) at a time. Tombstones
+// before any work starts, then drained one channel (lane) at a time. Tombstones
 // make AnyCable history replays after a reconnect harmless.
 import { createStandardRawEventIngressMonitor } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {

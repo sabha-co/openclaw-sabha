@@ -16,7 +16,7 @@ execution: code
 
 **Means:** Adopt the supported external-plugin, setup, inbound, and outbound contracts in OpenClaw 2026.9.2 (KTD1–KTD6).
 
-**Authority:** This document plans implementation. The current request authorizes reference-checkout updates and planning; it does not authorize deployment, publishing, or sending test messages to real rooms.
+**Authority:** This document plans implementation. The current request authorizes reference-checkout updates and planning; it does not authorize deployment, publishing, or sending test messages to real channels.
 
 **Completion:** The packaged plugin passes the Verification Contract on the target host and provides the capabilities in R3–R7 from a fresh installation. Existing configuration and session history need not survive the upgrade. Changes to access policy or user-facing capabilities still require a product decision.
 
@@ -47,7 +47,7 @@ The operator confirmed that this plugin is only used internally and can be reins
 **Conversation behavior**
 
 - R4. Preserve inbound selection: self-authored events are ignored; top-level groups require a bot mention; DMs and existing threads do not. Enforce each account's DM policy and keep global user events outside agent-visible context.
-- R5. Provide correct agent routing and conversation continuity within a fresh installation, numeric room/message context, sender mention syntax, room prompts, and immediate guarded attachment downloads. Use current SDK session routing without preserving old session keys or importing old history.
+- R5. Provide correct agent routing and conversation continuity within a fresh installation, numeric channel/message context, sender mention syntax, channel prompts, and immediate guarded attachment downloads. Use current SDK session routing without preserving old session keys or importing old history.
 - R6. Preserve typing and one-preview streaming across inline replies, DMs, existing threads, and newly created reply threads. Respect host rewrite/cancellation hooks before exposing message content, and report actual delivery outcomes.
 - R7. Preserve the shared message actions, directory and resolver behavior, and the two tools `sabha_search_members` and `sabha_create_dm`, including account isolation and existing pagination/result shapes.
 
@@ -59,7 +59,7 @@ The operator confirmed that this plugin is only used internally and can be reins
 
 This is an SDK migration, including the contract and packaging changes needed to make it reliable. Sabha's Bot REST API, ActionCable protocol, markdown-to-Trix conversion, and channel identity remain the platform boundary.
 
-Deferred to follow-up work: durable restart replay/catalog nomination; SecretRef credentials; new pairing or ambient-room behavior; native approval/reaction workflows; progress cards and interactive presentation; channel/member administration. None is required to prove this migration. Existing text delivery must still handle the host's normal text fallback correctly. Backward-compatibility shims, legacy config promotion, session-history migration, and old-host test matrices are explicitly excluded; session-key changes needed for canonical SDK routing are in scope.
+Deferred to follow-up work: durable restart replay/catalog nomination; SecretRef credentials; new pairing or ambient-channel behavior; native approval/reaction workflows; progress cards and interactive presentation; channel/member administration. None is required to prove this migration. Existing text delivery must still handle the host's normal text fallback correctly. Backward-compatibility shims, legacy config promotion, session-history migration, and old-host test matrices are explicitly excluded; session-key changes needed for canonical SDK routing are in scope.
 
 ### Success Criteria
 
@@ -107,7 +107,7 @@ Other existing typed imports, including account helpers, directory, channel stat
 - KTD4. **Keep transport, deduplication, and native delivery in Sabha.** The inbound kernel does not imply adopting the trust-gated durable queue. Preserve the FIFO TTL cache and in-flight reservation, unmarking on retryable processing failure. Let the typed terminal result distinguish an intentional drop from a failed dispatch so neither becomes a false success or an endless replay.
 - KTD5. **Integrate streaming with the stable delivery settlement contract.** Keep `isAlive()`-based finalization and the in-flight first-send invariant. Derive the `message` adapter from the existing outbound adapter using `createChannelMessageAdapterFromOutbound`, without claiming durable capabilities. Use core-owned direct delivery and terminal observation, with real receipts and awaited settlement. Do not run message hooks twice. When rewrite/cancellation hooks are registered, buffer eager previews until the accepted payload reaches delivery; cancellation produces no visible draft. Without those hooks, retain incremental previews. The stable Mattermost implementation checks the typed-public `plugin-runtime.getGlobalHookRunner` for both modifying hooks; accept that specific export from the retained facade rather than inventing a private hook-inspection API.
 - KTD6. **Generate cheap metadata from shared definitions.** Extract schema/UI hints and tool/CLI metadata into import-safe modules; generate manifest `channelConfigs`, `contracts.tools`, tool side-effect metadata, CLI declarations, and setup-field projections. Define the canonical fresh-install schema and explicit behavioral defaults; remove legacy credential layering and promotion lists/tests. Shared non-credential settings and named-account overrides remain supported. `sabha_search_members` is read-only; DM creation is side-effecting.
-- KTD7. **Preserve agent-facing capability ownership.** Keep the nine message actions and directory/resolver slots; retain only the two SDK-gap tools. Pass fresh host config and the selected account into tool execution, and keep current room/message context for `react`, `reactions`, and threaded sends. No prompt asking the agent to fabricate a target.
+- KTD7. **Preserve agent-facing capability ownership.** Keep the nine message actions and directory/resolver slots; retain only the two SDK-gap tools. Pass fresh host config and the selected account into tool execution, and keep current channel/message context for `react`, `reactions`, and threaded sends. No prompt asking the agent to fabricate a target.
 
 - KTD8. **Clean installation replaces backward compatibility.** Only our internal installation uses this plugin, and reinstalling/reconfiguring with fresh sessions is acceptable (session-settled: user-directed — chosen over preserving existing installations: the sole operator can start fresh). No compatibility shims, legacy config promotion, old-session migration, or old-host support are required. This supersedes historical preservation instructions in AGENTS.md for the migration; update those instructions with the implementation.
 
@@ -222,7 +222,7 @@ U1 establishes the build and import boundary. U2–U3 settle entry/setup contrac
 2. Wizard and existing CLI join setup write the same account fields, including multi-tenant base/API/WebSocket URLs.
 3. Fresh named accounts and explicit default accounts resolve correctly. Root-level credentials are rejected by the canonical schema rather than silently inherited or migrated.
 4. Generated manifest schema/UI hints, tool names, CLI descriptor, and package setup fields agree with runtime definitions; regeneration is deterministic.
-5. Fresh `dmPolicy: open` and allowlist configurations work; account overrides and room prompts are represented consistently in the canonical schema.
+5. Fresh `dmPolicy: open` and allowlist configurations work; account overrides and channel prompts are represented consistently in the canonical schema.
 
 **Verification:** Setup/import-boundary and metadata contract checks pass; host configuration validation and selected-channel setup help work on the artifact.
 
@@ -232,18 +232,18 @@ U1 establishes the build and import boundary. U2–U3 settle entry/setup contrac
 
 **Files:** `src/inbound.ts`, `src/monitor.ts`, `src/channel.ts`, `src/session.ts`, `src/messaging.ts`, `src/types.ts`, `src/inbound.test.ts`, `src/monitor.test.ts`, `src/messaging.test.ts`, new `src/inbound-kernel.test.ts`.
 
-**Approach:** Apply KTD3–KTD4 and KTD8. Implement the adapter's ingest, classification, preflight, route/context resolution, and finalization responsibilities with the host-injected runner. Keep platform parsing in existing webhook helpers. Supply stable Sabha user ids as identity facts, account-specific policy, actual room/thread routing, numeric originating target/message context, channel identity/formatting hints, and ordered local media facts. Download permitted signed attachments before agent dispatch, after admission.
+**Approach:** Apply KTD3–KTD4 and KTD8. Implement the adapter's ingest, classification, preflight, route/context resolution, and finalization responsibilities with the host-injected runner. Keep platform parsing in existing webhook helpers. Supply stable Sabha user ids as identity facts, account-specific policy, actual channel/thread routing, numeric originating target/message context, channel identity/formatting hints, and ordered local media facts. Download permitted signed attachments before agent dispatch, after admission.
 
-**Execution note:** Use the current SDK route/session contract as the source of truth. Replace legacy session helpers and fixtures where necessary; do not characterize or migrate old session keys. Verify room/thread separation, parent-thread relationships, and repeat-message continuity within fresh sessions.
+**Execution note:** Use the current SDK route/session contract as the source of truth. Replace legacy session helpers and fixtures where necessary; do not characterize or migrate old session keys. Verify channel/thread separation, parent-thread relationships, and repeat-message continuity within fresh sessions.
 
 **Test scenarios:**
 
 1. DM, mentioned top-level group, and in-thread messages reach the configured agent and correct fresh conversation; repeated messages reuse that conversation, distinct threads stay separated, and unmentioned top-level messages and self echoes do not dispatch.
 2. A disallowed DM sender is rejected before media downloads, typing, or dispatch; an allowed sender and an open-policy sender are admitted.
-3. Two accounts with overlapping room/user ids retain distinct account routing and clients; a denied sender cannot gain command-owner privileges from a name or message field.
+3. Two accounts with overlapping channel/user ids retain distinct account routing and clients; a denied sender cannot gain command-owner privileges from a name or message field.
 4. The exact ingress result is bound to the final agent/session/message/event; stale or mismatched facts are not reused.
 5. Attachment-only input retains an empty body and a media fact; download failure remains nonfatal with a redacted diagnostic; private hosts remain blocked by default.
-6. Numeric message/room tool context, sender `@{id}`, room prompt, and thread metadata survive the builder; global user events never enter an agent context.
+6. Numeric message/channel tool context, sender `@{id}`, channel prompt, and thread metadata survive the builder; global user events never enter an agent context.
 7. A real SDK runner test records and dispatches one event through a fake native delivery boundary; mocked PascalCase context capture alone is insufficient.
 
 **Verification:** Modern inbound tests pass with one recording/dispatch owner and canonical fresh-session routing fixtures.
@@ -254,12 +254,12 @@ U1 establishes the build and import boundary. U2–U3 settle entry/setup contrac
 
 **Files:** `src/monitor.ts`, `src/inbound.ts`, `src/draft-stream.ts`, `src/channel.ts`, `src/types.ts`, `src/client.ts` only if adapter result handling requires it, `src/draft-stream.test.ts`, `src/monitor.test.ts`, `src/inbound-kernel.test.ts`, `src/channel.test.ts`.
 
-**Approach:** Apply KTD5. Wire the derived message adapter alongside the existing outbound adapter, advertising only proven text/media/live behavior. Preserve the current native finalization branches and return actual provider ids and resolved room targets. Await the preview's final settlement before terminal observation. Fail visibly on malformed/empty send responses rather than returning an empty message id. Preserve visible receipt information when a partial delivery later fails. Keep typing cleanup tied to admission, completion, cancellation, failure, and abort.
+**Approach:** Apply KTD5. Wire the derived message adapter alongside the existing outbound adapter, advertising only proven text/media/live behavior. Preserve the current native finalization branches and return actual provider ids and resolved channel targets. Await the preview's final settlement before terminal observation. Fail visibly on malformed/empty send responses rather than returning an empty message id. Preserve visible receipt information when a partial delivery later fails. Keep typing cleanup tied to admission, completion, cancellation, failure, and abort.
 
 **Test scenarios:**
 
 1. Final output arrives while the first preview send is unresolved: one message is created and then finalized.
-2. Alive preview, dead preview with edit success, edit failure with delete/fresh-send recovery, and dead stream with no preview preserve the intended room/thread.
+2. Alive preview, dead preview with edit success, edit failure with delete/fresh-send recovery, and dead stream with no preview preserve the intended channel/thread.
 3. Inline, DM, existing-thread, and new-thread paths honor `replyToMode`; media and text retain real provider receipts.
 4. A rewrite hook's replacement is the only visible content; a cancellation hook leaves no draft or final message. Each logical payload receives at most one hook application and terminal observation.
 5. A rejected final edit or native send remains a failure; a visible preview followed by failure is reported as partial delivery rather than no delivery.
@@ -279,8 +279,8 @@ U1 establishes the build and import boundary. U2–U3 settle entry/setup contrac
 **Test scenarios:**
 
 1. Discover and execute `send`, `edit`, `unsend`, `react`, `thread-reply`, `search`, `member-info`, `read`, and `reactions` against a stub Sabha endpoint with correct wire targets.
-2. Inbound `react` and `reactions` calls without an explicit room obtain the correct current target; proactive calls with numeric targets work.
-3. Search/read cursor and room/author aliases remain correct; read/reactions render through the host formatter with string ids and normalized author fields.
+2. Inbound `react` and `reactions` calls without an explicit channel obtain the correct current target; proactive calls with numeric targets work.
+3. Search/read cursor and channel/author aliases remain correct; read/reactions render through the host formatter with string ids and normalized author fields.
 4. Directory/resolver operations stay on the selected default or explicit account, never unioning conflicting tenants.
 5. Both custom tools are discoverable before a gateway starts, then execute with changed current config and correct account context.
 
@@ -318,7 +318,7 @@ U1 establishes the build and import boundary. U2–U3 settle entry/setup contrac
 3. The supported minimum Node 24.15 and a current supported Node runtime load the package; any broader declared runtime remains compatible with the host engine range.
 4. A disposable host instance and fake Sabha WebSocket/HTTP server exercise inbound dispatch, delivery, disconnect/reconnect, tools, and shutdown with both account configurations.
 
-**Verification:** CI and release gates run the Verification Contract. A real-server smoke test can follow once a test bot/room is explicitly designated; never reuse production configuration automatically.
+**Verification:** CI and release gates run the Verification Contract. A real-server smoke test can follow once a test bot/channel is explicitly designated; never reuse production configuration automatically.
 
 ---
 
@@ -340,7 +340,7 @@ No tests, builds, or runtime probes were run during planning. Implementation mus
 
 - **Fresh-process loading:** Prove KTD2 against the actual package on the target host; a successful unit import does not settle Node's loader behavior. Historical loader compatibility is not a separate requirement.
 - **Trust and participant evidence:** The stable host permits community-channel guest admission but restricts owner elevation and state APIs. Verify the real external installation and accept the host's authority boundary; do not substitute a forged owner flag or standalone context-builder fallback.
-- **Fresh sessions:** Old session keys/history may be abandoned under KTD8. Verify continuity and account/room/thread isolation within the new installation; no history migration or old/new key comparison is required.
+- **Fresh sessions:** Old session keys/history may be abandoned under KTD8. Verify continuity and account/channel/thread isolation within the new installation; no history migration or old/new key comparison is required.
 - **Hook-aware preview behavior:** Streaming may be buffered on gateways with modifying hooks. This is an intentional compatibility requirement of the stable host, while ordinary hook-free streaming remains the regression target.
 - **Ambiguous native sends:** The migration does not establish exactly-once delivery across network failures. A server may accept a send before its response is lost; preserve that uncertainty and never use the host's not-dispatched error marker after a send/finalization call has begun.
 - **Metadata activation:** Keep existing activation behavior unless an explicit lazy policy is proven to preserve standalone CLI/tool discovery. Copying Basecamp's `onStartup: false` is not necessary for this upgrade.

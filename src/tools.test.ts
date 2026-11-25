@@ -26,28 +26,28 @@ describe("sabha tools", () => {
     expect(tools.map((tool) => tool.create(ctx()).name)).toEqual([...SABHA_TOOL_NAMES]);
   });
 
-  it("searches the current Sabha room on the turn's account", async () => {
+  it("searches the current Sabha channel on the turn's account", async () => {
     client.searchUsers.mockResolvedValue([{ id: 5, name: "Ann" }, { id: 9, name: "Helper", bot: true }]);
     const tool = tools[0]!.create(ctx({ messageChannel: "sabha", nativeChannelId: "21", agentAccountId: "work" }));
     const result = await tool.execute("call-1", { query: "an" });
-    expect(client.searchUsers).toHaveBeenCalledWith({ roomId: 21, query: "an" });
+    expect(client.searchUsers).toHaveBeenCalledWith({ channelId: 21, query: "an" });
     expect(accountIds).toEqual(["work"]);
     expect(details(result)).toEqual([{ id: 5, name: "Ann", mention: "@{5}" }, { id: 9, name: "Helper", mention: "@{9}", app: true }]);
   });
 
-  it("ignores another channel's room and account", async () => {
+  it("ignores another channel's channel and account", async () => {
     const tool = tools[0]!.create(ctx({ messageChannel: "slack", nativeChannelId: "21", agentAccountId: "work" }));
     const result = await tool.execute("call-1", {});
-    expect(details(result).error).toMatch("room_id is required");
+    expect(details(result).error).toMatch("channel_id is required");
     expect(accountIds).toEqual([undefined]);
   });
 
   it("checks invocation currency before opening a DM", async () => {
-    client.createDm.mockResolvedValue({ roomId: 77 });
+    client.createDm.mockResolvedValue({ channelId: 77 });
     const context = ctx();
     const result = await tools[1]!.create(context).execute("call-2", { user_id: 5 });
     expect((context as { assertInvocationCurrent: ReturnType<typeof vi.fn> }).assertInvocationCurrent).toHaveBeenCalled();
-    expect(details(result)).toEqual({ roomId: 77, target: "channel:77" });
+    expect(details(result)).toEqual({ channelId: 77, target: "channel:77" });
   });
 
   it("does not open a DM when the invocation is stale", async () => {

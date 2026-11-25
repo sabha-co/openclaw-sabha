@@ -13,23 +13,23 @@ export type SabhaUserDetail = SabhaUser & {
 };
 
 /** "Open" | "Closed" | "Direct" | "Thread" | "Forum" | "Post" | … */
-export type SabhaRoomType = string;
+export type SabhaChannelType = string;
 
-export type SabhaRoom = { id: number; name: string | null; type: SabhaRoomType; messages_url?: string };
+export type SabhaChannel = { id: number; name: string | null; type: SabhaChannelType; messages_url?: string };
 
 export type SabhaBody = { html: string; plain: string; markdown: string };
 
 export type SabhaAttachment = { url: string; filename: string; content_type: string; byte_size: number };
 
-export type SabhaThreadRef = { id: number; parent_message_id: number; parent_room_id: number };
+export type SabhaThreadRef = { id: number; parent_message_id: number; parent_channel_id: number };
 
-/** A message as `GET /rooms/:id/messages` and `GET /messages/:id` return it. */
+/** A message as `GET /channels/:id/messages` and `GET /messages/:id` return it. */
 export type SabhaMessage = {
   id: number;
   creator: SabhaUserRef;
   body: SabhaBody;
   attachment: SabhaAttachment | null;
-  room_id: number;
+  channel_id: number;
   thread: SabhaThreadRef | null;
   url: string;
   created_at: string;
@@ -42,7 +42,7 @@ export type SabhaSearchResult = {
   id: number;
   creator: SabhaUserRef;
   body: SabhaBody;
-  room: { id: number; name: string | null };
+  channel: { id: number; name: string | null };
   created_at: string;
 };
 
@@ -50,11 +50,11 @@ export type SabhaReactionGroup = { content: string; count: number; users: SabhaU
 
 export type SabhaReactions = { reactions: SabhaReactionGroup[]; total: number; truncated: boolean };
 
-export type SabhaSent = { id: number; roomId: number };
+export type SabhaSent = { id: number; channelId: number };
 
 // --- AppEventsChannel ---
 
-export type SabhaEventRoom = { id: number; name: string | null; type: SabhaRoomType; has_app?: boolean; members?: number };
+export type SabhaEventChannel = { id: number; name: string | null; type: SabhaChannelType; has_app?: boolean; members?: number };
 
 export type SabhaEventUser = SabhaUserRef & { role?: string; url?: string };
 
@@ -74,7 +74,7 @@ export type SabhaMessageEvent = {
   event: "message_created" | "message_updated" | "message_deleted";
   mentions_app?: boolean;
   message: SabhaEventMessage;
-  room: SabhaEventRoom;
+  channel: SabhaEventChannel;
   user: SabhaEventUser;
 };
 
@@ -82,7 +82,7 @@ export type SabhaReactionEvent = {
   event: "reaction_created" | "reaction_deleted";
   reaction: { id: number; body: string };
   message: SabhaEventMessage;
-  room: SabhaEventRoom;
+  channel: SabhaEventChannel;
   user: SabhaEventUser;
 };
 
@@ -98,9 +98,9 @@ export type SabhaCommandEvent = {
   text: string;
   user_id: number;
   user_name: string;
-  /** The thread room, when run in a thread. */
-  room_id: number;
-  room_name: string | null;
+  /** The thread channel, when run in a thread. */
+  channel_id: number;
+  channel_name: string | null;
   thread?: SabhaThreadRef;
   response_url: string;
 };
@@ -117,7 +117,7 @@ export type SabhaAppEvent =
 
 /** Draft frames the plugin sends on AppEventsChannel (`draft` action). */
 export type SabhaDraftFrame =
-  | { kind: "start"; draft_id: string; room_id: number; parent_message_id?: number }
-  | { kind: "text"; draft_id: string; room_id: number; parent_message_id?: number; text: string; seq: number }
-  | { kind: "activity"; draft_id: string; room_id: number; parent_message_id?: number; title: string; seq: number }
-  | { kind: "end"; draft_id: string; room_id: number; parent_message_id?: number };
+  | { kind: "start"; draft_id: string; channel_id: number; parent_message_id?: number }
+  | { kind: "text"; draft_id: string; channel_id: number; parent_message_id?: number; text: string; seq: number }
+  | { kind: "activity"; draft_id: string; channel_id: number; parent_message_id?: number; title: string; seq: number }
+  | { kind: "end"; draft_id: string; channel_id: number; parent_message_id?: number };

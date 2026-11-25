@@ -21,12 +21,12 @@ async function beforeWrite(ctx: ChannelMessageActionContext) {
 
 /** The named target, or the conversation this turn is in. */
 function targetOf(ctx: ChannelMessageActionContext): string {
-  const target = readText(ctx.params, "target", "to", "channelId", "channel_id", "roomId", "room_id") ?? ctx.toolContext?.currentChannelId;
-  return requireValue(target, `Sabha ${ctx.action} needs a target room ('target').`);
+  const target = readText(ctx.params, "target", "to", "channelId", "channel_id") ?? ctx.toolContext?.currentChannelId;
+  return requireValue(target, `Sabha ${ctx.action} needs a target channel ('target').`);
 }
 
-async function roomOf(deps: ActionDeps): Promise<number> {
-  return (await resolveSendTarget({ client: deps.client, to: targetOf(deps.ctx) })).roomId;
+async function channelOf(deps: ActionDeps): Promise<number> {
+  return (await resolveSendTarget({ client: deps.client, to: targetOf(deps.ctx) })).channelId;
 }
 
 /**
@@ -77,7 +77,7 @@ function projectSearchResult(result: SabhaSearchResult) {
     timestamp: result.created_at,
     author: { id: String(result.creator.id), username: result.creator.name },
     text: result.body.markdown || result.body.plain,
-    room: { id: String(result.room.id), name: result.room.name },
+    channel: { id: String(result.channel.id), name: result.channel.name },
   };
 }
 
@@ -114,7 +114,7 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
       ok: true,
       messageId: String(sent[0]!.id),
       messageIds: sent.map((message) => String(message.id)),
-      roomId: String(sent[0]!.roomId),
+      channelId: String(sent[0]!.channelId),
       ...(target.parentMessageId !== undefined ? { parentMessageId: String(target.parentMessageId) } : {}),
     };
   },
@@ -122,10 +122,10 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
   "thread-reply": async ({ ctx, client, account }) => {
     const text = requireValue(textOf(ctx), "Sabha thread-reply needs 'message'.");
     const parent = requireValue(readId(ctx.params, "messageId", "message_id", "replyToId", "replyTo"), "Sabha thread-reply needs 'messageId' (the top-level message).");
-    const roomId = await roomOf({ ctx, client, account });
+    const channelId = await channelOf({ ctx, client, account });
     const sent: SabhaSent[] = [];
-    await postTracked({ ctx, client, account }, { roomId, parentMessageId: parent }, text, sent);
-    return { ok: true, messageId: String(sent[0]!.id), roomId: String(sent[0]!.roomId), parentMessageId: String(parent) };
+    await postTracked({ ctx, client, account }, { channelId, parentMessageId: parent }, text, sent);
+    return { ok: true, messageId: String(sent[0]!.id), channelId: String(sent[0]!.channelId), parentMessageId: String(parent) };
   },
 
   edit: async ({ ctx, client }) => {
@@ -168,11 +168,11 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
 
   read: async (deps) => {
     const { ctx, client } = deps;
-    const roomId = await roomOf(deps);
+    const channelId = await channelOf(deps);
     const before = readText(ctx.params, "cursor", "before");
     const after = readText(ctx.params, "after");
     const limit = readLimit(ctx.params, MAX_PAGE);
-    const page = await client.readMessages(roomId, { ...(before ? { before } : {}), ...(after ? { after } : {}), ...(limit ? { limit } : {}) });
+    const page = await client.readMessages(channelId, { ...(before ? { before } : {}), ...(after ? { after } : {}), ...(limit ? { limit } : {}) });
     const messages = page.results.map(projectMessage);
     return {
       ok: true,
@@ -185,14 +185,14 @@ const handlers: Partial<Record<ChannelMessageActionName, (deps: ActionDeps) => P
 
   search: async ({ ctx, client }) => {
     const query = requireValue(readText(ctx.params, "query", "q", "text"), "Sabha search needs 'query'.");
-    const roomIds = readIds(ctx.params, ["channelIds", "channel_ids", "roomIds", "room_ids"], ["channelId", "channel_id", "roomId", "room_id"]);
+    const channelIds = readIds(ctx.params, ["channelIds", "channel_ids"], ["channelId", "channel_id"]);
     const authorIds = readIds(ctx.params, ["authorIds", "author_ids"], ["authorId", "author_id"]);
     const before = readText(ctx.params, "cursor", "before");
     const after = readText(ctx.params, "after");
     const limit = readLimit(ctx.params, MAX_PAGE);
     const page = await client.search({
       query,
-      ...(roomIds ? { roomIds } : {}),
+      ...(channelIds ? { channelIds } : {}),
       ...(authorIds ? { authorIds } : {}),
       ...(before ? { before } : {}),
       ...(after ? { after } : {}),

@@ -10,7 +10,7 @@ import {
   resolveDefaultSabhaAccountId,
   resolveSabhaAccount,
 } from "./accounts.js";
-import { SabhaChannelSchema } from "./schema.js";
+import { SabhaConfigSchema } from "./schema.js";
 
 const KEY = "sabha_app_0123456789abcdef0123456789abcdef";
 const cfg = (sabha: unknown) => ({ channels: { sabha } }) as unknown as OpenClawConfig;
@@ -84,8 +84,8 @@ describe("resolveSabhaAccount", () => {
 
 describe("schema", () => {
   it("rejects credentials at the channel root", () => {
-    expect(SabhaChannelSchema.safeParse({ appKey: KEY }).success).toBe(false);
-    expect(SabhaChannelSchema.safeParse({ url: "https://x.test", accounts: { a: { appKey: KEY } } }).success).toBe(true);
+    expect(SabhaConfigSchema.safeParse({ appKey: KEY }).success).toBe(false);
+    expect(SabhaConfigSchema.safeParse({ url: "https://x.test", accounts: { a: { appKey: KEY } } }).success).toBe(true);
   });
 });
 

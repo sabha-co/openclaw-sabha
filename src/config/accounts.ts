@@ -1,7 +1,7 @@
 import { normalizeAccountId, resolveNormalizedAccountEntry } from "openclaw/plugin-sdk/account-core";
 import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { SabhaAccountConfig, SabhaChannelConfig, SabhaRoomConfig } from "./schema.js";
+import type { SabhaAccountConfig, SabhaConfig, SabhaChannelConfig } from "./schema.js";
 
 // channels.sabha.accounts.<id> holds every credential; the channel root may
 // hold shared, non-credential defaults. Only explicitly listed accounts run.
@@ -34,7 +34,7 @@ export type ResolvedSabhaAccount = {
   allowPrivateNetwork: boolean;
   replyToMode: SabhaReplyToMode;
   livePreview: boolean;
-  rooms: Record<string, SabhaRoomConfig>;
+  channels: Record<string, SabhaChannelConfig>;
   config: SabhaAccountConfig;
 };
 
@@ -42,8 +42,8 @@ const CREDENTIAL_KEYS = ["appKey", "cableUrl", "name"] as const;
 
 const helpers = createAccountListHelpers("sabha", { normalizeAccountId });
 
-export function sabhaSection(cfg: OpenClawConfig): SabhaChannelConfig | undefined {
-  return (cfg.channels as Record<string, unknown> | undefined)?.sabha as SabhaChannelConfig | undefined;
+export function sabhaSection(cfg: OpenClawConfig): SabhaConfig | undefined {
+  return (cfg.channels as Record<string, unknown> | undefined)?.sabha as SabhaConfig | undefined;
 }
 
 export const listSabhaAccountIds = (cfg: OpenClawConfig): string[] => helpers.listConfiguredAccountIds(cfg).sort();
@@ -138,7 +138,7 @@ export function resolveSabhaAccount(cfg: OpenClawConfig, accountId?: string | nu
     // On unless turned off. A server without live drafts ignores the frames, and
     // the final reply posts as usual.
     livePreview: merged.livePreview !== false,
-    rooms: merged.rooms ?? {},
+    channels: merged.channels ?? {},
     config: merged,
   };
 }
@@ -183,7 +183,7 @@ export function patchSabhaAccount(
   patch: Partial<SabhaAccountConfig>,
 ): OpenClawConfig {
   const channels = (cfg.channels ?? {}) as Record<string, unknown>;
-  const section = (channels.sabha ?? {}) as SabhaChannelConfig;
+  const section = (channels.sabha ?? {}) as SabhaConfig;
   const id = normalizeAccountId(accountId);
   const accounts = { ...(section.accounts ?? {}) };
   // Store what Sabha's app page shows in its canonical form; never the key inside the cable URL.

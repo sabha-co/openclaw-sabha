@@ -5,7 +5,7 @@ import type { ChannelDirectoryEntry, ChannelResolveKind, ChannelResolveResult } 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { accountClient, SabhaAccountUnavailableError } from "./client/account-client.js";
 import type { SabhaClient } from "./client/client.js";
-import type { SabhaRoom, SabhaUser } from "./client/types.js";
+import type { SabhaChannel, SabhaUser } from "./client/types.js";
 
 type ListParams = { cfg: OpenClawConfig; accountId?: string | null; query?: string | null; limit?: number | null };
 
@@ -13,7 +13,7 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 50;
 
 const capOf = (limit?: number | null) => (limit && limit > 0 ? limit : Number.POSITIVE_INFINITY);
-const roomEntry = (room: SabhaRoom): ChannelDirectoryEntry => ({ kind: "group", id: String(room.id), ...(room.name ? { name: room.name, handle: room.name } : {}) });
+const channelEntry = (channel: SabhaChannel): ChannelDirectoryEntry => ({ kind: "group", id: String(channel.id), ...(channel.name ? { name: channel.name, handle: channel.name } : {}) });
 const userEntry = (user: SabhaUser): ChannelDirectoryEntry => ({ kind: "user", id: String(user.id), name: user.name, handle: user.name });
 
 async function collectPages<T>(fetchPage: (page: number) => Promise<T[]>, keep: (item: T) => boolean, cap: number): Promise<T[]> {
@@ -30,15 +30,15 @@ async function collectPages<T>(fetchPage: (page: number) => Promise<T[]>, keep: 
   return out;
 }
 
-/** Rooms the app belongs to. */
+/** Channels the app belongs to. */
 export async function listSabhaGroups(params: ListParams): Promise<ChannelDirectoryEntry[]> {
   const { client } = accountClient(params.cfg, params.accountId);
   const query = params.query?.trim() || undefined;
-  const rooms = await collectPages((page) => client.listRooms({ ...(query ? { query } : {}), page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
-  return rooms.map(roomEntry);
+  const channels = await collectPages((page) => client.listChannels({ ...(query ? { query } : {}), page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
+  return channels.map(channelEntry);
 }
 
-/** People who share a room with the app (other apps excluded). */
+/** People who share a channel with the app (other apps excluded). */
 export async function listSabhaPeers(params: ListParams): Promise<ChannelDirectoryEntry[]> {
   const { client } = accountClient(params.cfg, params.accountId);
   const query = params.query?.trim().toLowerCase();
@@ -60,9 +60,9 @@ export async function listSabhaPeersLive(params: ListParams): Promise<ChannelDir
 
 export async function listSabhaGroupMembers(params: { cfg: OpenClawConfig; accountId?: string | null; groupId: string; limit?: number | null }) {
   const { client } = accountClient(params.cfg, params.accountId);
-  const roomId = Number(params.groupId.replace(/^(?:sabha:)?(?:channel:|room:|group:)?/i, ""));
-  if (!Number.isInteger(roomId)) throw new Error(`Not a Sabha room id: ${params.groupId}`);
-  const users = await collectPages((page) => client.listUsers({ roomId, page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
+  const channelId = Number(params.groupId.replace(/^(?:sabha:)?(?:channel:|group:)?/i, ""));
+  if (!Number.isInteger(channelId)) throw new Error(`Not a Sabha channel id: ${params.groupId}`);
+  const users = await collectPages((page) => client.listUsers({ channelId, page, perPage: PAGE_SIZE }), () => true, capOf(params.limit));
   return users.map(userEntry);
 }
 
@@ -71,7 +71,7 @@ export async function listSabhaGroupMembers(params: { cfg: OpenClawConfig; accou
 type Parsed = { kind: "id"; id: number } | { kind: "query"; query: string } | { kind: "empty" };
 
 function parseInput(input: string, kind: ChannelResolveKind): Parsed {
-  const value = input.trim().replace(/^sabha:/i, "").replace(kind === "user" ? /^user:/i : /^(?:channel|room|group):/i, "");
+  const value = input.trim().replace(/^sabha:/i, "").replace(kind === "user" ? /^user:/i : /^(?:channel|group):/i, "");
   if (!value) return { kind: "empty" };
   const mention = kind === "user" ? /^@\{(\d+)\}$/.exec(value) : null;
   if (mention) return { kind: "id", id: Number(mention[1]) };
@@ -98,7 +98,7 @@ function pick<T extends Named>(input: string, query: string, matches: readonly T
 }
 
 async function lookup(client: SabhaClient, kind: ChannelResolveKind, query: string): Promise<Named[]> {
-  if (kind === "group") return client.listRooms({ query, perPage: 20 });
+  if (kind === "group") return client.listChannels({ query, perPage: 20 });
   return (await client.searchUsers({ query })).filter((user) => !user.bot);
 }
 

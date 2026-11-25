@@ -9,7 +9,7 @@ import {
   resolveSabhaAccount,
   type ResolvedSabhaAccount,
 } from "../config/accounts.js";
-import { sabhaConfigSchema } from "../config/schema.js";
+import { sabhaChannelConfigSchema } from "../config/schema.js";
 import { sabhaSetupContract } from "../config/setup-contract.js";
 import { sabhaSetupWizard } from "../config/setup-wizard.js";
 import { SABHA_CHANNEL_ID, sabhaMeta } from "./meta.js";
@@ -32,7 +32,7 @@ export const sabhaSetupPlugin: ChannelPlugin<ResolvedSabhaAccount> = {
     // Resolution reads the channel root plus the selected account, never a sibling.
     accountScopedRestart: true,
   },
-  configSchema: sabhaConfigSchema,
+  configSchema: sabhaChannelConfigSchema,
   config: {
     listAccountIds: listSabhaAccountIds,
     defaultAccountId: resolveDefaultSabhaAccountId,

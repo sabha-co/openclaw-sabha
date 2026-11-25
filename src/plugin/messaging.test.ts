@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { describe, expect, it, vi } from "vitest";
 
-const createDm = vi.fn(async () => ({ roomId: 77 }));
+const createDm = vi.fn(async () => ({ channelId: 77 }));
 vi.mock("../client/account-client.js", () => ({
   accountClient: () => ({ account: { accountId: "default" }, client: { createDm } }),
 }));
@@ -14,7 +14,7 @@ const {
   resolveSabhaDeliveryTarget,
   resolveSabhaOutboundSessionRoute,
 } = await import("./messaging.js");
-const { noteRoomThreading } = await import("../inbound/room-threading.js");
+const { noteChannelThreading } = await import("../inbound/channel-threading.js");
 
 const KEY = "sabha_app_0123456789abcdef0123456789abcdef";
 const cfg = { channels: { sabha: { url: "https://sabha.test", appKey: KEY } } } as unknown as OpenClawConfig;
@@ -23,7 +23,7 @@ describe("normalizeSabhaTarget", () => {
   it.each([
     ["21", "channel:21"],
     ["sabha:21", "channel:21"],
-    ["room:21", "channel:21"],
+    ["channel:21", "channel:21"],
     ["group:21", "channel:21"],
     ["@{5}", "user:5"],
     ["user:@{5}", "user:5"],
@@ -52,7 +52,7 @@ describe("target classification", () => {
     expect(inferSabhaTargetChatType("general")).toBeUndefined();
   });
 
-  it("delivers thread sessions straight into the thread room", () => {
+  it("delivers thread sessions straight into the thread channel", () => {
     expect(resolveSabhaDeliveryTarget({ conversationId: "221" })).toEqual({ to: "channel:221" });
     expect(resolveSabhaDeliveryTarget({ conversationId: "default:221" })).toEqual({ to: "channel:221" });
     expect(resolveSabhaDeliveryTarget({ conversationId: "nope" })).toBeNull();
@@ -60,20 +60,20 @@ describe("target classification", () => {
 });
 
 describe("resolveSabhaOutboundSessionRoute", () => {
-  it("keys a user target by its DM room", async () => {
+  it("keys a user target by its DM channel", async () => {
     const route = await resolveSabhaOutboundSessionRoute({ cfg, agentId: "main", target: "user:5" });
     expect(createDm).toHaveBeenCalledWith([5]);
     expect(route?.sessionKey).toContain("77");
     expect(route?.chatType).toBe("direct");
   });
 
-  it("routes a room target as a group, and a thread send to the thread room's session", async () => {
+  it("routes a channel target as a group, and a thread send to the thread channel's session", async () => {
     const plain = await resolveSabhaOutboundSessionRoute({ cfg, agentId: "main", target: "channel:21" });
     const threaded = await resolveSabhaOutboundSessionRoute({ cfg, agentId: "main", target: "channel:21", threadId: 221 });
-    const threadRoom = await resolveSabhaOutboundSessionRoute({ cfg, agentId: "main", target: "channel:221" });
+    const threadChannel = await resolveSabhaOutboundSessionRoute({ cfg, agentId: "main", target: "channel:221" });
     expect(plain?.chatType).toBe("group");
     expect(plain?.sessionKey).toBe("agent:main:sabha:group:default:21");
-    expect(threaded?.sessionKey).toBe(threadRoom?.sessionKey);
+    expect(threaded?.sessionKey).toBe(threadChannel?.sessionKey);
   });
 
   it("returns null when the DM cannot be opened", async () => {
@@ -84,7 +84,7 @@ describe("resolveSabhaOutboundSessionRoute", () => {
 
 describe("buildSabhaThreadingToolContext", () => {
   it("threads top-level group replies per the account mode", () => {
-    // The inbound turn reports its room bare; reads need it as the host normalizes targets.
+    // The inbound turn reports its channel bare; reads need it as the host normalizes targets.
     const context = buildSabhaThreadingToolContext({ cfg, context: { To: "21", ChatType: "group", CurrentMessageId: 4214 } });
     expect(context).toMatchObject({ currentChannelId: "channel:21", currentMessageId: 4214 });
     expect(context.replyToMode).not.toBe("off");
@@ -98,9 +98,9 @@ describe("buildSabhaThreadingToolContext", () => {
     expect(buildSabhaThreadingToolContext({ cfg, context: { To: "channel:9", ChatType: "direct" } }).replyToMode).toBe("off");
   });
 
-  it("does not thread in group rooms that cannot hold threads (group DMs)", () => {
-    noteRoomThreading("default", "31", false);
-    noteRoomThreading("default", "32", true);
+  it("does not thread in group channels that cannot hold threads (group DMs)", () => {
+    noteChannelThreading("default", "31", false);
+    noteChannelThreading("default", "32", true);
     const groupDm = buildSabhaThreadingToolContext({ cfg, context: { To: "channel:31", NativeChannelId: "31", ChatType: "group" } });
     expect(groupDm.replyToMode).toBe("off");
     expect(buildSabhaThreadingToolContext({ cfg, context: { To: "channel:32", ChatType: "group" } }).replyToMode).not.toBe("off");

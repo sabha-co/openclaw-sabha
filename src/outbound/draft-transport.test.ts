@@ -14,7 +14,7 @@ function draft(overrides: { connected?: boolean; maxChars?: number } = {}) {
       frames.push(frame);
       return true;
     },
-    target: { roomId: 3, parentMessageId: 4214 },
+    target: { channelId: 3, parentMessageId: 4214 },
     throttleMs: 100,
     newId: () => "draft-1",
     ...(overrides.maxChars ? { maxChars: overrides.maxChars } : {}),
@@ -29,9 +29,9 @@ describe("createSabhaDraft", () => {
     handle.update("He");
     handle.update("Hello");
     handle.update("Hello wor");
-    expect(frames).toEqual([{ kind: "start", draft_id: "draft-1", room_id: 3, parent_message_id: 4214 }]);
+    expect(frames).toEqual([{ kind: "start", draft_id: "draft-1", channel_id: 3, parent_message_id: 4214 }]);
     await vi.advanceTimersByTimeAsync(100);
-    expect(frames[1]).toEqual({ kind: "text", draft_id: "draft-1", room_id: 3, parent_message_id: 4214, text: "Hello wor", seq: 1 });
+    expect(frames[1]).toEqual({ kind: "text", draft_id: "draft-1", channel_id: 3, parent_message_id: 4214, text: "Hello wor", seq: 1 });
     handle.update("Hello wor  ");
     await vi.advanceTimersByTimeAsync(100);
     expect(frames).toHaveLength(2);

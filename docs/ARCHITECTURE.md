@@ -41,7 +41,7 @@ derives:
 flowchart LR
   Cable[AppEventsChannel] --> Socket[cable-socket]
   Socket --> Events[events: parse, addressed?, ingress id]
-  Events --> Queue[durable ingress queue, lane per room]
+  Events --> Queue[durable ingress queue, lane per channel]
   Queue --> Turn[inbound/turn]
   Turn --> Access[access: DM policy, mentions]
   Access --> Run[runtime.channel.inbound.run]
@@ -72,16 +72,16 @@ rewriter's name cache. Admissions are chained so events reach the queue in
 arrival order.
 
 **Addressing and ids** (`src/monitor/events.ts`). Self echoes, deletes,
-`user_*` events and unaddressed top-level room messages are dropped before the
+`user_*` events and unaddressed top-level channel messages are dropped before the
 queue. DMs and threads are always addressed. Ingress ids are `message:<id>`,
 `edit:<id>:<updated_at>`, `react:` / `unreact:` + reaction id. The lane is
-`room:<id>`, so one room is processed in order and rooms run in parallel. A
+`channel:<id>`, so one channel is processed in order and channels run in parallel. A
 replayed event with a known id is not handled twice.
 
 **Turn** (`src/inbound/turn.ts`). Resolves the agent route and the session
 (`src/session.ts`):
 
-- Group peer is `<accountId>:<roomId>`. A thread is its own room, so a thread
+- Group peer is `<accountId>:<channelId>`. A thread is its own channel, so a thread
   has its own session.
 - DMs use `per-account-channel-peer`.
 
@@ -100,8 +100,8 @@ same access check.
 
 **Where a reply goes** (`turn.ts` `replyTargetFor`). A top-level group message
 gets its reply threaded under it (`parent_message_id`) unless `replyToMode` is
-`off`. Sabha creates or finds the thread room and returns its id. In threads
-and DMs the reply goes to the same room.
+`off`. Sabha creates or finds the thread channel and returns its id. In threads
+and DMs the reply goes to the same channel.
 
 **Text** (`src/outbound/send.ts`, `src/client/rich-text.ts`). Markdown is
 chunked (`chunkMarkdownTextWithMode`, 12,000 chars by default) and each chunk
@@ -143,16 +143,16 @@ lazily on the turn's account. Targets (`src/outbound/target.ts`,
 
 | Input | Resolves to |
 |---|---|
-| `21`, `channel:21`, `room:21`, `group:21` | room |
-| `user:5`, `@{5}` | DM room via `POST /direct_messages` |
+| `21`, `channel:21`, `group:21` | channel |
+| `user:5`, `@{5}` | DM channel via `POST /direct_messages` |
 | `#name`, `@name` | the directory resolver |
 
-A `threadId` (a thread room) beats the target, and `replyToId` becomes
+A `threadId` (a thread channel) beats the target, and `replyToId` becomes
 `parent_message_id`. Writes revalidate host authority first.
 
 **Directory** (`src/directory.ts`):
 
-- Rooms come from `GET /rooms`.
+- Channels come from `GET /channels`.
 - People come from `GET /users`, skipping other apps, 100 per page, up to 50
   pages. Live search uses `/autocompletable/users`.
 - Name resolution prefers an exact name and reports ambiguity in a note.

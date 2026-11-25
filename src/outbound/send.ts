@@ -13,7 +13,7 @@ export const SABHA_TEXT_CHUNK_LIMIT = 12_000;
 export const SABHA_MEDIA_MAX_BYTES = 50 * 1024 * 1024;
 
 export type SabhaTarget = {
-  roomId: number;
+  channelId: number;
   /** Set to post into (or start) the thread under this top-level message. */
   parentMessageId?: number;
 };
@@ -40,7 +40,7 @@ export async function sendSabhaText(params: {
 }): Promise<SabhaSent[]> {
   const sent: SabhaSent[] = [];
   for (const [index, chunk] of chunkSabhaText(params.cfg, params.accountId, params.text).entries()) {
-    const message = await params.client.sendMessage(params.target.roomId, chunk, {
+    const message = await params.client.sendMessage(params.target.channelId, chunk, {
       ...(params.target.parentMessageId !== undefined ? { parentMessageId: params.target.parentMessageId } : {}),
       ...(index === 0 && params.clientMessageId ? { clientMessageId: params.clientMessageId } : {}),
     });
@@ -91,7 +91,7 @@ export async function sendSabhaMedia(params: {
   const media = await loadSabhaMedia(params);
   const blob = new Blob([new Uint8Array(media.buffer)], media.contentType ? { type: media.contentType } : {});
   return await params.client.sendAttachment(
-    params.target.roomId,
+    params.target.channelId,
     blob,
     media.fileName,
     params.target.parentMessageId !== undefined ? { parentMessageId: params.target.parentMessageId } : {},

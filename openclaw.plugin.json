@@ -5,7 +5,7 @@
   ],
   "name": "Sabha",
   "description": "Connect OpenClaw to a Sabha workspace as an app",
-  "version": "2026.11.1",
+  "version": "2026.11.2",
   "contracts": {
     "tools": [
       "sabha_search_members",
